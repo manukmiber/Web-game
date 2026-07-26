@@ -103,6 +103,10 @@ export function useShortcuts(viewport: ViewportController | null): void {
           run(new DeleteEntitiesCommand(engine.scene, selection));
           store.clearSelection();
           break;
+        case 'F8':
+          event.preventDefault();
+          store.setPerf({ hudVisible: !store.perf.hudVisible });
+          break;
         case 'Escape':
           store.clearSelection();
           break;

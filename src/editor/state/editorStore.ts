@@ -1,8 +1,41 @@
 import { create } from 'zustand';
 import type { EntityId } from '@engine/scene/types';
+import type { StressPreset } from '@engine/perf/StressScene';
 
 export type TransformTool = 'select' | 'move' | 'rotate' | 'scale';
 export type TransformSpace = 'local' | 'world';
+
+/**
+ * Manual quality and stress-test levers for the measurement harness.
+ *
+ * These are driven by hand from the PerfHud so a budget can be measured on real devices.
+ * Stage 2's adaptive quality will drive the same RenderHost setters automatically; what
+ * changes then is who decides, not how it is applied.
+ */
+export interface PerfSettings {
+  hudVisible: boolean;
+  stressPreset: StressPreset | 'off';
+  /** Objects per 100 m². */
+  density: number;
+  uniqueMeshes: number;
+  instanced: boolean;
+  renderDistance: number;
+  resolutionScale: number;
+  shadowsEnabled: boolean;
+  shadowMapSize: number;
+}
+
+export const DEFAULT_PERF: PerfSettings = {
+  hudVisible: false,
+  stressPreset: 'off',
+  density: 0.8,
+  uniqueMeshes: 6,
+  instanced: true,
+  renderDistance: 400,
+  resolutionScale: 1,
+  shadowsEnabled: true,
+  shadowMapSize: 2048,
+};
 
 interface EditorState {
   selection: EntityId[];
@@ -20,6 +53,7 @@ interface EditorState {
   canUndo: boolean;
   canRedo: boolean;
   statusMessage: string | null;
+  perf: PerfSettings;
 
   setSelection(ids: EntityId[]): void;
   toggleSelection(id: EntityId): void;
@@ -32,6 +66,7 @@ interface EditorState {
   bumpSceneRevision(): void;
   setHistoryState(canUndo: boolean, canRedo: boolean): void;
   setStatusMessage(message: string | null): void;
+  setPerf(patch: Partial<PerfSettings>): void;
 }
 
 /**
@@ -56,6 +91,7 @@ export const useEditorStore = create<EditorState>((set) => ({
   canUndo: false,
   canRedo: false,
   statusMessage: null,
+  perf: { ...DEFAULT_PERF },
 
   setSelection: (ids) => set({ selection: ids, lastSelected: ids[ids.length - 1] ?? null }),
   toggleSelection: (id) =>
@@ -73,6 +109,7 @@ export const useEditorStore = create<EditorState>((set) => ({
   bumpSceneRevision: () => set((state) => ({ sceneRevision: state.sceneRevision + 1 })),
   setHistoryState: (canUndo, canRedo) => set({ canUndo, canRedo }),
   setStatusMessage: (statusMessage) => set({ statusMessage }),
+  setPerf: (patch) => set((state) => ({ perf: { ...state.perf, ...patch } })),
 }));
 
 /** Reads current state outside React (gizmo handlers, keyboard shortcuts). */

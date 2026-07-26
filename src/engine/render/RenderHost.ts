@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { FrameStats } from '../perf/FrameStats';
 import type { Scene } from '../scene/Scene';
 import { RenderBridge } from './RenderBridge';
 
@@ -16,6 +17,8 @@ export interface RenderHostOptions {
   /** False once scenes carry their own Light components. */
   defaultLighting?: boolean;
   shadows?: boolean;
+  /** The engine's FrameStats, so submit time lands in the same window as the frame time. */
+  stats?: FrameStats;
 }
 
 /**
@@ -47,6 +50,7 @@ export class RenderHost {
   private basePixelRatio: number;
   private resolutionScale = 1;
   private keyLight: THREE.DirectionalLight | null = null;
+  private stats: FrameStats | null;
 
   constructor(engineScene: Scene, options: RenderHostOptions) {
     const {
@@ -56,7 +60,10 @@ export class RenderHost {
       clearColor = 0x2b2b2b,
       defaultLighting = true,
       shadows = true,
+      stats = null,
     } = options;
+
+    this.stats = stats;
 
     this.basePixelRatio = pixelRatio;
 
@@ -68,6 +75,10 @@ export class RenderHost {
     // Overlay and extra passes draw over the main pass, so clearing is done explicitly once
     // per frame in render() rather than implicitly by each render call.
     this.renderer.autoClear = false;
+    // Three resets its render counters at the start of every render() call, so with several
+    // passes per frame the stats would only ever describe the last one. Reset once per frame
+    // instead, and the numbers cover the whole frame.
+    this.renderer.info.autoReset = false;
 
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 5000);
     this.camera.position.set(8, 6, 10);
@@ -110,8 +121,13 @@ export class RenderHost {
    * quality reaches for this one first.
    */
   setResolutionScale(scale: number): void {
-    this.resolutionScale = Math.max(0.25, Math.min(1, scale));
+    const next = Math.max(0.25, Math.min(1, scale));
+    if (next === this.resolutionScale) return;
+    this.resolutionScale = next;
     this.applyPixelRatio();
+    // The old regime's samples describe a different renderer; keeping them would smear the
+    // before and after together and make the lever look weaker than it is.
+    this.stats?.reset();
   }
 
   getResolutionScale(): number {
@@ -126,7 +142,17 @@ export class RenderHost {
 
   // ------------------------------------------------------------------ frame
 
+  /**
+   * Draws one frame.
+   *
+   * The submit timer brackets every pass including the overlay, because from a budget point
+   * of view the editor's gizmo and grid cost real milliseconds, and excluding them would make
+   * the editor look faster than the runtime it is supposed to predict.
+   */
   render(): void {
+    this.renderer.info.reset();
+    this.stats?.beginSubmit();
+
     this.renderer.clear();
     this.renderer.setViewport(0, 0, this.width, this.height);
     this.renderer.render(this.scene, this.camera);
@@ -134,6 +160,8 @@ export class RenderHost {
     this.onAfterRender?.(this);
     // Extra passes are free to move the viewport; restore it so the next frame starts clean.
     this.renderer.setViewport(0, 0, this.width, this.height);
+
+    this.stats?.endSubmit(this.renderer);
   }
 
   // ---------------------------------------------------------------- lighting
@@ -168,7 +196,9 @@ export class RenderHost {
 
   /** Shadow quality tier, driven by adaptive quality in Stage 2. */
   setShadowsEnabled(enabled: boolean): void {
+    if (this.renderer.shadowMap.enabled === enabled) return;
     this.renderer.shadowMap.enabled = enabled;
+    this.stats?.reset();
     if (this.keyLight) this.keyLight.castShadow = enabled;
     // Materials compiled against the old shadow state have to be rebuilt.
     this.scene.traverse((object) => {

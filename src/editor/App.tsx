@@ -3,6 +3,7 @@ import { createPrimitiveEntity } from '@engine/scene/primitives';
 import { EditorProvider, useEditor } from './EditorContext';
 import { Hierarchy } from './panels/Hierarchy';
 import { Inspector } from './panels/Inspector';
+import { PerfHud } from './panels/PerfHud';
 import { Toolbar } from './panels/Toolbar';
 import { Viewport } from './viewport/Viewport';
 import type { ViewportController } from './viewport/ViewportController';
@@ -40,7 +41,10 @@ function EditorShell() {
       <Toolbar spawnPoint={spawnPoint} />
       <div className="editor-body">
         <Hierarchy />
-        <Viewport onReady={setViewport} />
+        <div className="viewport-host">
+          <Viewport onReady={setViewport} />
+          <PerfHud viewport={viewport} />
+        </div>
         <Inspector />
       </div>
     </div>

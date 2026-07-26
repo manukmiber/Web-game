@@ -46,7 +46,10 @@ src/
   engine/                 ← pure core. NO React, NO DOM-editor imports, NO editor concepts.
     scene/                  Scene, Entity, Transform, hierarchy ops
     components/             component definitions + registry
-    render/                 Three.js bridge: Scene data ──▶ Object3D tree
+    render/                 Three.js bridge (Scene data ──▶ Object3D tree) + RenderHost,
+                            which owns the renderer, camera and frame draw shared by the
+                            editor and the runtime
+    perf/                   frame measurement + stress-scene generator
     material/               material definitions → THREE.Material
     assets/                 texture/asset store (id → resource)
     serialization/          toJSON / fromJSON + schema version + migrations
@@ -56,7 +59,8 @@ src/
   editor/                 ← everything the runtime will NOT ship
     state/                  Zustand store: selection, active tool, snapping, dirty flag
     commands/               command pattern + undo/redo stack
-    viewport/               canvas host, OrbitControls, TransformControls, grid, axis widget
+    viewport/               RenderHost host + OrbitControls, TransformControls, grid,
+                            selection outline, picking, axis widget
     panels/                 Hierarchy, Inspector, Toolbar, AssetBrowser
     styles/                 dark Unity-like theme
 
@@ -320,7 +324,41 @@ fragment from world position (`editor/viewport/GroundGrid.ts`), not a `GridHelpe
   the same segment spanning ±100 draws zero pixels, while plane meshes are correct out to
   2000 units. Real GPUs are very likely fine; the procedural grid is immune either way.
 
-### 9.7 What Phase 1 actually ships against this
+### 9.7 Measuring the budget
+
+Numbers beat arguments, so the engine ships an instrument rather than a set of assumptions.
+`Engine.stats` (`engine/perf/FrameStats.ts`) records a rolling window and
+`engine/perf/StressScene.ts` generates the two load shapes an engine has to survive. The
+editor exposes both through the perf HUD (**F8**).
+
+**Why two presets.** They fail for opposite reasons, and tuning against one produces a
+renderer that collapses on the other:
+
+| | forest | city |
+| --- | --- | --- |
+| shape | many instances, few unique meshes | many unique meshes, fewer objects |
+| carried by | instancing | occlusion culling |
+| occlusion | poor — everything is visible | good — buildings hide each other |
+| pressure | draw submission, overdraw | memory, draw calls |
+
+**Reading the numbers.** `p95` matters more than the average — a run that averages 60fps but
+spikes every second feels broken, and a mean hides that. The `bound` verdict comes from what
+share of the frame is JavaScript: mostly JS means fewer draw calls and less per-frame work;
+mostly *not* JS means the frame is waiting on the GPU, so resolution scale, overdraw and
+shader cost are the levers.
+
+**One honest limitation.** There is no synchronous way to read GPU time from JavaScript —
+`renderer.render()` queues commands and returns. So `submit` is the CPU cost of *issuing*
+draw calls, not how long the GPU took. That number is still worth having (in Three.js it is
+often the bottleneck), but it must not be read as GPU time. Real GPU timing would need
+`EXT_disjoint_timer_query_webgl2`, which is a later addition.
+
+**How to produce the budget table.** Run `npm run dev` on the target device, press F8, pick a
+preset, then move one slider at a time until the frame budget breaks. Record draw calls,
+triangles and render distance at the break point. Those numbers — not estimates — set the
+parameters for the streaming, LOD and instancing work.
+
+### 9.8 What Phase 1 actually ships against this
 
 Chunk-aware serializer, camera-relative seam in the bridge, `ScatterLayer` reserved in the
 component registry, DOM-free engine core. Everything else in §9 is scheduled, not built —

@@ -38,6 +38,7 @@ grouping). Added from the toolbar's *Add* menu; they land where the viewport cam
 | `Del` | Delete | | `Ctrl+G` | Group selected |
 | `F2` | Rename | | `Ctrl+A` | Select all |
 | `Esc` | Deselect | | `Ctrl+S` | Save to local storage |
+| `F8` | Perf HUD | | | |
 
 Coloured axis handles (X red, Y green, Z blue), rotation rings, scale boxes with a centre
 handle for uniform scale. Local/Global space toggle. Grid snapping for move and angle snapping
@@ -66,6 +67,15 @@ the scene as JSON; *Import* reads one back.
 
 **Play** — snapshots the scene, switches the engine's mode flag, and restores on stop.
 Gameplay systems arrive in Phase 3; the seam exists now so they have somewhere to land.
+
+**Performance HUD (`F8`)** — fps, median and p95 frame time, JavaScript vs GPU-bound verdict,
+draw calls, triangles and resource counts. Comes with two stress presets — *forest* (many
+instances of few meshes) and *city* (many unique meshes) — plus live sliders for density, mesh
+variety, render distance, instancing, resolution scale and shadows.
+
+This is how the engine's performance budget gets decided: run it on the device you actually
+target, move one slider at a time, and record where the frame budget breaks. See
+[ARCHITECTURE.md §9.7](./ARCHITECTURE.md).
 
 ## Scene format
 
@@ -101,10 +111,11 @@ untouched, so a scene saved by a newer build never loses data in an older one.
 
 ## What's next
 
-- **Phase 2** — texture slots and upload plus procedural defaults, alpha modes wired to the
-  material UI, texture painting, then scatter painting into `ScatterLayer`, asset browser.
-- **Phase 3** — play/runtime mode with a `Script` component, Cloudflare persistence, and the
-  world-scale systems: streaming, LOD, camera-relative rendering, workers.
+Next up is the performance foundation, driven by numbers from the HUD rather than estimates:
+adaptive quality (the engine holds a target framerate by moving the levers itself), then
+instancing, LOD and chunk streaming. Texturing, paint tools and the asset browser follow.
+`ScatterLayer` and the `Script` component's client/server split are reserved in the schema so
+neither needs a migration.
 
 ## Layout
 

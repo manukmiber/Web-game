@@ -3,6 +3,12 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Engine } from '@engine/loop/Engine';
 import type { RenderBridge } from '@engine/render/RenderBridge';
 import { RenderHost } from '@engine/render/RenderHost';
+import {
+  CITY_PRESET,
+  FOREST_PRESET,
+  StressScene,
+  type StressParams,
+} from '@engine/perf/StressScene';
 import type { EntityId } from '@engine/scene/types';
 import type { CommandHistory } from '../commands/Command';
 import { editorState, useEditorStore } from '../state/editorStore';
@@ -30,6 +36,7 @@ export class ViewportController {
   private gizmo: GizmoController;
   private outline: SelectionOutline;
   private grid = new GroundGrid();
+  private stress: StressScene | null = null;
 
   private axisScene = new THREE.Scene();
   private axisCamera: THREE.PerspectiveCamera;
@@ -51,6 +58,7 @@ export class ViewportController {
     this.host = new RenderHost(engine.scene, {
       canvas: this.canvas,
       pixelRatio: Math.min(devicePixelRatio, 2),
+      stats: engine.stats,
     });
     this.host.overlay = this.overlay;
     this.host.onAfterRender = () => this.renderAxisIndicator();
@@ -81,6 +89,38 @@ export class ViewportController {
     this.resize();
 
     this.bindEvents();
+  }
+
+  /**
+   * Swaps the measurement scene in or out. Lives in the world scene, not the overlay, so it
+   * is measured through exactly the same path as authored content.
+   */
+  setStressScene(preset: 'off' | 'forest' | 'city', overrides: Partial<StressParams> = {}): void {
+    if (preset === 'off') {
+      this.stress?.dispose();
+      this.stress = null;
+      this.engine.stats.reset();
+      return;
+    }
+    const params: StressParams = {
+      ...(preset === 'city' ? CITY_PRESET : FOREST_PRESET),
+      ...overrides,
+    };
+    if (this.stress) {
+      this.stress.rebuild(params);
+    } else {
+      this.stress = new StressScene(params);
+      this.host.scene.add(this.stress.root);
+    }
+    this.engine.stats.reset();
+  }
+
+  stressStats() {
+    return this.stress?.getStats() ?? null;
+  }
+
+  frameReport() {
+    return this.engine.stats.report();
   }
 
   /** Convenience passthrough — plenty of editor code only wants the bridge. */
@@ -252,6 +292,7 @@ export class ViewportController {
     this.gizmo.dispose();
     this.outline.dispose();
     this.grid.dispose();
+    this.stress?.dispose();
     this.orbit.dispose();
     this.host.dispose();
     this.canvas.remove();

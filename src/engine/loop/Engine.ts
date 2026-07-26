@@ -1,6 +1,7 @@
 import { Emitter } from '../core/Emitter';
 import { Scene } from '../scene/Scene';
 import { AssetStore } from '../assets/AssetStore';
+import { FrameStats } from '../perf/FrameStats';
 import { bindAssetStore } from '../render/material';
 import { sceneFromJSON, sceneToJSON } from '../serialization/serialize';
 import '../components';
@@ -37,6 +38,11 @@ export class Engine {
   readonly events = new Emitter<EngineEvents>();
   readonly scene: Scene;
   readonly assets: AssetStore;
+  /**
+   * Frame measurement. Owned here rather than by the renderer because only the loop knows
+   * where a frame begins and ends — the render call is one part of it, not the whole.
+   */
+  readonly stats = new FrameStats();
 
   private systems: System[] = [];
   private mode: EngineMode = 'edit';
@@ -94,10 +100,14 @@ export class Engine {
   }
 
   tick(dt: number): void {
+    this.stats.beginFrame();
     for (const system of this.systems) {
       if (system.runsIn.includes(this.mode)) system.update(dt, this);
     }
+    // Rendering happens inside this emit, so it is inside the measured window.
     this.events.emit('afterUpdate', { dt });
+    this.stats.endFrame();
+    this.stats.record(dt);
   }
 
   /**
