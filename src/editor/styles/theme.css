@@ -1,0 +1,488 @@
+/* Dark editor theme, calibrated against Unity's default dark skin. */
+:root {
+  --bg-app: #1e1e1e;
+  --bg-panel: #383838;
+  --bg-panel-alt: #303030;
+  --bg-header: #2d2d2d;
+  --bg-input: #262626;
+  --bg-hover: #4a4a4a;
+  --bg-viewport: #2b2b2b;
+
+  --accent: #4a9eff;
+  --accent-dim: #2f6ba8;
+  --accent-text: #ffffff;
+
+  --text: #d4d4d4;
+  --text-dim: #9a9a9a;
+  --text-strong: #ffffff;
+
+  --border: #232323;
+  --border-light: #4a4a4a;
+
+  --axis-x: #e05a5a;
+  --axis-y: #7ac74f;
+  --axis-z: #4a9eff;
+
+  --row-height: 22px;
+  --panel-gap: 2px;
+  --radius: 3px;
+
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg-app);
+  color: var(--text);
+  font: 12px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue',
+    Arial, sans-serif;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 3px 9px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+button.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+input,
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 2px 5px;
+  min-width: 0;
+}
+
+input:focus,
+select:focus {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+input[type='color'] {
+  padding: 1px;
+  height: 20px;
+  cursor: pointer;
+}
+
+/* ---------------------------------------------------------------- layout */
+
+.editor {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  height: 100%;
+  gap: var(--panel-gap);
+  background: var(--border);
+}
+
+.editor-body {
+  display: grid;
+  grid-template-columns: 260px 1fr 300px;
+  gap: var(--panel-gap);
+  min-height: 0;
+}
+
+.panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel-alt);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px;
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  flex: 0 0 auto;
+}
+
+.panel-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  min-height: 0;
+}
+
+/* --------------------------------------------------------------- toolbar */
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+
+.toolbar-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.toolbar-divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border-light);
+  opacity: 0.5;
+}
+
+.toolbar-spacer {
+  flex: 1 1 auto;
+}
+
+.tool-button {
+  min-width: 34px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 3px 6px;
+}
+
+.tool-button .hint {
+  font-size: 9px;
+  opacity: 0.6;
+}
+
+.toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.toolbar input[type='number'] {
+  width: 52px;
+}
+
+.status {
+  color: var(--text-dim);
+  font-size: 11px;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------------- hierarchy */
+
+.tree {
+  padding: 4px 0;
+  user-select: none;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: var(--row-height);
+  padding-right: 8px;
+  cursor: default;
+  white-space: nowrap;
+}
+
+.tree-row:hover {
+  background: var(--bg-hover);
+}
+
+.tree-row.selected {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.tree-row.drop-into {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.tree-row.drop-before {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.tree-row.drop-after {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.tree-twisty {
+  width: 14px;
+  flex: 0 0 14px;
+  text-align: center;
+  font-size: 9px;
+  opacity: 0.7;
+  cursor: pointer;
+}
+
+.tree-icon {
+  width: 14px;
+  flex: 0 0 14px;
+  text-align: center;
+  opacity: 0.85;
+  font-size: 11px;
+}
+
+.tree-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tree-rename {
+  flex: 1 1 auto;
+  height: 18px;
+}
+
+.tree-empty {
+  padding: 12px;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+/* ------------------------------------------------------------- inspector */
+
+.inspector-section {
+  border-bottom: 1px solid var(--border);
+}
+
+.inspector-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 5px 8px;
+  background: var(--bg-header);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.inspector-section-body {
+  padding: 6px 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  align-items: center;
+  gap: 6px;
+}
+
+.field > label {
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.field input,
+.field select {
+  width: 100%;
+}
+
+.vec3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+}
+
+.vec3-axis {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.vec3-axis > span {
+  font-weight: 700;
+  font-size: 10px;
+  width: 9px;
+  flex: 0 0 9px;
+}
+
+.vec3-axis.x > span {
+  color: var(--axis-x);
+}
+
+.vec3-axis.y > span {
+  color: var(--axis-y);
+}
+
+.vec3-axis.z > span {
+  color: var(--axis-z);
+}
+
+.entity-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.entity-header input {
+  flex: 1 1 auto;
+  font-weight: 600;
+}
+
+.inspector-empty {
+  padding: 16px;
+  color: var(--text-dim);
+  text-align: center;
+  font-style: italic;
+}
+
+.mixed-note {
+  padding: 6px 8px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+/* -------------------------------------------------------------- viewport */
+
+.viewport {
+  position: relative;
+  background: var(--bg-viewport);
+  overflow: hidden;
+  min-height: 0;
+}
+
+.viewport canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.viewport-hint {
+  position: absolute;
+  right: 10px;
+  bottom: 8px;
+  color: var(--text-dim);
+  font-size: 11px;
+  pointer-events: none;
+  text-align: right;
+  opacity: 0.8;
+}
+
+.play-banner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: 3px;
+  text-align: center;
+  background: var(--accent-dim);
+  color: var(--text-strong);
+  font-size: 11px;
+  pointer-events: none;
+}
+
+/* ---------------------------------------------------------- context menu */
+
+.context-menu {
+  position: fixed;
+  z-index: 100;
+  min-width: 168px;
+  padding: 3px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+}
+
+.context-menu button {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  width: 100%;
+  border: none;
+  background: none;
+  text-align: left;
+  padding: 4px 8px;
+  border-radius: 2px;
+}
+
+.context-menu button:hover:not(:disabled) {
+  background: var(--accent);
+  color: var(--accent-text);
+}
+
+.context-menu .shortcut {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.context-menu button:hover:not(:disabled) .shortcut {
+  color: var(--accent-text);
+  opacity: 0.75;
+}
+
+.context-menu-separator {
+  height: 1px;
+  margin: 3px 4px;
+  background: var(--border-light);
+  opacity: 0.6;
+}
+
+/* --------------------------------------------------------------- scrollbars */
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-panel-alt);
+}
+
+::-webkit-scrollbar-thumb {
+  background: #555;
+  border: 2px solid var(--bg-panel-alt);
+  border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #666;
+}

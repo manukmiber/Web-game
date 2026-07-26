@@ -67,6 +67,12 @@ export class Engine {
     this.systems.splice(index, 1);
   }
 
+  /**
+   * Drives the frame loop on the main thread. This is the one part of the engine that is
+   * inherently main-thread — requestAnimationFrame has no worker equivalent — and it is fine:
+   * what §9.5 needs to move off-thread is the work systems do (chunk generation, physics,
+   * pathfinding), not the clock that ticks them.
+   */
   start(): void {
     if (this.running) return;
     this.running = true;

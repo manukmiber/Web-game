@@ -63,9 +63,19 @@ src/
   runtime/                ← Phase 3 placeholder. Same engine, no panels.
 ```
 
-Enforced by lint rule (`no-restricted-imports`): **`engine/**` may never import from
-`editor/**`.** That one rule is what makes the Phase 3 split a config change rather than a
-rewrite. CI fails if it is violated.
+Enforced by a test, `src/engine/boundary.test.ts`: **`engine/**` may never import from
+`editor/**`, React or Zustand, and may never touch `document`/`window`/`localStorage`.** That
+check is what makes the Phase 3 split a config change rather than a rewrite, and it fails
+`npm test` the moment it is violated.
+
+(It is a test rather than an ESLint rule for a boring reason: `typescript-eslint` does not yet
+support TypeScript 7, and a linter with a broken parser enforces nothing. The constraint is
+what matters, not which tool carries it — if the plugin catches up, moving it back to
+`no-restricted-imports` is a fine swap.)
+
+One deliberate exception: `Engine.start()` uses `requestAnimationFrame`, which has no worker
+equivalent. The frame clock is inherently main-thread; §9.5 is about moving the *work* that
+systems do off-thread, not the clock that ticks them.
 
 The renderer never learns about selection, gizmos, or the grid — those are editor overlays
 that live in a separate `THREE.Scene` layer owned by `editor/viewport`, composited over the
@@ -292,7 +302,25 @@ this extends it to the DOM entirely, enforced by the same lint rule). That keeps
 generation, streaming, pathfinding and physics movable into Web Workers later without
 untangling them from the browser main thread first.
 
-### 9.6 What Phase 1 actually ships against this
+### 9.6 The viewport grid is procedural, not geometry
+
+Worth recording because it is the first place the 25 km target changed an implementation
+rather than a schema. The editor grid is a camera-following quad with the lines computed per
+fragment from world position (`editor/viewport/GroundGrid.ts`), not a `GridHelper`:
+
+- **No extent.** A grid mesh covering 25 km is either millions of wasted vertices or something
+  that has to be rebuilt as the camera travels. This is two triangles wherever the camera is.
+- **No aliasing.** Screen-space derivatives (`fwidth`) hold lines at one pixel wide at any
+  distance or zoom, and fine cells fade out before they turn into moiré. Line geometry cannot
+  do this.
+- **Robustness.** Long line primitives turned out to be genuinely fragile: the software
+  rasterizer in headless Chromium discards line segments needing frustum clipping once the
+  endpoints are far enough apart, so a 200-unit `GridHelper` renders as a thin band at the
+  horizon and nothing else. Verified by pixel readback — a single segment spanning ±10 draws,
+  the same segment spanning ±100 draws zero pixels, while plane meshes are correct out to
+  2000 units. Real GPUs are very likely fine; the procedural grid is immune either way.
+
+### 9.7 What Phase 1 actually ships against this
 
 Chunk-aware serializer, camera-relative seam in the bridge, `ScatterLayer` reserved in the
 component registry, DOM-free engine core. Everything else in §9 is scheduled, not built —

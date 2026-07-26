@@ -71,6 +71,10 @@ export class RenderBridge {
     return out;
   }
 
+  getOriginOffset(): Vec3 {
+    return [...this.originOffset];
+  }
+
   setOriginOffset(offset: Vec3): void {
     this.originOffset = [...offset];
     for (const id of this.scene.rootIds()) this.syncTransform(id);

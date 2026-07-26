@@ -4,7 +4,7 @@ export type Listener<T> = (payload: T) => void;
  * Minimal typed event emitter. Used by the scene to notify the render bridge and the editor
  * panels without either of them knowing the other exists.
  */
-export class Emitter<Events extends Record<string, unknown>> {
+export class Emitter<Events extends object> {
   private listeners = new Map<keyof Events, Set<Listener<never>>>();
 
   on<K extends keyof Events>(event: K, listener: Listener<Events[K]>): () => void {
