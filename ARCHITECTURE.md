@@ -1,6 +1,7 @@
 # Architecture — Web 3D Scene Editor → Mini Game Engine
 
-Status: **confirmed** (see §8). Phase 1 in progress.
+Status: **confirmed** (see §8). Phases 1 and 2 shipped; Phase 3 in progress — the play seam,
+scripting, agents and scene-owned rendering are in (§10), physics and streaming are not.
 
 Two constraints drive every decision below.
 
@@ -48,21 +49,25 @@ src/
     mesh/                   editable quad meshes, primitive generators, modifier stack
     components/             component definitions + registry
     render/                 Three.js bridge (Scene data ──▶ Object3D tree) + RenderHost,
-                            which owns the renderer, camera and frame draw shared by the
-                            editor and the runtime
+                            which owns the renderer, cameras, environment and frame draw
+                            shared by the editor and the runtime
     perf/                   frame measurement + stress-scene generator
     material/               material definitions → THREE.Material
     assets/                 texture/asset store (id → resource)
     serialization/          toJSON / fromJSON + schema version + migrations
     loop/                   Engine: RAF loop, fixed-step update, system list, mode flag
-    systems/                RenderSystem now; ScriptSystem/PhysicsSystem later
+    input/                  key/pointer state as data, written by the host, read by systems
+    scripting/              Script compilation, the script API, ScriptSystem
+    ai/                     steering maths + NpcSystem
+    gameplay/               GameState (health, factions, script vars), CharacterSystem,
+                            and the one call that installs the Play-mode systems
 
   editor/                 ← everything the runtime will NOT ship
-    state/                  Zustand store: selection, active tool, snapping, dirty flag
+    state/                  Zustand store: selection, active tool, snapping, console
     commands/               command pattern + undo/redo stack
-    viewport/               RenderHost host + OrbitControls, TransformControls, grid,
-                            selection outline, picking, axis widget
-    panels/                 Hierarchy, Inspector, Toolbar, AssetBrowser
+    viewport/               RenderHost host + OrbitControls, gizmo, grid, selection
+                            outline, light/camera handles, picking, axis widget
+    panels/                 Hierarchy, Inspector, Toolbar, Console, ScriptEditor
     styles/                 dark Unity-like theme
 
   runtime/                ← Phase 3 placeholder. Same engine, no panels.
@@ -118,6 +123,12 @@ registerComponent({
 Adding `Script`/`Behaviour` in Phase 3 is then *one `registerComponent` call* — the
 serializer, Inspector, undo/redo and hierarchy all handle it generically, with no switch
 statement anywhere to extend. That is the whole point of the registry.
+
+That claim has now been cashed. `Script`, `Camera`, `Light`, `Environment`, `NpcAgent` and
+`CharacterController` were six `registerComponent` calls; the serializer, the undo stack and the
+Hierarchy needed no changes at all, and the Inspector needed none beyond the two panels that are
+genuinely bespoke (the modifier stack and the script source editor). It also meant **no schema
+bump**: the new components are additive, so a scene from the previous build opens untouched.
 
 Unknown component types encountered on load are **preserved verbatim** and round-tripped, so
 a scene saved by a newer build never loses data in an older one.
@@ -235,21 +246,46 @@ Two details that decide whether undo *feels* right:
 
 ---
 
-## 6. Engine loop & the Play-mode seam (Phase 3 groundwork)
+## 6. Engine loop & the Play-mode seam
 
 ```ts
 class Engine {
   mode: 'edit' | 'play';
   systems: System[];          // each declares runsIn: ('edit'|'play')[]
-  tick(dt) { for (const s of this.systems) if (s.runsIn.includes(this.mode)) s.update(dt); }
+  tick(dt) {
+    for (const s of this.systems) if (s.runsIn.includes(this.mode)) s.update(dt, this);
+    this.scene.flushTransforms();   // one event per moved entity, not one per axis
+    this.events.emit('afterUpdate', { dt });   // rendering happens in here
+    this.input.endFrame();          // press/release edges last exactly one tick
+  }
 }
 ```
 
-Entering Play mode therefore is: snapshot scene JSON → flip `mode` → enable
-`ScriptSystem`/`PhysicsSystem` → render through the scene's own camera entity instead of the
-editor camera. Exiting restores the snapshot. **No engine rewrite, no second renderer** — this
-is exactly the seam §2 of the brief asks for, and the Play button in the toolbar is wired to
-it from Phase 1 (disabled until Phase 3 fills in the systems).
+Entering Play mode is: snapshot the scene → flip `mode` → the gameplay systems start ticking →
+render through the scene's own camera entity instead of the editor camera. Exiting restores the
+snapshot. **No engine rewrite, no second renderer, no second scene graph.**
+
+The seam held. Adding scripting, agents and a character controller took no change to this file
+beyond three lines: `input`, `game`, and a `reset` hook on `System`.
+
+**What "restored" has to cover.** The scene snapshot is only half of a play session's state.
+Health, script instances, agent state machines and held keys live outside the scene, so they are
+dropped in `setMode` too — one place with one answer to "what does stopping undo?", rather than
+one answer per system. The `reset(engine)` hook on `System` exists for exactly that, and it fires
+in both directions so a stop-then-start never resumes half a simulation.
+
+**The snapshot is a structural clone, not JSON.** It used to be `sceneToJSON`. Two things were
+wrong with that. The chunked save format buckets entities by world position and writes the
+buckets in key order, so an entity at a negative coordinate came back somewhere else in the
+Hierarchy every time you pressed stop — and "restored exactly as it was" has to mean exactly.
+And a 25 km world should not stringify itself every time someone taps Play.
+
+**Transform writes are batched.** A hundred agents each writing x, y and z through
+`Scene.setTransform` would emit three hundred events a frame, and every listener — render bridge,
+selection outline, gizmo pivot — would run three hundred times for a hundred actual changes.
+Gameplay systems mutate in place and call `markTransformDirty`; the loop flushes one event per
+entity after every system has had its say. Editor commands still use `setTransform`, because a
+gizmo drag is one entity and wants its event immediately.
 
 ---
 
@@ -263,6 +299,8 @@ it from Phase 1 (disabled until Phase 3 fills in the systems).
   (§9.3), asset browser panel, UI polish.
 - **Phase 3** — Play/runtime mode (§6), `Script` component, Cloudflare persistence adapter,
   and the world-scale systems from §9: streaming, LOD, camera-relative rendering, workers.
+  *Shipped so far:* the play seam itself, scripting, NPC agents, a character controller, and
+  scene-owned rendering (§10). Still open: physics and collision, streaming, LOD, workers.
 
 ---
 
@@ -409,3 +447,94 @@ Chunk-aware serializer, camera-relative seam in the bridge, `ScatterLayer` reser
 component registry, DOM-free engine core. Everything else in §9 is scheduled, not built —
 an editor with twelve cubes in it does not need a streaming system, and writing one now would
 mean tuning it against a world that does not exist.
+
+---
+
+## 10. Gameplay: scripting, agents and the game view
+
+Three features landed together because they are one feature: a scene that can be *played*. A
+camera with nothing to look at, agents with no player to chase, and scripts with no way to see
+either would each have been a demo rather than a system.
+
+### 10.1 Rendering belongs to the scene, not to the host
+
+Camera, Light and Environment are **components**, so the runtime gets the editor's look by
+reading the same data and being told nothing. The alternative — a `scene.environment` field, a
+lighting rig configured by whoever constructs the RenderHost — needs a schema migration, a
+bespoke panel and a bespoke undo command. As components they inherit all three from the registry
+for free, which is the payoff §3 predicted.
+
+Three consequences fell out of that:
+
+- **The placeholder lighting rig steps aside** the moment a scene contains one Light of its own.
+  A scene that could not turn off the built-in lights would be impossible to light deliberately.
+- **-Z is forward, everywhere.** Cameras, directional and spot lights, characters and agents all
+  agree, so a camera parented behind a character needs no rotation of its own. Three's default
+  for lights (aim at the world origin) is discarded in favour of a target parked one unit down
+  local -Z, because a light whose rotation does nothing is baffling the first time you rotate one
+  and the shadows stay put.
+- **The game camera is synced, not parented.** The active Camera entity's world matrix is
+  decomposed and its position and rotation copied onto a `PerspectiveCamera` that lives outside
+  the bridge's tree. Parenting would be less code and would inherit the entity's *scale* into the
+  view matrix, quietly distorting the projection of any camera under a scaled parent.
+- **The sky is a shader on an inverted sphere**, not `scene.background`. A gradient background
+  would have to be generated, generating one means a canvas, and the engine may not touch the
+  DOM (§9.5). Same reasoning as the procedural grid in §9.6.
+
+### 10.2 Scripting: what the sandbox is and is not
+
+A `Script` component's source is compiled with `new Function`, once per unique source text and
+cached — so a hundred zombies sharing a behaviour compile once. Per-entity variation goes in
+`props`, which is also what keeps that cache effective, and what gives the Inspector something to
+show without parsing the script.
+
+Hooks are picked up by name (`start`, `update`, `destroy`) rather than returned by the author.
+`typeof` on an undeclared identifier is the one construct that does not throw under strict mode,
+which is what makes "define only the hooks you need, return nothing" work.
+
+Roughly forty globals — `window`, `document`, `fetch`, `setTimeout`, `Function` — are shadowed to
+`undefined` by being declared as parameters of the wrapper. **This is a guard rail, not a
+security boundary, and the code says so.** It stops the accidents: a DOM reach, a timer that
+keeps firing into a scene that no longer exists after Play stops. It does not contain hostile
+code. `eval` cannot be shadowed at all — it is illegal as a parameter name in strict mode — and
+`({}).constructor.constructor` rebuilds `Function` from nothing. Scene JSON is therefore
+executable code and has to be treated as such.
+
+Real isolation is a Worker or a sandboxed iframe with its own CSP. That is the same change as
+fixing the other honest limitation — an infinite loop in a script hangs the tab, because nothing
+can interrupt synchronous JavaScript on the main thread — and it needs the script API to be
+message-based first. Freezing the API's *shape* now, while it is small, is what makes that
+migration tractable later.
+
+What is enforced today: every hook call is wrapped, a throw is reported to the editor console
+once and parks that instance, and every other script keeps running. An exception escaping into
+`Engine.tick` would kill the loop and with it the editor's viewport — for a typo in one of a
+hundred scripts.
+
+### 10.3 Agents keep no state in their components
+
+`NpcAgent` is configuration only: factions, senses, speeds. No `state`, no `currentTarget`, no
+health that ticks down. All of that lives in the NpcSystem's own map and in `GameState`, because
+§6 promises Play mode restores the scene exactly — and a zombie that persisted its half-empty
+health bar into the saved scene would break that promise quietly, one field at a time.
+
+Wander is seeded per entity from its id, so a crowd is deterministic. That is not decoration: it
+is the difference between "does this agent stay inside its wander radius" being an exact test and
+a flaky one.
+
+The steering maths is pure functions over numbers (`engine/ai/steering.ts`) with the state
+machine on top, so the parts worth testing — shortest-arc turning, arrival without overshoot,
+uniform disc sampling — are testable without a Scene, an Engine or a frame loop.
+
+**System order is a design decision, not an accident.** Scripts run first, so a decision a script
+makes is visible to everything else in the same frame. The character moves next, so agents chase
+where the player *is* rather than where they were a frame ago — a one-frame lag that is invisible
+at 60 fps and very visible at 20.
+
+### 10.4 What is deliberately missing
+
+No physics, no collision, no navigation mesh, and sight is distance rather than line of sight.
+Agents and the character walk through walls. This is the largest remaining gap and it is left
+open on purpose: a hand-rolled half-physics would be harder to remove later than a real one is to
+add now, and the state machine is shaped so line of sight and pathfinding slot into `findTarget`
+and the movement step rather than needing a rewrite.

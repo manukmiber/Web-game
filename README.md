@@ -1,11 +1,15 @@
 # Web 3D Scene Editor
 
-A browser-based 3D scene editor, built as the first stage of a web game engine. Scenes
-authored here are meant to be *played* later by the same core — so the engine is a standalone,
-UI-free library and the editor is one consumer of it.
+A browser-based 3D scene editor and the core of a web game engine. Scenes authored here are
+*played* by the same code that drew them — the engine is a standalone, UI-free library and the
+editor is one consumer of it.
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for the design, and §9 for what the 25 km × 25 km
-open-world target forces us to decide up front.
+Press **Play** and the scene runs: the camera becomes the scene's own, scripts tick, the
+character walks and the zombies notice.
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for the design and §9 for what the 25 km × 25 km
+open-world target forces us to decide up front, and [docs/SCRIPTING.md](./docs/SCRIPTING.md) for
+the script API.
 
 ## Running it
 
@@ -22,7 +26,7 @@ npm run dev        # http://localhost:5173
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run check` | Typecheck + tests |
 
-## Phase 1 — what works today
+## Authoring
 
 **Primitives** — Box, Sphere, Icosphere, Plane, Cylinder, Capsule, Cone, Torus, Tube, and Empty
 (transform only, for grouping). Added from the toolbar's *Add* menu; they land where the
@@ -98,9 +102,6 @@ sibling position, on undo.
 **Save/load** — autosaves to browser local storage and restores on reload. *Export* downloads
 the scene as JSON; *Import* reads one back.
 
-**Play** — snapshots the scene, switches the engine's mode flag, and restores on stop.
-Gameplay systems arrive in Phase 3; the seam exists now so they have somewhere to land.
-
 **Performance HUD (`F8`)** — fps, median and p95 frame time, JavaScript vs GPU-bound verdict,
 draw calls, triangles and resource counts. Comes with two stress presets — *forest* (many
 instances of few meshes) and *city* (many unique meshes) — plus live sliders for density, mesh
@@ -109,6 +110,65 @@ variety, render distance, instancing, resolution scale and shadows.
 This is how the engine's performance budget gets decided: run it on the device you actually
 target, move one slider at a time, and record where the frame budget breaks. See
 [ARCHITECTURE.md §9.7](./ARCHITECTURE.md).
+
+## The scene renders itself
+
+Three components describe how a scene looks, rather than the editor deciding for it. That is
+what makes the editor viewport and a shipped game agree: the runtime reads the same components
+and is told nothing.
+
+| Component | What it does |
+| --- | --- |
+| **Camera** | fov, clip planes, and which one Play mode looks through. First primary camera wins |
+| **Light** | Directional, Point or Spot, with colour, intensity, range, cone and shadow controls |
+| **Environment** | Gradient sky or flat colour, ambient light, linear or exponential fog |
+
+Lights and cameras aim along their entity's **-Z**, the same way a Three.js camera does — so a
+camera parented behind a character needs no rotation of its own to look where the character
+looks, and rotating a sun moves its shadows.
+
+Both render nothing on their own, so the viewport draws a handle for each one; the handle is also
+what you click to select it. They disappear in Play mode along with the grid, the gizmo and the
+selection outline. The built-in lighting rig stays out of the way the moment a scene adds a Light
+of its own.
+
+## Play mode
+
+**Play** snapshots the scene, renders through the scene's own camera, and runs three systems:
+scripts, the character controller, and the NPC agents. **Stop** (or `Esc`) restores the snapshot
+exactly — positions, spawned entities, health, script state, all of it.
+
+| Key | Action |
+| --- | --- |
+| `W` `S` / `↑` `↓` | Walk forward and back |
+| `A` `D` | Strafe |
+| `←` `→` or `Q` `E` | Turn |
+| `Shift` | Sprint |
+| `Esc` | Stop and restore |
+
+**Scripting** — a `Script` component runs JavaScript on its entity, with `start`, `update(dt)`
+and `destroy` hooks and an API for the entity, the scene, input, time, gameplay state and the
+console. Editing the source while playing reloads that behaviour on the next frame. A script
+that throws is reported to the console and parked; the rest keep running. Per-entity tunables
+live in `props`, which is also why twenty entities sharing a script compile it once. Full
+reference in [docs/SCRIPTING.md](./docs/SCRIPTING.md), including an honest account of what the
+sandbox does and does not protect.
+
+**NPCs** — an `NpcAgent` component gives an entity a faction, senses and speeds; the NpcSystem
+runs the state machine over them: idle → wander → chase → attack, or flee for the things that
+run. Three archetypes (Zombie, Villager, Animal) are presets, not behaviour — every field stays
+editable. Wander is seeded per entity, so a crowd is deterministic and testable rather than
+merely random.
+
+**Characters** — a `CharacterController` is the player-driven entity, kinematic and pinned to a
+ground height. There is no physics yet, so it walks through walls. A Camera parented to it is the
+whole third-person rig; the transform hierarchy does the following.
+
+**Console** — script output and combat events, with the entity attached: click a message to
+select whatever produced it.
+
+Add any of it from the toolbar's **Game ▾** menu: Player, Zombie, Villager, Animal, Camera,
+lights, Environment, or a Game Logic object carrying an example spawner script.
 
 ## Scene format
 
@@ -145,13 +205,17 @@ untouched, so a scene saved by a newer build never loses data in an older one.
 
 ## What's next
 
-Modelling: edit mode (vertex/edge/face selection with extrude, inset and loop cut), splines
-with lathe and sweep generators, and Boolean — which needs robust CSG and is deliberately not
+Gameplay: collision and gravity, which is the largest gap — agents and the character currently
+walk through walls and each other. Then line-of-sight instead of plain distance for NPC senses,
+navigation around obstacles, and moving scripts into a Worker, which is the same change as
+making the sandbox a real one.
+
+Modelling: edit mode (vertex/edge/face selection with extrude, inset and loop cut), splines with
+lathe and sweep generators, and Boolean — which needs robust CSG and is deliberately not
 attempted yet.
 
-Engine: adaptive quality driven by the HUD's numbers, then instancing, LOD and chunk
-streaming. `ScatterLayer` and the `Script` component's client/server split are reserved in the
-schema so neither needs a migration.
+Engine: adaptive quality driven by the HUD's numbers, then instancing, LOD and chunk streaming.
+`ScatterLayer` is reserved in the schema so it needs no migration.
 
 ## Versions
 
@@ -161,7 +225,12 @@ schema so neither needs a migration.
 git checkout release/v0.1.0   # Phase 1 editor MVP
 git checkout release/v0.2.0   # RenderHost + performance harness
 git checkout release/v0.3.0   # Editable meshes + modifier stack
+git checkout release/v0.4.0   # More primitives, bevel and utility modifiers
 ```
+
+This version adds scripting, NPCs and scene-owned rendering. It needed **no schema change** —
+the new components are additive, and unknown ones already round-trip, so a scene saved by the
+previous build opens untouched and one saved by this build opens in it minus the new behaviour.
 
 CI (`.github/workflows/ci.yml`) runs typecheck, tests and build on every push and pull
 request. It needs GitHub Actions enabled on the repository to do anything.
@@ -170,9 +239,10 @@ request. It needs GitHub Actions enabled on the repository to do anything.
 
 ```
 src/
-  engine/    core — scene graph, mesh pipeline, components, render host,
-             serialization, loop. No React, no DOM. This is what the runtime uses.
-  editor/    panels, gizmo, undo/redo, persistence. Editor only.
+  engine/    core — scene graph, mesh pipeline, components, render host, serialization,
+             loop, scripting, AI, gameplay, input. No React, no DOM. This is what the
+             runtime uses.
+  editor/    panels, gizmo, undo/redo, persistence, console. Editor only.
 ```
 
 `src/engine/boundary.test.ts` enforces that split.

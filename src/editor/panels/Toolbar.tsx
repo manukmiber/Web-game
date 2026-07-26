@@ -1,8 +1,9 @@
 import { useRef } from 'react';
+import { PREFAB_MENU, createPrefab, type PrefabKind } from '@engine/scene/prefabs';
 import { PRIMITIVE_MENU, createPrimitiveEntity, type PrimitiveKind } from '@engine/scene/primitives';
 import { useEditor } from '../EditorContext';
 import { useEditorStore, type TransformTool } from '../state/editorStore';
-import { AddEntityCommand } from '../commands/sceneCommands';
+import { AddEntitiesCommand, AddEntityCommand } from '../commands/sceneCommands';
 import {
   AUTOSAVE_KEY,
   exportSceneFile,
@@ -59,6 +60,16 @@ export function Toolbar({ spawnPoint }: Props) {
     );
     run(command);
     setSelection([command.entityId]);
+  };
+
+  /** Prefabs can be several entities — a Player brings its camera — so they add as a group. */
+  const addPrefab = (kind: PrefabKind) => {
+    const command = new AddEntitiesCommand(
+      engine.scene,
+      createPrefab(kind, { position: spawnPoint() }),
+    );
+    run(command);
+    setSelection(command.rootIds);
   };
 
   const onSave = async () => {
@@ -167,6 +178,23 @@ export function Toolbar({ spawnPoint }: Props) {
             </option>
           ))}
         </select>
+        <select
+          value=""
+          onChange={(event) => {
+            if (event.currentTarget.value) addPrefab(event.currentTarget.value as PrefabKind);
+            event.currentTarget.value = '';
+          }}
+          title="Create a gameplay object — character, camera, light, environment"
+        >
+          <option value="" disabled>
+            Game ▾
+          </option>
+          {PREFAB_MENU.map((kind) => (
+            <option key={kind} value={kind}>
+              {kind}
+            </option>
+          ))}
+        </select>
       </div>
 
       <div className="toolbar-divider" />
@@ -230,7 +258,7 @@ export function Toolbar({ spawnPoint }: Props) {
         <button
           className={playing ? 'active' : ''}
           onClick={() => engine.setMode(playing ? 'edit' : 'play')}
-          title="Enter play mode. Gameplay systems arrive in Phase 3; the scene is snapshotted and restored on exit."
+          title="Run scripts, NPCs and the character controller through the scene's own camera. The scene is snapshotted and restored on stop. Esc stops."
         >
           {playing ? '■ Stop' : '▶ Play'}
         </button>

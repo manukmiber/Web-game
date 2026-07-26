@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { installGameplaySystems, type GameplaySystems } from '@engine/gameplay/systems';
 import { Engine } from '@engine/loop/Engine';
 import type { Command } from './commands/Command';
 import { CommandHistory } from './commands/Command';
@@ -9,6 +10,8 @@ export interface EditorContextValue {
   engine: Engine;
   history: CommandHistory;
   storage: ScenePersistence;
+  /** The Play-mode systems, kept for their diagnostics — script messages, agent states. */
+  systems: GameplaySystems;
   /** Runs a command through the history so it lands on the undo stack. */
   run(command: Command): void;
 }
@@ -20,8 +23,12 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   // recreating an Engine would drop the WebGL context.
   const engineRef = useRef<Engine>(null);
   const historyRef = useRef<CommandHistory>(null);
+  const systemsRef = useRef<GameplaySystems>(null);
   engineRef.current ??= new Engine();
   historyRef.current ??= new CommandHistory();
+  // Guarded rather than called inline: StrictMode runs this body twice in development, and a
+  // second install would tick every gameplay system twice per frame.
+  systemsRef.current ??= installGameplaySystems(engineRef.current);
 
   const value = useMemo<EditorContextValue>(() => {
     const engine = engineRef.current!;
@@ -29,16 +36,48 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     return {
       engine,
       history,
+      systems: systemsRef.current!,
       storage: new LocalStorageAdapter(),
       run: (command) => history.execute(command),
     };
   }, []);
 
   useEffect(() => {
-    const { engine, history } = value;
+    const { engine, history, systems } = value;
     const store = useEditorStore.getState();
+    const nameOf = (id: string | null) =>
+      (id && engine.scene.get(id)?.name) || (id ? 'something' : 'nothing');
 
     const unsubscribes = [
+      // Script output and gameplay events both land in the editor console, which is the only
+      // window into a play session — nothing else reports why a zombie stopped moving.
+      systems.scripts.events.on('message', (message) =>
+        useEditorStore.getState().pushConsole({
+          level: message.level,
+          source: message.source,
+          text: message.text,
+          entityId: message.entityId,
+        }),
+      ),
+      engine.game.events.on('damaged', ({ id, amount, health, sourceId }) => {
+        // Every zombie swing would drown the console; the player being hit is the one thing
+        // you always want to see.
+        if (!engine.scene.get(id)?.components.some((c) => c.type === 'CharacterController')) return;
+        useEditorStore.getState().pushConsole({
+          level: 'warn',
+          source: 'Combat',
+          text: `${nameOf(sourceId)} hit ${nameOf(id)} for ${amount} — ${health} left`,
+          entityId: id,
+        });
+      }),
+      engine.game.events.on('died', ({ id, sourceId }) =>
+        useEditorStore.getState().pushConsole({
+          level: 'warn',
+          source: 'Combat',
+          text: sourceId ? `${nameOf(id)} was killed by ${nameOf(sourceId)}` : `${nameOf(id)} died`,
+          entityId: id,
+        }),
+      ),
       history.events.on('changed', ({ canUndo, canRedo }) =>
         useEditorStore.getState().setHistoryState(canUndo, canRedo),
       ),

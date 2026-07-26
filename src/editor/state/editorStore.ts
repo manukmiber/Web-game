@@ -38,6 +38,23 @@ export const DEFAULT_PERF: PerfSettings = {
   shadowMapSize: 2048,
 };
 
+export interface ConsoleMessage {
+  id: number;
+  level: 'log' | 'warn' | 'error' | 'info';
+  /** Which script or system produced it. */
+  source: string;
+  text: string;
+  entityId: EntityId | null;
+}
+
+/**
+ * Old messages are dropped rather than kept.
+ *
+ * A script logging every frame produces 3,600 lines a minute; an unbounded array would turn
+ * the console into a memory leak with a scrollbar.
+ */
+const CONSOLE_LIMIT = 200;
+
 interface EditorState {
   selection: EntityId[];
   /** Anchor for shift-range selection in the Hierarchy. */
@@ -56,6 +73,8 @@ interface EditorState {
   canRedo: boolean;
   statusMessage: string | null;
   perf: PerfSettings;
+  consoleMessages: ConsoleMessage[];
+  consoleVisible: boolean;
 
   setSelection(ids: EntityId[]): void;
   toggleSelection(id: EntityId): void;
@@ -70,7 +89,12 @@ interface EditorState {
   setHistoryState(canUndo: boolean, canRedo: boolean): void;
   setStatusMessage(message: string | null): void;
   setPerf(patch: Partial<PerfSettings>): void;
+  pushConsole(message: Omit<ConsoleMessage, 'id'>): void;
+  clearConsole(): void;
+  setConsoleVisible(visible: boolean): void;
 }
+
+let consoleCounter = 0;
 
 /**
  * Editor UI state — selection, active tool, snapping. Deliberately separate from the Scene:
@@ -96,6 +120,8 @@ export const useEditorStore = create<EditorState>((set) => ({
   canRedo: false,
   statusMessage: null,
   perf: { ...DEFAULT_PERF },
+  consoleMessages: [],
+  consoleVisible: false,
 
   setSelection: (ids) => set({ selection: ids, lastSelected: ids[ids.length - 1] ?? null }),
   toggleSelection: (id) =>
@@ -115,6 +141,18 @@ export const useEditorStore = create<EditorState>((set) => ({
   setHistoryState: (canUndo, canRedo) => set({ canUndo, canRedo }),
   setStatusMessage: (statusMessage) => set({ statusMessage }),
   setPerf: (patch) => set((state) => ({ perf: { ...state.perf, ...patch } })),
+  pushConsole: (message) =>
+    set((state) => {
+      consoleCounter += 1;
+      const next = [...state.consoleMessages, { ...message, id: consoleCounter }];
+      return {
+        consoleMessages: next.length > CONSOLE_LIMIT ? next.slice(-CONSOLE_LIMIT) : next,
+        // An error is worth interrupting for; a log line is not.
+        consoleVisible: state.consoleVisible || message.level === 'error',
+      };
+    }),
+  clearConsole: () => set({ consoleMessages: [] }),
+  setConsoleVisible: (consoleVisible) => set({ consoleVisible }),
 }));
 
 /** Reads current state outside React (gizmo handlers, keyboard shortcuts). */
