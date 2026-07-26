@@ -11,6 +11,7 @@ export * from './components';
 export * from './serialization/schema';
 export * from './serialization/serialize';
 export * from './render/RenderBridge';
+export * from './render/RenderHost';
 export * from './render/geometry';
 export * from './render/material';
 export * from './render/ResourceCache';

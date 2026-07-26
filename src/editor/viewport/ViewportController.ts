@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import type { Engine } from '@engine/loop/Engine';
-import { RenderBridge } from '@engine/render/RenderBridge';
+import type { RenderBridge } from '@engine/render/RenderBridge';
+import { RenderHost } from '@engine/render/RenderHost';
 import type { EntityId } from '@engine/scene/types';
 import type { CommandHistory } from '../commands/Command';
 import { editorState, useEditorStore } from '../state/editorStore';
@@ -14,18 +15,16 @@ const AXIS_INDICATOR_PX = 96;
 const CLICK_SLOP_PX = 4;
 
 /**
- * Owns the canvas: renderer, editor camera, lighting, grid, picking and the gizmo.
+ * The editor's viewport: a RenderHost plus the tools that only the editor has.
  *
- * This is the editor's presentation layer. The scene contents come from the RenderBridge —
- * shared with the future runtime — while the grid, gizmo and selection outline live in a
- * separate overlay scene that the runtime will simply never construct.
+ * Rendering itself lives in `engine/render/RenderHost` so the game runtime draws through the
+ * exact same path. What remains here is everything a runtime would never construct — orbit
+ * controls, the transform gizmo, the ground grid, selection outlines, click picking and the
+ * axis indicator.
  */
 export class ViewportController {
-  readonly bridge: RenderBridge;
+  readonly host: RenderHost;
 
-  private renderer: THREE.WebGLRenderer;
-  private camera: THREE.PerspectiveCamera;
-  private scene = new THREE.Scene();
   private overlay = new THREE.Scene();
   private orbit: OrbitControls;
   private gizmo: GizmoController;
@@ -37,6 +36,7 @@ export class ViewportController {
 
   private raycaster = new THREE.Raycaster();
   private pointerDownAt: { x: number; y: number } | null = null;
+  private canvas: HTMLCanvasElement;
   private resizeObserver: ResizeObserver;
   private unsubscribes: (() => void)[] = [];
 
@@ -45,39 +45,33 @@ export class ViewportController {
     private readonly engine: Engine,
     history: CommandHistory,
   ) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
-    this.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    this.renderer.setClearColor(0x2b2b2b);
-    // The axis indicator draws in a second pass over the same canvas, so the main pass must
-    // not clear it away.
-    this.renderer.autoClear = false;
-    container.appendChild(this.renderer.domElement);
+    this.canvas = document.createElement('canvas');
+    container.appendChild(this.canvas);
 
-    this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 5000);
-    this.camera.position.set(8, 6, 10);
+    this.host = new RenderHost(engine.scene, {
+      canvas: this.canvas,
+      pixelRatio: Math.min(devicePixelRatio, 2),
+    });
+    this.host.overlay = this.overlay;
+    this.host.onAfterRender = () => this.renderAxisIndicator();
 
-    this.bridge = new RenderBridge(engine.scene);
-    this.scene.add(this.bridge.root);
-    this.buildEnvironment();
-
-    this.orbit = new OrbitControls(this.camera, this.renderer.domElement);
+    this.orbit = new OrbitControls(this.host.camera, this.canvas);
     this.orbit.enableDamping = true;
     this.orbit.dampingFactor = 0.12;
     this.orbit.screenSpacePanning = false;
     this.orbit.maxPolarAngle = Math.PI * 0.98;
 
     this.gizmo = new GizmoController(
-      this.camera,
-      this.renderer.domElement,
+      this.host.camera,
+      this.canvas,
       engine.scene,
-      this.bridge,
+      this.host.bridge,
       history,
       this.overlay,
     );
-    this.outline = new SelectionOutline(this.bridge);
+    this.outline = new SelectionOutline(this.host.bridge);
     this.overlay.add(this.outline.object);
+    this.overlay.add(this.grid.mesh);
 
     this.axisCamera = new THREE.PerspectiveCamera(50, 1, 0.1, 10);
     this.buildAxisIndicator();
@@ -89,32 +83,16 @@ export class ViewportController {
     this.bindEvents();
   }
 
-  // ------------------------------------------------------------------ setup
-
-  private buildEnvironment(): void {
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.35));
-
-    const key = new THREE.DirectionalLight(0xffffff, 1.6);
-    key.position.set(12, 20, 8);
-    key.castShadow = true;
-    key.shadow.mapSize.set(2048, 2048);
-    // Tight frustum around the working area — a shadow camera sized for 25 km would have no
-    // usable resolution. Cascaded shadows arrive with the streaming work in Phase 3.
-    const extent = 30;
-    key.shadow.camera.left = -extent;
-    key.shadow.camera.right = extent;
-    key.shadow.camera.top = extent;
-    key.shadow.camera.bottom = -extent;
-    key.shadow.camera.far = 120;
-    key.shadow.bias = -0.0005;
-    this.scene.add(key);
-
-    const fill = new THREE.DirectionalLight(0x8fb3ff, 0.3);
-    fill.position.set(-10, 8, -12);
-    this.scene.add(fill);
-
-    this.overlay.add(this.grid.mesh);
+  /** Convenience passthrough — plenty of editor code only wants the bridge. */
+  get bridge(): RenderBridge {
+    return this.host.bridge;
   }
+
+  private get camera(): THREE.PerspectiveCamera {
+    return this.host.camera;
+  }
+
+  // ------------------------------------------------------------------ setup
 
   private buildAxisIndicator(): void {
     const axes = new THREE.AxesHelper(1);
@@ -124,10 +102,9 @@ export class ViewportController {
   }
 
   private bindEvents(): void {
-    const canvas = this.renderer.domElement;
-    canvas.addEventListener('pointerdown', this.onPointerDown);
-    canvas.addEventListener('pointerup', this.onPointerUp);
-    canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+    this.canvas.addEventListener('pointerdown', this.onPointerDown);
+    this.canvas.addEventListener('pointerup', this.onPointerUp);
+    this.canvas.addEventListener('contextmenu', (event) => event.preventDefault());
 
     this.unsubscribes.push(
       this.engine.events.on('afterUpdate', () => this.render()),
@@ -198,7 +175,7 @@ export class ViewportController {
   };
 
   private pick(event: PointerEvent): EntityId | null {
-    const rect = this.renderer.domElement.getBoundingClientRect();
+    const rect = this.canvas.getBoundingClientRect();
     const pointer = new THREE.Vector2(
       ((event.clientX - rect.left) / rect.width) * 2 - 1,
       -((event.clientY - rect.top) / rect.height) * 2 + 1,
@@ -248,45 +225,36 @@ export class ViewportController {
 
   private resize(): void {
     const { clientWidth, clientHeight } = this.container;
-    if (clientWidth === 0 || clientHeight === 0) return;
-    this.renderer.setSize(clientWidth, clientHeight, false);
-    this.camera.aspect = clientWidth / clientHeight;
-    this.camera.updateProjectionMatrix();
+    this.host.setSize(clientWidth, clientHeight);
   }
 
   private render(): void {
     this.orbit.enabled = !this.gizmo.isDragging;
     this.orbit.update();
     this.grid.update(this.camera);
+    this.host.render();
+  }
 
-    const { clientWidth, clientHeight } = this.container;
-    this.renderer.clear();
-    this.renderer.setViewport(0, 0, clientWidth, clientHeight);
-    this.renderer.render(this.scene, this.camera);
-    this.renderer.render(this.overlay, this.camera);
-
-    // Axis indicator, bottom-left, sharing the camera's orientation.
+  /** Bottom-left orientation widget, sharing the main camera's rotation. */
+  private renderAxisIndicator(): void {
     this.axisCamera.position.set(0, 0, 3).applyQuaternion(this.camera.quaternion);
     this.axisCamera.quaternion.copy(this.camera.quaternion);
-    this.renderer.clearDepth();
-    this.renderer.setViewport(12, 12, AXIS_INDICATOR_PX, AXIS_INDICATOR_PX);
-    this.renderer.render(this.axisScene, this.axisCamera);
-    this.renderer.setViewport(0, 0, clientWidth, clientHeight);
+    this.host.renderer.clearDepth();
+    this.host.renderer.setViewport(12, 12, AXIS_INDICATOR_PX, AXIS_INDICATOR_PX);
+    this.host.renderer.render(this.axisScene, this.axisCamera);
   }
 
   dispose(): void {
     for (const unsubscribe of this.unsubscribes) unsubscribe();
     this.resizeObserver.disconnect();
-    const canvas = this.renderer.domElement;
-    canvas.removeEventListener('pointerdown', this.onPointerDown);
-    canvas.removeEventListener('pointerup', this.onPointerUp);
+    this.canvas.removeEventListener('pointerdown', this.onPointerDown);
+    this.canvas.removeEventListener('pointerup', this.onPointerUp);
     this.gizmo.dispose();
     this.outline.dispose();
     this.grid.dispose();
     this.orbit.dispose();
-    this.bridge.dispose();
-    this.renderer.dispose();
-    canvas.remove();
+    this.host.dispose();
+    this.canvas.remove();
   }
 }
 
