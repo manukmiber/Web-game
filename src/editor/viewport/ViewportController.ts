@@ -158,6 +158,7 @@ export class ViewportController {
           this.gizmo.setSelection(state.selection);
           this.outline.update(state.selection);
         }
+        if (state.shading !== previous.shading) this.host.setShadingMode(state.shading);
         if (state.tool !== previous.tool) this.gizmo.setTool(state.tool);
         if (state.space !== previous.space) this.gizmo.setSpace(state.space);
         if (
@@ -177,6 +178,7 @@ export class ViewportController {
     );
 
     const initial = editorState();
+    this.host.setShadingMode(initial.shading);
     this.gizmo.setTool(initial.tool);
     this.gizmo.setSpace(initial.space);
     this.gizmo.setSnapping(
@@ -259,6 +261,9 @@ export class ViewportController {
   private refreshOverlays(): void {
     this.gizmo.syncPivot();
     this.outline.update(editorState().selection);
+    // The wireframe mirrors evaluated geometry, so it has to be rebuilt whenever the mesh
+    // changes — a modifier edit replaces the geometry entirely.
+    if (this.host.getShadingMode() !== 'shaded') this.host.applyShading();
   }
 
   // ------------------------------------------------------------------ frame

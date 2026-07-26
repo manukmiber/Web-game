@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import type { EntityId } from '@engine/scene/types';
 import type { StressPreset } from '@engine/perf/StressScene';
+import type { ShadingMode } from '@engine/render/RenderHost';
 
 export type TransformTool = 'select' | 'move' | 'rotate' | 'scale';
 export type TransformSpace = 'local' | 'world';
@@ -48,6 +49,7 @@ interface EditorState {
   rotateSnap: number;
   scaleSnap: number;
   playing: boolean;
+  shading: ShadingMode;
   /** Bumped whenever scene structure changes, to re-render the Hierarchy tree. */
   sceneRevision: number;
   canUndo: boolean;
@@ -63,6 +65,7 @@ interface EditorState {
   setSnapEnabled(enabled: boolean): void;
   setSnapValues(values: Partial<Pick<EditorState, 'moveSnap' | 'rotateSnap' | 'scaleSnap'>>): void;
   setPlaying(playing: boolean): void;
+  setShading(shading: ShadingMode): void;
   bumpSceneRevision(): void;
   setHistoryState(canUndo: boolean, canRedo: boolean): void;
   setStatusMessage(message: string | null): void;
@@ -87,6 +90,7 @@ export const useEditorStore = create<EditorState>((set) => ({
   rotateSnap: 15,
   scaleSnap: 0.1,
   playing: false,
+  shading: 'shaded',
   sceneRevision: 0,
   canUndo: false,
   canRedo: false,
@@ -106,6 +110,7 @@ export const useEditorStore = create<EditorState>((set) => ({
   setSnapEnabled: (snapEnabled) => set({ snapEnabled }),
   setSnapValues: (values) => set(values),
   setPlaying: (playing) => set({ playing }),
+  setShading: (shading) => set({ shading }),
   bumpSceneRevision: () => set((state) => ({ sceneRevision: state.sceneRevision + 1 })),
   setHistoryState: (canUndo, canRedo) => set({ canUndo, canRedo }),
   setStatusMessage: (statusMessage) => set({ statusMessage }),

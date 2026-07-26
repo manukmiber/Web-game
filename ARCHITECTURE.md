@@ -45,6 +45,7 @@ Two constraints drive every decision below.
 src/
   engine/                 ← pure core. NO React, NO DOM-editor imports, NO editor concepts.
     scene/                  Scene, Entity, Transform, hierarchy ops
+    mesh/                   editable quad meshes, primitive generators, modifier stack
     components/             component definitions + registry
     render/                 Three.js bridge (Scene data ──▶ Object3D tree) + RenderHost,
                             which owns the renderer, camera and frame draw shared by the
@@ -130,7 +131,7 @@ example.
 
 ```jsonc
 {
-  "version": 1,
+  "version": 2,
   "name": "Untitled Scene",
   "world": { "chunkSize": 256 },
   "assets": [ { "id": "tex_1", "type": "texture", "name": "crate.png", "src": "data:…" } ],
@@ -144,7 +145,8 @@ example.
           "parentId": null,
           "transform": { "position": [0,0,0], "rotation": [0,0,0], "scale": [1,1,1] },
           "components": [
-            { "type": "MeshRenderer", "primitive": "Box", "params": { "widthSegments": 1 } },
+            { "type": "MeshRenderer", "primitive": "Box", "params": { "widthSegments": 1 },
+              "modifiers": [ { "type": "Subdivide", "enabled": true, "levels": 2 } ] },
             { "type": "Material", "color": "#ffffff", "alpha": 1, "mode": "Opaque",
               "metalness": 0, "roughness": 0.8, "map": null }
           ]
@@ -156,10 +158,53 @@ example.
 ```
 
 `version` + a `migrations` table means the schema can evolve without breaking saved scenes.
+This has now been exercised once: **v1 → v2** added the `modifiers` array and renamed Plane's
+second axis from `height` to `depth`, and the migration rewrites both so scenes saved before
+the mesh pipeline still open correctly.
 Chunk payloads are separable — the Cloudflare adapter (§8.2) will store them as individual
 objects rather than one document.
 
 ---
+
+## 3b. Mesh pipeline
+
+Primitives are not opaque parametric blobs. Each one generates an **editable quad mesh**
+(`engine/mesh/MeshData.ts`), which then runs through a **non-destructive modifier stack**
+before being triangulated for the GPU:
+
+```
+primitive params ──▶ MeshData (quads) ──▶ modifier stack ──▶ BufferGeometry
+```
+
+**Why quads rather than triangles.** Every modelling operation worth having depends on quad
+topology. Catmull-Clark subdivision on triangles produces pinched, uneven surfaces; extrude,
+inset and bevel are face operations, and a triangulated cube has twelve faces to push instead
+of six; edge loops only exist in quads at all. Triangulation happens exactly once, at the end.
+
+**Why a stack rather than baked edits.** Non-destructive is what makes the editor comparable
+to Blender's modifiers or C4D's generators — change the source primitive's segment count and
+everything downstream re-evaluates. Order is meaningful and editable: Mirror then Array tiles
+a mirrored pair, Array then Mirror mirrors a whole row.
+
+Modifiers register through their own registry (`engine/mesh/modifiers/registry.ts`) using the
+same field schemas the component Inspector uses, so a new modifier is one file plus one import
+— no Inspector, serializer or undo changes. Unknown modifier types are skipped rather than
+throwing, matching how unknown components are handled.
+
+Shipping now: Subdivide (full Catmull-Clark, with the open-mesh boundary and pinned-corner
+rules), Bevel, Mirror, Array, Solidify, Twist, Bend, Taper, Noise Displace, Weld, Triangulate
+and Shade.
+
+Still to come: edit mode (vertex/edge/face selection with extrude, inset, loop cut), splines
+with lathe/sweep generators, and Boolean — which needs robust CSG and is deliberately not
+attempted yet.
+
+**Testing closed surfaces.** Winding correctness is checked with signed volume via the
+divergence theorem, not a centroid-dot-normal test. The centroid test only holds for convex
+shapes — a torus face on the inside of the ring legitimately points back toward the axis — and
+it silently passed an inside-out torus that signed volume caught immediately. A second check
+verifies each directed edge appears exactly once with exactly one opposite, which catches holes
+and individually flipped faces that a global volume check would average away.
 
 ## 4. Render bridge
 

@@ -35,6 +35,8 @@ export function Toolbar({ spawnPoint }: Props) {
   const canUndo = useEditorStore((s) => s.canUndo);
   const canRedo = useEditorStore((s) => s.canRedo);
   const playing = useEditorStore((s) => s.playing);
+  const shading = useEditorStore((s) => s.shading);
+  const setShading = useEditorStore((s) => s.setShading);
   const statusMessage = useEditorStore((s) => s.statusMessage);
   const setTool = useEditorStore((s) => s.setTool);
   const setSpace = useEditorStore((s) => s.setSpace);
@@ -164,6 +166,20 @@ export function Toolbar({ spawnPoint }: Props) {
               {kind}
             </option>
           ))}
+        </select>
+      </div>
+
+      <div className="toolbar-divider" />
+
+      <div className="toolbar-group">
+        <select
+          value={shading}
+          onChange={(event) => setShading(event.currentTarget.value as typeof shading)}
+          title="Viewport shading — wireframe shows what the modifier stack did to the topology"
+        >
+          <option value="shaded">Shaded</option>
+          <option value="shadedWireframe">Shaded + Wireframe</option>
+          <option value="wireframe">Wireframe</option>
         </select>
       </div>
 

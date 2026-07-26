@@ -1,9 +1,5 @@
 import { useEffect, useState } from 'react';
-import {
-  getComponentDefinition,
-  listComponentDefinitions,
-  type FieldSchema,
-} from '@engine/components/registry';
+import { getComponentDefinition, listComponentDefinitions } from '@engine/components/registry';
 import type { Component, EntityId, Transform } from '@engine/scene/types';
 import { useEditor } from '../EditorContext';
 import { useEditorStore } from '../state/editorStore';
@@ -15,7 +11,9 @@ import {
   SetTransformCommand,
   readPath,
 } from '../commands/sceneCommands';
-import { Field, NumberField, Section, Vec3Field } from './fields';
+import { Field, Section, Vec3Field } from './fields';
+import { ComponentField } from './ComponentField';
+import { ModifierStack } from './ModifierStack';
 
 type TransformKey = keyof Transform;
 
@@ -147,28 +145,38 @@ export function Inspector() {
         </Section>
 
         {sharedTypes.map((type) => (
-          <ComponentSection
-            key={type}
-            type={type}
-            component={primary.components.find((c) => c.type === type)!}
-            entityIds={entities.map((e) => e.id)}
-            onRemove={() => {
-              for (const entity of entities) {
-                run(new RemoveComponentCommand(scene, entity.id, type));
-              }
-            }}
-            onChange={(path, value) => {
-              run(
-                new SetComponentPropertyCommand(
-                  scene,
-                  entities.map((e) => e.id),
-                  type,
-                  path,
-                  value,
-                ),
-              );
-            }}
-          />
+          <div key={type}>
+            <ComponentSection
+              type={type}
+              component={primary.components.find((c) => c.type === type)!}
+              entityIds={entities.map((e) => e.id)}
+              onRemove={() => {
+                for (const entity of entities) {
+                  run(new RemoveComponentCommand(scene, entity.id, type));
+                }
+              }}
+              onChange={(path, value) => {
+                run(
+                  new SetComponentPropertyCommand(
+                    scene,
+                    entities.map((e) => e.id),
+                    type,
+                    path,
+                    value,
+                  ),
+                );
+              }}
+            />
+            {/* The stack belongs to the mesh pipeline, so it sits directly under its renderer.
+                Single selection only: reordering a stack across several objects at once has
+                no unambiguous meaning. */}
+            {type === 'MeshRenderer' && !multi && (
+              <ModifierStack
+                entityId={primary.id}
+                renderer={primary.components.find((c) => c.type === 'MeshRenderer')! as never}
+              />
+            )}
+          </div>
         ))}
 
         {multi && sharedTypes.length < primary.components.length && (
@@ -248,82 +256,4 @@ function ComponentSection({ type, component, onRemove, onChange }: ComponentSect
       ))}
     </Section>
   );
-}
-
-function ComponentField({
-  schema,
-  value,
-  onChange,
-}: {
-  schema: FieldSchema;
-  value: unknown;
-  onChange(value: unknown): void;
-}) {
-  switch (schema.kind) {
-    case 'number':
-      return (
-        <Field label={schema.label}>
-          <NumberField
-            value={typeof value === 'number' ? value : 0}
-            min={schema.min}
-            max={schema.max}
-            step={schema.step}
-            integer={schema.integer}
-            onChange={onChange}
-          />
-        </Field>
-      );
-    case 'boolean':
-      return (
-        <Field label={schema.label}>
-          <input
-            type="checkbox"
-            checked={Boolean(value)}
-            style={{ justifySelf: 'start', width: 'auto' }}
-            onChange={(event) => onChange(event.currentTarget.checked)}
-          />
-        </Field>
-      );
-    case 'color':
-      return (
-        <Field label={schema.label}>
-          <input
-            type="color"
-            value={typeof value === 'string' ? value : '#ffffff'}
-            onChange={(event) => onChange(event.currentTarget.value)}
-          />
-        </Field>
-      );
-    case 'enum':
-      return (
-        <Field label={schema.label}>
-          <select value={String(value ?? '')} onChange={(event) => onChange(event.currentTarget.value)}>
-            {schema.options.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </Field>
-      );
-    case 'string':
-      return (
-        <Field label={schema.label}>
-          <input
-            value={typeof value === 'string' ? value : ''}
-            onChange={(event) => onChange(event.currentTarget.value)}
-            onKeyDown={(event) => event.stopPropagation()}
-          />
-        </Field>
-      );
-    case 'asset':
-      // Texture slots need the asset browser to be useful; wired up in Phase 2.
-      return (
-        <Field label={schema.label}>
-          <input value={typeof value === 'string' ? value : 'None'} disabled />
-        </Field>
-      );
-    default:
-      return null;
-  }
 }

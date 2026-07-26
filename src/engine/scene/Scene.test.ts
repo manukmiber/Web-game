@@ -87,6 +87,21 @@ describe('Scene components', () => {
     expect(scene.getComponent(id, 'Material')).toBeUndefined();
   });
 
+  it('sizes a default Plane as square ground, not a strip', () => {
+    // Guards the axis rename: Plane is width x depth, and setting `height` here silently left
+    // the depth at its 1 m default, producing a 10x1 sliver of ground.
+    const { scene, ids } = sceneWith('Plane');
+    const params = scene.getComponent(ids[0]!, 'MeshRenderer')?.params as Record<string, number>;
+
+    expect(params.width).toBe(10);
+    expect(params.depth).toBe(10);
+  });
+
+  it('starts every primitive with an empty modifier stack', () => {
+    const { scene, ids } = sceneWith('Box');
+    expect(scene.getComponent(ids[0]!, 'MeshRenderer')?.modifiers).toEqual([]);
+  });
+
   it('gives an Empty only a transform', () => {
     const { scene, ids } = sceneWith('Empty');
     expect(scene.expect(ids[0]!).components).toEqual([]);

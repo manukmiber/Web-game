@@ -3,7 +3,7 @@ import { createMaterial, type MaterialComponent } from '../components/Material';
 import type { MeshRendererComponent } from '../components/MeshRenderer';
 import type { Scene } from '../scene/Scene';
 import type { Entity, EntityId, Vec3 } from '../scene/types';
-import { geometryCache, geometryKey } from './geometry';
+import { acquireGeometry, geometryCache } from './geometry';
 import { materialCache, materialKey } from './material';
 
 const DEG2RAD = Math.PI / 180;
@@ -209,7 +209,7 @@ export class RenderBridge {
     const material = entity.components.find(
       (c): c is MaterialComponent => c.type === 'Material',
     );
-    const nextGeometryKey = geometryKey(renderer);
+
     // A mesh without a Material component falls back to the component defaults rather than a
     // sentinel, so the key stays parseable by the cache factory.
     const nextMaterialKey = materialKey(material ?? createMaterial());
@@ -222,11 +222,14 @@ export class RenderBridge {
 
     // Acquire before release: if the key is unchanged, this keeps the refcount above zero and
     // avoids disposing a resource we're about to ask for again.
+    const { key: nextGeometryKey, geometry } = acquireGeometry(renderer);
     if (node.geometryKey !== nextGeometryKey) {
-      const geometry = geometryCache.acquire(nextGeometryKey);
       if (node.geometryKey) geometryCache.release(node.geometryKey);
       node.geometryKey = nextGeometryKey;
       node.mesh.geometry = geometry;
+    } else {
+      // Same key: acquire bumped the refcount, so give it straight back.
+      geometryCache.release(nextGeometryKey);
     }
     if (node.materialKey !== nextMaterialKey) {
       const nextMaterial = materialCache.acquire(nextMaterialKey);

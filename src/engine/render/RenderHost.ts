@@ -3,6 +3,9 @@ import type { FrameStats } from '../perf/FrameStats';
 import type { Scene } from '../scene/Scene';
 import { RenderBridge } from './RenderBridge';
 
+export const SHADING_MODES = ['shaded', 'wireframe', 'shadedWireframe'] as const;
+export type ShadingMode = (typeof SHADING_MODES)[number];
+
 export interface RenderHostOptions {
   /**
    * Injected rather than created. Two reasons: the engine must not touch `document`
@@ -51,6 +54,8 @@ export class RenderHost {
   private resolutionScale = 1;
   private keyLight: THREE.DirectionalLight | null = null;
   private stats: FrameStats | null;
+  private shading: ShadingMode = 'shaded';
+  private wireframeOverlay = new THREE.Group();
 
   constructor(engineScene: Scene, options: RenderHostOptions) {
     const {
@@ -85,6 +90,9 @@ export class RenderHost {
 
     this.bridge = new RenderBridge(engineScene);
     this.scene.add(this.bridge.root);
+    this.wireframeOverlay.name = 'WireframeOverlay';
+    this.wireframeOverlay.visible = false;
+    this.scene.add(this.wireframeOverlay);
 
     if (defaultLighting) this.buildDefaultLighting();
   }
@@ -194,6 +202,64 @@ export class RenderHost {
     this.scene.add(fill);
   }
 
+  /**
+   * Viewport shading. Wireframe is not decoration — with a modifier stack it is the only way
+   * to see what subdivision actually did to the topology, and where a deformer is stretching
+   * faces thin.
+   *
+   * `shadedWireframe` draws edges over the solid surface, which is how Blender and C4D show
+   * topology in context. Built by walking the rendered meshes rather than the source mesh
+   * data, so it reflects the post-modifier result.
+   */
+  setShadingMode(mode: ShadingMode): void {
+    if (mode === this.shading) return;
+    this.shading = mode;
+    this.applyShading();
+    this.stats?.reset();
+  }
+
+  getShadingMode(): ShadingMode {
+    return this.shading;
+  }
+
+  /** Re-applies shading. Call after the scene changes, since new meshes need the treatment. */
+  applyShading(): void {
+    const solidVisible = this.shading !== 'wireframe';
+    this.bridge.root.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (mesh.isMesh) mesh.visible = solidVisible && mesh.userData.entityVisible !== false;
+    });
+
+    this.rebuildWireframe();
+    this.wireframeOverlay.visible = this.shading !== 'shaded';
+  }
+
+  private rebuildWireframe(): void {
+    for (const child of [...this.wireframeOverlay.children]) {
+      child.removeFromParent();
+      const line = child as THREE.LineSegments;
+      line.geometry?.dispose();
+    }
+    if (this.shading === 'shaded') return;
+
+    const material = new THREE.LineBasicMaterial({
+      color: this.shading === 'wireframe' ? 0x9ad0ff : 0x000000,
+      transparent: true,
+      opacity: this.shading === 'wireframe' ? 0.9 : 0.28,
+    });
+
+    this.bridge.root.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh || !mesh.geometry) return;
+      const lines = new THREE.LineSegments(new THREE.WireframeGeometry(mesh.geometry), material);
+      // Match the mesh's world transform without reparenting it out of the bridge's tree.
+      mesh.updateMatrixWorld(true);
+      lines.matrixAutoUpdate = false;
+      lines.matrix.copy(mesh.matrixWorld);
+      this.wireframeOverlay.add(lines);
+    });
+  }
+
   /** Shadow quality tier, driven by adaptive quality in Stage 2. */
   setShadowsEnabled(enabled: boolean): void {
     if (this.renderer.shadowMap.enabled === enabled) return;
@@ -219,6 +285,7 @@ export class RenderHost {
   }
 
   dispose(): void {
+    this.setShadingMode('shaded');
     this.bridge.dispose();
     this.renderer.dispose();
     this.onAfterRender = null;

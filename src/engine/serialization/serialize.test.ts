@@ -130,6 +130,70 @@ describe('parseScene', () => {
     expect(scene.rootIds()).toEqual(['child']);
   });
 
+  it('migrates a v1 Plane from height to depth', () => {
+    const data = parseScene({
+      version: 1,
+      entities: [
+        {
+          id: 'e1',
+          components: [
+            { type: 'MeshRenderer', primitive: 'Plane', params: { width: 10, height: 8 } },
+          ],
+        },
+      ],
+    });
+
+    const component = data.chunks[0]!.entities[0]!.components[0]! as Record<string, unknown>;
+    const params = component.params as Record<string, unknown>;
+    expect(params.depth).toBe(8);
+    expect(params.height).toBeUndefined();
+    expect(component.modifiers).toEqual([]);
+  });
+
+  it('leaves a non-Plane primitive height alone during the migration', () => {
+    const data = parseScene({
+      version: 1,
+      entities: [
+        { id: 'e1', components: [{ type: 'MeshRenderer', primitive: 'Cylinder', params: { height: 3 } }] },
+      ],
+    });
+
+    const params = (data.chunks[0]!.entities[0]!.components[0]! as Record<string, unknown>)
+      .params as Record<string, unknown>;
+    expect(params.height).toBe(3);
+  });
+
+  it('migrates a document that predates the version field', () => {
+    const data = parseScene({
+      entities: [
+        { id: 'e1', components: [{ type: 'MeshRenderer', primitive: 'Plane', params: { height: 4 } }] },
+      ],
+    });
+
+    const params = (data.chunks[0]!.entities[0]!.components[0]! as Record<string, unknown>)
+      .params as Record<string, unknown>;
+    expect(params.depth).toBe(4);
+  });
+
+  it('round-trips a modifier stack', () => {
+    const scene = new Scene();
+    const entity = scene.add(createPrimitiveEntity('Box'));
+    scene.updateComponent(entity.id, 'MeshRenderer', {
+      modifiers: [
+        { type: 'Subdivide', enabled: true, levels: 2, smooth: true },
+        { type: 'Twist', enabled: false, axis: 'Y', angle: 45 },
+      ],
+    });
+
+    const restored = new Scene();
+    sceneFromJSON(restored, sceneToJSON(scene));
+    const modifiers = restored.getComponent(entity.id, 'MeshRenderer')?.modifiers as unknown[];
+
+    expect(modifiers).toHaveLength(2);
+    expect(modifiers[0]).toMatchObject({ type: 'Subdivide', levels: 2 });
+    expect(modifiers[1]).toMatchObject({ type: 'Twist', enabled: false });
+  });
+
   it('refuses a scene from a newer schema version', () => {
     expect(() => parseScene({ version: 99, entities: [] })).toThrow(SceneParseError);
   });
