@@ -31,7 +31,9 @@ const DEFAULT_NAMES: Record<PrimitiveKind, string> = {
  * the 1 m grid. Plane gets 10x10 because it is nearly always used as ground.
  */
 const DEFAULT_PARAMS: Partial<Record<PrimitiveKind, Record<string, number>>> = {
-  Plane: { width: 10, height: 10 },
+  // Plane lies in XZ, so its second axis is depth. Setting `height` here silently
+  // left it at the default 1 and produced a 10x1 strip.
+  Plane: { width: 10, depth: 10 },
   Capsule: { radius: 0.5, height: 1 },
   Cylinder: { radiusTop: 0.5, radiusBottom: 0.5, height: 1 },
   Cone: { radius: 0.5, height: 1 },

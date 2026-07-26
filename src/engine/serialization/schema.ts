@@ -1,6 +1,6 @@
 import type { AssetRecord, Component, Entity, Vec3, WorldSettings } from '../scene/types';
 
-export const SCENE_SCHEMA_VERSION = 1;
+export const SCENE_SCHEMA_VERSION = 2;
 
 export interface SerializedChunk {
   /** "cx,cz" — derived from entity world position, never authored. */
@@ -16,25 +16,57 @@ export interface SerializedScene {
   chunks: SerializedChunk[];
 }
 
-/**
- * Migrations run in order for any scene older than SCENE_SCHEMA_VERSION.
- *
- * Empty at v1 — the table exists so the first schema change is an entry here rather than a
- * decision about whether saved scenes are worth keeping.
- */
+/** Migrations run in order for any scene older than SCENE_SCHEMA_VERSION. */
 export type Migration = (data: Record<string, unknown>) => Record<string, unknown>;
 
-export const migrations: Record<number, Migration> = {};
+/**
+ * v1 -> v2: primitives became editable quad meshes with a modifier stack.
+ *
+ * Two things changed on disk. Plane is now sized by `width` x `depth` rather than
+ * `width` x `height`, because it lies in the XZ plane and calling its second axis "height"
+ * was always confusing. And every MeshRenderer gained a `modifiers` array.
+ *
+ * This is the migration table earning its keep: without it, every scene saved before this
+ * change would open with a Plane of the wrong size and no obvious reason why.
+ */
+function migrateV1ToV2(data: Record<string, unknown>): Record<string, unknown> {
+  const visitEntity = (entity: unknown) => {
+    if (!isRecord(entity) || !Array.isArray(entity.components)) return;
+    for (const component of entity.components) {
+      if (!isRecord(component) || component.type !== 'MeshRenderer') continue;
+      component.modifiers ??= [];
+      const params = isRecord(component.params) ? component.params : undefined;
+      if (component.primitive === 'Plane' && params && typeof params.height === 'number') {
+        params.depth ??= params.height;
+        delete params.height;
+      }
+    }
+  };
+
+  if (Array.isArray(data.entities)) for (const entity of data.entities) visitEntity(entity);
+  if (Array.isArray(data.chunks)) {
+    for (const chunk of data.chunks) {
+      if (isRecord(chunk) && Array.isArray(chunk.entities)) {
+        for (const entity of chunk.entities) visitEntity(entity);
+      }
+    }
+  }
+  return data;
+}
+
+export const migrations: Record<number, Migration> = {
+  1: migrateV1ToV2,
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
 export class SceneParseError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'SceneParseError';
   }
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function parseVec3(value: unknown, fallback: Vec3): Vec3 {
@@ -93,7 +125,9 @@ export function parseScene(raw: unknown): SerializedScene {
   if (!isRecord(raw)) throw new SceneParseError('Scene must be a JSON object');
 
   let data = raw;
-  const version = typeof data.version === 'number' ? data.version : 0;
+  // A document with no version predates the field entirely; treat it as v1 so it still runs
+  // through the v1 -> v2 migration rather than skipping it.
+  const version = typeof data.version === 'number' ? data.version : 1;
   if (version > SCENE_SCHEMA_VERSION) {
     throw new SceneParseError(
       `Scene was saved with schema v${version}, but this build only understands v${SCENE_SCHEMA_VERSION}`,

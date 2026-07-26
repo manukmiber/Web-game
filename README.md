@@ -26,6 +26,26 @@ npm run dev        # http://localhost:5173
 
 **Primitives** — Box, Sphere, Plane, Cylinder, Capsule, Cone, and Empty (transform only, for
 grouping). Added from the toolbar's *Add* menu; they land where the viewport camera is looking.
+Each generates an editable **quad mesh** with segment controls, not a fixed triangle blob.
+
+**Modifier stack** — non-destructive, reorderable, evaluated over the generated mesh:
+
+| Modifier | What it does |
+| --- | --- |
+| Subdivide | Full Catmull-Clark, up to 4 levels, with correct open-mesh and corner rules |
+| Mirror | Reflects across X/Y/Z, welding the seam so it stays one smooth surface |
+| Array | Repeats with relative and constant offsets |
+| Solidify | Gives a surface thickness, closing open borders with rim faces |
+| Twist / Bend / Taper | Deformers, parameterised against the object's own bounds |
+| Noise Displace | Deterministic, position-hashed so welded seams do not tear |
+
+Order matters and is editable — Mirror then Array tiles a mirrored pair, Array then Mirror
+mirrors a whole row. Each entry toggles on and off without being removed, and the evaluated
+vertex/face/triangle count is shown live so you can see what a modifier costs before keeping
+it.
+
+**Viewport shading** — Shaded, Shaded + Wireframe, or Wireframe. Wireframe is how you actually
+see what subdivision did to the topology.
 
 **Transform tools** — Unity's hotkeys and gizmos.
 
@@ -85,7 +105,7 @@ untouched, so a scene saved by a newer build never loses data in an older one.
 
 ```jsonc
 {
-  "version": 1,
+  "version": 2,
   "name": "Untitled Scene",
   "world": { "chunkSize": 256 },
   "assets": [],
@@ -99,7 +119,8 @@ untouched, so a scene saved by a newer build never loses data in an older one.
           "parentId": null,
           "transform": { "position": [0, 0, 0], "rotation": [0, 0, 0], "scale": [1, 1, 1] },
           "components": [
-            { "type": "MeshRenderer", "primitive": "Box", "params": { "width": 1 } },
+            { "type": "MeshRenderer", "primitive": "Box", "params": { "width": 1 },
+              "modifiers": [] },
             { "type": "Material", "color": "#cccccc", "alpha": 1, "mode": "Opaque" }
           ]
         }
@@ -111,18 +132,29 @@ untouched, so a scene saved by a newer build never loses data in an older one.
 
 ## What's next
 
-Next up is the performance foundation, driven by numbers from the HUD rather than estimates:
-adaptive quality (the engine holds a target framerate by moving the levers itself), then
-instancing, LOD and chunk streaming. Texturing, paint tools and the asset browser follow.
-`ScatterLayer` and the `Script` component's client/server split are reserved in the schema so
-neither needs a migration.
+Modelling: edit mode (vertex/edge/face selection with extrude, inset, bevel and loop cut),
+splines with lathe and sweep generators, and Boolean — which needs robust CSG and is
+deliberately not attempted yet.
+
+Engine: adaptive quality driven by the HUD's numbers, then instancing, LOD and chunk
+streaming. `ScatterLayer` and the `Script` component's client/server split are reserved in the
+schema so neither needs a migration.
+
+## Versions
+
+`main` holds the stable line. Release branches mark known-good states to roll back to:
+
+```bash
+git checkout release/v0.1.0   # Phase 1 editor MVP
+git checkout release/v0.2.0   # RenderHost + performance harness
+```
 
 ## Layout
 
 ```
 src/
-  engine/    core — scene graph, components, render bridge, serialization, loop.
-             No React, no DOM. This is what the game runtime will use.
+  engine/    core — scene graph, mesh pipeline, components, render host,
+             serialization, loop. No React, no DOM. This is what the runtime uses.
   editor/    panels, gizmo, undo/redo, persistence. Editor only.
 ```
 

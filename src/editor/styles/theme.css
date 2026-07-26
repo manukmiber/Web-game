@@ -628,3 +628,67 @@ input[type='color'] {
   min-width: 0;
   overflow: hidden;
 }
+
+/* ------------------------------------------------------- modifier stack */
+
+.modifier-count {
+  color: var(--text-dim);
+  font-weight: 400;
+}
+
+.mesh-stats {
+  display: flex;
+  gap: 10px;
+  padding: 5px 8px;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  border-bottom: 1px solid var(--border);
+}
+
+.mesh-stats .heavy {
+  color: #e0b64a;
+}
+
+.modifier-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.modifier {
+  border-bottom: 1px solid var(--border);
+}
+
+.modifier-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--bg-panel-alt);
+}
+
+.modifier-header input[type='checkbox'] {
+  accent-color: var(--accent);
+  flex: 0 0 auto;
+}
+
+.modifier-name {
+  flex: 1 1 auto;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modifier-header button {
+  padding: 1px 5px;
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.modifier-body {
+  padding: 5px 8px 7px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
