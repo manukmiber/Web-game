@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { createPrimitiveEntity } from '@engine/scene/primitives';
+import { createStarterScene } from '@engine/scene/prefabs';
 import { EditorProvider, useEditor } from './EditorContext';
+import { Console } from './panels/Console';
 import { Hierarchy } from './panels/Hierarchy';
 import { Inspector } from './panels/Inspector';
 import { PerfHud } from './panels/PerfHud';
@@ -23,8 +24,10 @@ function EditorShell() {
       .catch(() => false)
       .then((restored) => {
         if (cancelled || restored || engine.scene.size > 0) return;
-        engine.scene.add(createPrimitiveEntity('Plane', { name: 'Ground' }));
-        engine.scene.add(createPrimitiveEntity('Box', { position: [0, 0.5, 0] }));
+        // A playable scene rather than two grey primitives: press Play and the character
+        // walks, the camera follows and the zombies notice. Everything this version added is
+        // invisible until something in the scene uses it.
+        for (const entity of createStarterScene()) engine.scene.add(entity);
       });
     return () => {
       cancelled = true;
@@ -44,6 +47,7 @@ function EditorShell() {
         <div className="viewport-host">
           <Viewport onReady={setViewport} />
           <PerfHud viewport={viewport} />
+          <Console />
         </div>
         <Inspector />
       </div>

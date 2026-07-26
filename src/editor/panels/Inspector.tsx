@@ -14,6 +14,7 @@ import {
 import { Field, Section, Vec3Field } from './fields';
 import { ComponentField } from './ComponentField';
 import { ModifierStack } from './ModifierStack';
+import { ScriptEditor } from './ScriptEditor';
 
 type TransformKey = keyof Transform;
 
@@ -174,6 +175,14 @@ export function Inspector() {
               <ModifierStack
                 entityId={primary.id}
                 renderer={primary.components.find((c) => c.type === 'MeshRenderer')! as never}
+              />
+            )}
+            {/* Same reasoning as the modifier stack: the source belongs directly under its
+                component, and editing one across a multi-selection has no clear meaning. */}
+            {type === 'Script' && !multi && (
+              <ScriptEditor
+                entityId={primary.id}
+                script={primary.components.find((c) => c.type === 'Script')! as never}
               />
             )}
           </div>

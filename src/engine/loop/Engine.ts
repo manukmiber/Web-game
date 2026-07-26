@@ -1,12 +1,40 @@
 import { Emitter } from '../core/Emitter';
 import { Scene } from '../scene/Scene';
 import { AssetStore } from '../assets/AssetStore';
+import { GameState } from '../gameplay/GameState';
+import { InputState } from '../input/InputState';
 import { FrameStats } from '../perf/FrameStats';
 import { bindAssetStore } from '../render/material';
-import { sceneFromJSON, sceneToJSON } from '../serialization/serialize';
+import type { AssetRecord, Entity, WorldSettings } from '../scene/types';
 import '../components';
 
 export type EngineMode = 'edit' | 'play';
+
+interface SceneSnapshot {
+  name: string;
+  world: WorldSettings;
+  entities: Entity[];
+  assets: AssetRecord[];
+}
+
+/**
+ * Deep copy of the scene, for Play mode's restore.
+ *
+ * A structural clone rather than a JSON round trip through the serializer, which is what this
+ * used to be. Two reasons, both learned by watching it: the chunked format buckets entities by
+ * world position and writes the buckets in key order, so an entity at a negative coordinate
+ * came back in a different place in the Hierarchy every time you pressed stop — "the scene is
+ * restored exactly as it was" has to mean exactly. And a 25 km world should not stringify
+ * itself every time someone taps Play.
+ */
+function snapshotScene(scene: Scene): SceneSnapshot {
+  return {
+    name: scene.name,
+    world: { ...scene.world },
+    entities: scene.all().map((entity) => structuredClone(entity)),
+    assets: scene.listAssets().map((asset) => ({ ...asset })),
+  };
+}
 
 export interface System {
   readonly name: string;
@@ -14,6 +42,14 @@ export interface System {
   readonly runsIn: readonly EngineMode[];
   /** dt in seconds. */
   update(dt: number, engine: Engine): void;
+  /**
+   * Called on every mode change, after the scene has been snapshotted or restored.
+   *
+   * This is where a gameplay system drops the state it accumulated during a play session —
+   * script instances, agent state machines. Without it, stopping and starting Play would
+   * resume a half-finished simulation over a freshly restored scene.
+   */
+  reset?(engine: Engine): void;
   dispose?(): void;
 }
 
@@ -43,6 +79,10 @@ export class Engine {
    * where a frame begins and ends — the render call is one part of it, not the whole.
    */
   readonly stats = new FrameStats();
+  /** Key and pointer state, written by whoever hosts the canvas and read by systems. */
+  readonly input = new InputState();
+  /** Runtime gameplay state — health, factions, script variables. Cleared on every mode change. */
+  readonly game = new GameState();
 
   private systems: System[] = [];
   private mode: EngineMode = 'edit';
@@ -50,7 +90,7 @@ export class Engine {
   private lastTime = 0;
   private frameHandle: number | null = null;
   /** Scene snapshot taken on entering play, restored on exit. §6 */
-  private playSnapshot: string | null = null;
+  private playSnapshot: SceneSnapshot | null = null;
 
   constructor(scene = new Scene(), assets = new AssetStore()) {
     this.scene = scene;
@@ -104,27 +144,38 @@ export class Engine {
     for (const system of this.systems) {
       if (system.runsIn.includes(this.mode)) system.update(dt, this);
     }
+    // Systems mutate transforms in place and mark them dirty; this is where those become one
+    // event per entity, after every system has had its say and before anything renders.
+    this.scene.flushTransforms();
     // Rendering happens inside this emit, so it is inside the measured window.
     this.events.emit('afterUpdate', { dt });
     this.stats.endFrame();
     this.stats.record(dt);
+    // Edges (`wasPressed`) last exactly one tick, so this has to be after the systems ran.
+    this.input.endFrame();
   }
 
   /**
    * Play mode snapshots the scene so runtime mutations (a zombie walking, a crop growing) are
-   * discarded on exit — the same guarantee Unity gives. Phase 1 has no systems that mutate,
-   * so this is groundwork; it is here now because retrofitting it after gameplay systems
-   * exist means auditing every one of them for what they touched.
+   * discarded on exit — the same guarantee Unity gives.
+   *
+   * The scene is only half of it. Everything a play session accumulates outside the scene —
+   * health, script instances, agent state machines, held keys — is dropped here too, in one
+   * place, so "what does stopping actually undo?" has a single answer rather than one per
+   * system.
    */
   setMode(mode: EngineMode): void {
     if (mode === this.mode) return;
     if (mode === 'play') {
-      this.playSnapshot = sceneToJSON(this.scene, false);
+      this.playSnapshot = snapshotScene(this.scene);
     } else if (this.playSnapshot) {
-      sceneFromJSON(this.scene, this.playSnapshot);
+      this.scene.load(this.playSnapshot);
       this.playSnapshot = null;
     }
     this.mode = mode;
+    this.game.reset();
+    this.input.clear();
+    for (const system of this.systems) system.reset?.(this);
     this.events.emit('modeChanged', { mode });
   }
 

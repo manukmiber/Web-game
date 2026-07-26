@@ -1,7 +1,11 @@
 import * as THREE from 'three';
+import type { CameraComponent } from '../components/Camera';
+import type { EnvironmentComponent } from '../components/Environment';
 import type { FrameStats } from '../perf/FrameStats';
 import type { Scene } from '../scene/Scene';
+import type { EntityId } from '../scene/types';
 import { RenderBridge } from './RenderBridge';
+import { SkyDome, applyFog } from './environment';
 
 export const SHADING_MODES = ['shaded', 'wireframe', 'shadedWireframe'] as const;
 export type ShadingMode = (typeof SHADING_MODES)[number];
@@ -38,7 +42,10 @@ export interface RenderHostOptions {
  */
 export class RenderHost {
   readonly renderer: THREE.WebGLRenderer;
+  /** The free-look camera. The editor drives it; Play mode renders through a scene camera. */
   readonly camera: THREE.PerspectiveCamera;
+  /** Stand-in for whichever Camera entity is active. */
+  readonly gameCamera: THREE.PerspectiveCamera;
   /** Scene contents projected from the entity data. */
   readonly scene = new THREE.Scene();
   readonly bridge: RenderBridge;
@@ -57,6 +64,16 @@ export class RenderHost {
   private shading: ShadingMode = 'shaded';
   private wireframeOverlay = new THREE.Group();
 
+  private readonly engineScene: Scene;
+  /** The placeholder rig, hidden the moment the scene has a Light component of its own. */
+  private defaultLights = new THREE.Group();
+  private ambient = new THREE.AmbientLight(0xffffff, 0);
+  private sky: SkyDome | null = null;
+  private clearColor: number;
+  private activeCameraEntity: EntityId | null = null;
+  private environmentDirty = false;
+  private unsubscribes: (() => void)[] = [];
+
   constructor(engineScene: Scene, options: RenderHostOptions) {
     const {
       canvas,
@@ -69,6 +86,8 @@ export class RenderHost {
     } = options;
 
     this.stats = stats;
+    this.engineScene = engineScene;
+    this.clearColor = clearColor;
 
     this.basePixelRatio = pixelRatio;
 
@@ -87,14 +106,154 @@ export class RenderHost {
 
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 5000);
     this.camera.position.set(8, 6, 10);
+    this.gameCamera = new THREE.PerspectiveCamera(60, 1, 0.1, 2000);
 
     this.bridge = new RenderBridge(engineScene);
     this.scene.add(this.bridge.root);
     this.wireframeOverlay.name = 'WireframeOverlay';
     this.wireframeOverlay.visible = false;
     this.scene.add(this.wireframeOverlay);
+    this.scene.add(this.ambient);
 
     if (defaultLighting) this.buildDefaultLighting();
+
+    // The environment and the lighting fallback are both decided by what components exist, so
+    // they resync on exactly the events that can change that.
+    // Marked rather than applied: resolving the environment scans the scene, and a script
+    // spawning a hundred entities in a frame would otherwise scan it a hundred times. The
+    // flag collapses that to one scan before the next draw.
+    const { events } = engineScene;
+    const invalidate = () => {
+      this.environmentDirty = true;
+    };
+    this.unsubscribes.push(
+      events.on('componentsChanged', invalidate),
+      events.on('entityAdded', invalidate),
+      events.on('entityRemoved', invalidate),
+      events.on('sceneReplaced', invalidate),
+    );
+    this.syncEnvironment();
+  }
+
+  // ------------------------------------------------------------ scene camera
+
+  /**
+   * Renders through a Camera entity instead of the free-look camera — this is what Play mode
+   * flips. Returns false if the id has no camera, leaving the previous camera active.
+   */
+  setActiveCameraEntity(id: EntityId | null): boolean {
+    if (id === null) {
+      this.activeCameraEntity = null;
+      return true;
+    }
+    const entity = this.engineScene.get(id);
+    if (!entity?.components.some((c) => c.type === 'Camera')) return false;
+    this.activeCameraEntity = id;
+    this.syncGameCamera();
+    return true;
+  }
+
+  getActiveCameraEntity(): EntityId | null {
+    return this.activeCameraEntity;
+  }
+
+  /** Whichever camera the next `render()` will use. */
+  get activeCamera(): THREE.PerspectiveCamera {
+    return this.activeCameraEntity ? this.gameCamera : this.camera;
+  }
+
+  /**
+   * Copies the camera entity's world pose onto the render camera.
+   *
+   * Position and rotation only: a camera parented under a scaled entity would otherwise
+   * inherit that scale into its view matrix and quietly distort the projection. Decomposing
+   * and dropping the scale is also why the camera is not just parented into the bridge's tree.
+   */
+  private syncGameCamera(): void {
+    const id = this.activeCameraEntity;
+    if (!id) return;
+    const entity = this.engineScene.get(id);
+    const object = this.bridge.objectFor(id);
+    if (!entity || !object) {
+      // The camera entity was deleted mid-play; fall back rather than freeze on a stale pose.
+      this.activeCameraEntity = null;
+      return;
+    }
+
+    object.updateMatrixWorld(true);
+    object.matrixWorld.decompose(this.gameCamera.position, this.gameCamera.quaternion, SCRATCH);
+
+    const component = entity.components.find((c): c is CameraComponent => c.type === 'Camera');
+    if (component) {
+      const aspect = this.height > 0 ? this.width / this.height : 1;
+      if (
+        this.gameCamera.fov !== component.fov ||
+        this.gameCamera.near !== component.near ||
+        this.gameCamera.far !== component.far ||
+        this.gameCamera.aspect !== aspect
+      ) {
+        this.gameCamera.fov = component.fov;
+        this.gameCamera.near = Math.max(0.001, component.near);
+        this.gameCamera.far = Math.max(this.gameCamera.near + 1, component.far);
+        this.gameCamera.aspect = aspect;
+        this.gameCamera.updateProjectionMatrix();
+      }
+    }
+  }
+
+  // ------------------------------------------------------------- environment
+
+  /**
+   * Applies the scene's Environment component — background, ambient light and fog — and
+   * decides whether the placeholder lighting rig is still needed.
+   *
+   * Both are "what does the scene say" questions rather than "what did the host decide", which
+   * is the point of moving them into components: the runtime gets the same look as the editor
+   * without being told anything.
+   */
+  syncEnvironment(): void {
+    this.environmentDirty = false;
+    const environment = findEnvironment(this.engineScene);
+
+    // The scene's own lights win outright. A scene that has one Light and still gets the
+    // built-in three would be impossible to light deliberately.
+    this.defaultLights.visible = !this.bridge.hasLights();
+
+    if (!environment) {
+      // Enough fill to read shapes in an unlit scene, matching what the rig used to add.
+      this.ambient.color.set(0xffffff);
+      this.ambient.intensity = 0.35;
+      this.scene.fog = null;
+      this.renderer.setClearColor(this.clearColor);
+      this.disposeSky();
+      return;
+    }
+
+    this.ambient.color.set(environment.ambientColor);
+    this.ambient.intensity = environment.ambientIntensity;
+    applyFog(this.scene, environment);
+
+    if (environment.background === 'Sky') {
+      if (!this.sky) {
+        this.sky = new SkyDome();
+        this.scene.add(this.sky.mesh);
+      }
+      this.sky.setColors(
+        environment.skyTopColor,
+        environment.skyHorizonColor,
+        environment.groundColor,
+      );
+    } else {
+      this.disposeSky();
+      this.renderer.setClearColor(new THREE.Color(environment.backgroundColor));
+    }
+  }
+
+  private disposeSky(): void {
+    if (!this.sky) return;
+    this.sky.mesh.removeFromParent();
+    this.sky.dispose();
+    this.sky = null;
   }
 
   // -------------------------------------------------------------- dimensions
@@ -110,6 +269,8 @@ export class RenderHost {
     this.renderer.setSize(width, height, false);
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
+    this.gameCamera.aspect = width / height;
+    this.gameCamera.updateProjectionMatrix();
   }
 
   getSize(): { width: number; height: number } {
@@ -161,10 +322,15 @@ export class RenderHost {
     this.renderer.info.reset();
     this.stats?.beginSubmit();
 
+    if (this.environmentDirty) this.syncEnvironment();
+    this.syncGameCamera();
+    const camera = this.activeCamera;
+    this.sky?.update(camera);
+
     this.renderer.clear();
     this.renderer.setViewport(0, 0, this.width, this.height);
-    this.renderer.render(this.scene, this.camera);
-    if (this.overlay) this.renderer.render(this.overlay, this.camera);
+    this.renderer.render(this.scene, camera);
+    if (this.overlay) this.renderer.render(this.overlay, camera);
     this.onAfterRender?.(this);
     // Extra passes are free to move the viewport; restore it so the next frame starts clean.
     this.renderer.setViewport(0, 0, this.width, this.height);
@@ -181,7 +347,9 @@ export class RenderHost {
    * world has no usable resolution anywhere; cascades arrive with the streaming work.
    */
   private buildDefaultLighting(): void {
-    this.scene.add(new THREE.AmbientLight(0xffffff, 0.35));
+    // Ambient is not part of the rig: it is owned by the Environment component (or its
+    // fallback) so a scene that adds one directional Light of its own still gets fill.
+    this.scene.add(this.defaultLights);
 
     const key = new THREE.DirectionalLight(0xffffff, 1.6);
     key.position.set(12, 20, 8);
@@ -194,12 +362,12 @@ export class RenderHost {
     key.shadow.camera.bottom = -extent;
     key.shadow.camera.far = 120;
     key.shadow.bias = -0.0005;
-    this.scene.add(key);
+    this.defaultLights.add(key);
     this.keyLight = key;
 
     const fill = new THREE.DirectionalLight(0x8fb3ff, 0.3);
     fill.position.set(-10, 8, -12);
-    this.scene.add(fill);
+    this.defaultLights.add(fill);
   }
 
   /**
@@ -285,10 +453,26 @@ export class RenderHost {
   }
 
   dispose(): void {
+    for (const unsubscribe of this.unsubscribes) unsubscribe();
+    this.unsubscribes = [];
     this.setShadingMode('shaded');
+    this.disposeSky();
     this.bridge.dispose();
     this.renderer.dispose();
     this.onAfterRender = null;
     this.overlay = null;
   }
+}
+
+/** Scratch for matrix decomposition — the scale component is read and thrown away. */
+const SCRATCH = new THREE.Vector3();
+
+function findEnvironment(scene: Scene): EnvironmentComponent | null {
+  for (const entity of scene.all()) {
+    const component = entity.components.find(
+      (c): c is EnvironmentComponent => c.type === 'Environment',
+    );
+    if (component) return component;
+  }
+  return null;
 }

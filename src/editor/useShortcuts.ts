@@ -1,4 +1,5 @@
 import { useEffect } from 'react';
+import { isTextEntry } from './dom';
 import { useEditor } from './EditorContext';
 import { useEditorStore } from './state/editorStore';
 import {
@@ -8,14 +9,6 @@ import {
 } from './commands/sceneCommands';
 import { AUTOSAVE_KEY, saveScene } from './state/persistence';
 import type { ViewportController } from './viewport/ViewportController';
-
-/** True when the user is typing, so shortcuts don't hijack their keystrokes. */
-function isTextEntry(target: EventTarget | null): boolean {
-  const element = target as HTMLElement | null;
-  if (!element) return false;
-  const tag = element.tagName;
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || element.isContentEditable;
-}
 
 /** Unity's editor shortcuts: Q/W/E/R tools, F focus, X space toggle, Ctrl+Z/Shift+Z history. */
 export function useShortcuts(viewport: ViewportController | null): void {
@@ -28,6 +21,23 @@ export function useShortcuts(viewport: ViewportController | null): void {
       const store = useEditorStore.getState();
       const selection = store.selection;
       const ctrl = event.ctrlKey || event.metaKey;
+
+      /**
+       * Play mode owns the keyboard. W is "walk forward" there, not "switch to the move
+       * tool", and a stray Ctrl+D mid-session would duplicate the zombie chasing you.
+       * Escape stops playing and F8 still opens the perf HUD — the two things you want while
+       * a session is running.
+       */
+      if (store.playing) {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          engine.setMode('edit');
+        } else if (event.key === 'F8') {
+          event.preventDefault();
+          store.setPerf({ hudVisible: !store.perf.hudVisible });
+        }
+        return;
+      }
 
       if (ctrl) {
         switch (event.key.toLowerCase()) {

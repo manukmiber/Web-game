@@ -41,6 +41,47 @@ export class AddEntityCommand implements Command {
 }
 
 /**
+ * Adds several related entities as one undo step — a prefab, which is usually a parent plus
+ * the children that make it work (a character and the camera riding on it).
+ *
+ * Entities must be ordered parents first, because `Scene.add` rejects a child whose parent is
+ * not there yet. Undo removes in reverse for the mirror-image reason.
+ */
+export class AddEntitiesCommand implements Command {
+  readonly label: string;
+  private readonly entities: Entity[];
+
+  constructor(
+    private readonly scene: Scene,
+    entities: Entity[],
+  ) {
+    const taken = takenNames(scene);
+    this.entities = entities.map((entity) => {
+      const name = uniqueName(entity.name, taken);
+      taken.push(name);
+      return { ...entity, name };
+    });
+    this.label = `Add ${this.entities[0]?.name ?? 'Entities'}`;
+  }
+
+  /** Top-level ids, for selecting what was just added. */
+  get rootIds(): EntityId[] {
+    return this.entities.filter((entity) => entity.parentId === null).map((entity) => entity.id);
+  }
+
+  execute(): void {
+    for (const entity of this.entities) this.scene.add(entity);
+  }
+
+  undo(): void {
+    for (const entity of [...this.entities].reverse()) {
+      // Removing a parent takes its children with it, so later entries may already be gone.
+      if (this.scene.has(entity.id)) this.scene.remove(entity.id);
+    }
+  }
+}
+
+/**
  * Deleting captures the whole subtree, including each entity's sibling index, so undo puts
  * everything back exactly where it was rather than appending it to the end of its parent.
  */

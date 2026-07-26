@@ -47,6 +47,8 @@ export class Scene {
   /** Maintained alongside `entities` so child lookup is O(children), not O(entities). */
   private childIds = new Map<EntityId | null, EntityId[]>();
   private assets = new Map<string, AssetRecord>();
+  /** Transforms mutated in place this frame — see `markTransformDirty`. */
+  private dirtyTransforms = new Set<EntityId>();
 
   constructor() {
     this.childIds.set(null, []);
@@ -211,6 +213,31 @@ export class Scene {
     this.events.emit('transformChanged', { id });
   }
 
+  /**
+   * Records that an entity's transform was mutated in place, to be announced once at the end
+   * of the frame by `flushTransforms()`.
+   *
+   * This exists for gameplay systems. A hundred wandering NPCs each writing x, y and z through
+   * `setTransform` would emit three hundred events a frame, and every listener — the render
+   * bridge, the selection outline, the gizmo pivot — would run three hundred times for a
+   * hundred actual changes. Editor commands keep using `setTransform`: a gizmo drag is one
+   * entity and wants its event immediately.
+   */
+  markTransformDirty(id: EntityId): void {
+    this.dirtyTransforms.add(id);
+  }
+
+  /** Emits one `transformChanged` per entity marked dirty since the last call. */
+  flushTransforms(): void {
+    if (this.dirtyTransforms.size === 0) return;
+    const ids = [...this.dirtyTransforms];
+    this.dirtyTransforms.clear();
+    for (const id of ids) {
+      // An entity destroyed later in the same frame has nothing left to sync.
+      if (this.entities.has(id)) this.events.emit('transformChanged', { id });
+    }
+  }
+
   getComponent<T extends Component = Component>(id: EntityId, type: string): T | undefined {
     return this.get(id)?.components.find((c) => c.type === type) as T | undefined;
   }
@@ -266,6 +293,7 @@ export class Scene {
     this.childIds.clear();
     this.childIds.set(null, []);
     this.assets.clear();
+    this.dirtyTransforms.clear();
     this.events.emit('sceneReplaced', {});
   }
 
@@ -285,6 +313,7 @@ export class Scene {
     this.childIds.clear();
     this.childIds.set(null, []);
     this.assets.clear();
+    this.dirtyTransforms.clear();
 
     this.name = data.name;
     this.world = { ...data.world };

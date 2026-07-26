@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import type { LightComponent, LightType } from '../components/Light';
 import { createMaterial, type MaterialComponent } from '../components/Material';
 import type { MeshRendererComponent } from '../components/MeshRenderer';
 import type { Scene } from '../scene/Scene';
@@ -8,12 +9,23 @@ import { materialCache, materialKey } from './material';
 
 const DEG2RAD = Math.PI / 180;
 
+/**
+ * Point and spot intensity is candela in Three's physical lighting model, where a value that
+ * lights a room is in the tens — while a directional light's is a plain multiplier around 1.
+ * Authoring one "intensity" field that means both would make switching a light's type change
+ * its brightness by an order of magnitude, so the conversion happens here instead.
+ */
+const PUNCTUAL_INTENSITY_SCALE = 12;
+
 interface EntityNode {
   /** Always present — carries the Transform. Empties are this and nothing else. */
   group: THREE.Group;
   mesh: THREE.Mesh | null;
   geometryKey: string | null;
   materialKey: string | null;
+  light: THREE.Light | null;
+  /** Which light class `light` is, so a type change rebuilds rather than mis-configures. */
+  lightKind: LightType | null;
 }
 
 /**
@@ -121,7 +133,14 @@ export class RenderBridge {
     group.name = entity.name;
     group.userData.entityId = entity.id;
 
-    const node: EntityNode = { group, mesh: null, geometryKey: null, materialKey: null };
+    const node: EntityNode = {
+      group,
+      mesh: null,
+      geometryKey: null,
+      materialKey: null,
+      light: null,
+      lightKind: null,
+    };
     this.nodes.set(entity.id, node);
 
     this.attachToParent(entity.id);
@@ -151,6 +170,7 @@ export class RenderBridge {
     const node = this.nodes.get(id);
     if (!node) return;
     this.releaseMesh(node);
+    this.releaseLight(node);
     node.group.removeFromParent();
     this.nodes.delete(id);
   }
@@ -197,7 +217,12 @@ export class RenderBridge {
     const node = this.nodes.get(id);
     const entity = this.scene.get(id);
     if (!node || !entity) return;
+    node.group.name = entity.name;
+    this.syncMesh(node, entity);
+    this.syncLight(node, entity);
+  }
 
+  private syncMesh(node: EntityNode, entity: Entity): void {
     const renderer = entity.components.find(
       (c): c is MeshRendererComponent => c.type === 'MeshRenderer',
     );
@@ -241,6 +266,131 @@ export class RenderBridge {
     node.mesh.visible = renderer.visible;
     node.mesh.castShadow = renderer.castShadow;
     node.mesh.receiveShadow = renderer.receiveShadow;
-    node.group.name = entity.name;
+    // Meshes are lit by lights, but they are also *hit* by picking; keeping the entity id on
+    // the mesh as well as the group is what lets a raycast resolve without walking up.
+    node.mesh.userData.entityId = entity.id;
+  }
+
+  /**
+   * Lights are attached to the entity's group, so a light inherits its transform the same way
+   * a mesh does — parent a spot light to a torch and it follows the torch.
+   *
+   * Directional and spot lights point along the entity's **local -Z**, the same convention as
+   * a camera, implemented by parking their `target` one unit down that axis. Three's default
+   * (aim at the world origin) makes a light's rotation do nothing, which is baffling the first
+   * time you rotate one and the shadows do not move.
+   */
+  private syncLight(node: EntityNode, entity: Entity): void {
+    const component = entity.components.find((c): c is LightComponent => c.type === 'Light');
+    if (!component) {
+      this.releaseLight(node);
+      return;
+    }
+
+    if (node.lightKind !== component.lightType) {
+      this.releaseLight(node);
+      node.light = createThreeLight(component.lightType);
+      node.lightKind = component.lightType;
+      node.group.add(node.light);
+      const target = targetOf(node.light);
+      if (target) {
+        target.position.set(0, 0, -1);
+        node.group.add(target);
+      }
+    }
+
+    const light = node.light;
+    if (!light) return;
+    light.color.set(component.color);
+    light.intensity =
+      component.intensity * (component.lightType === 'Directional' ? 1 : PUNCTUAL_INTENSITY_SCALE);
+
+    if (light instanceof THREE.PointLight || light instanceof THREE.SpotLight) {
+      light.distance = Math.max(0, component.range);
+      light.decay = 2;
+    }
+    if (light instanceof THREE.SpotLight) {
+      light.angle = Math.min(Math.max(component.angle, 1), 89) * DEG2RAD;
+      light.penumbra = Math.min(Math.max(component.penumbra, 0), 1);
+    }
+
+    light.castShadow = component.castShadow;
+    const shadow = shadowOf(light);
+    if (component.castShadow && shadow) {
+      const size = THREE.MathUtils.floorPowerOfTwo(
+        Math.min(Math.max(component.shadowMapSize, 256), 4096),
+      );
+      if (shadow.mapSize.width !== size) {
+        shadow.mapSize.set(size, size);
+        // Three only allocates a shadow map once; dropping it forces the new size.
+        shadow.map?.dispose();
+        shadow.map = null;
+      }
+      shadow.bias = component.shadowBias;
+      if (shadow.camera instanceof THREE.OrthographicCamera) {
+        const extent = Math.max(1, component.shadowRange);
+        shadow.camera.left = -extent;
+        shadow.camera.right = extent;
+        shadow.camera.top = extent;
+        shadow.camera.bottom = -extent;
+        shadow.camera.near = 0.5;
+        // Far has to reach the ground from wherever the sun entity was placed, and the shadow
+        // range is the only hint of world size available here.
+        shadow.camera.far = Math.max(200, extent * 6);
+        shadow.camera.updateProjectionMatrix();
+      }
+    }
+  }
+
+  private releaseLight(node: EntityNode): void {
+    const light = node.light;
+    if (!light) return;
+    targetOf(light)?.removeFromParent();
+    light.removeFromParent();
+    light.dispose();
+    node.light = null;
+    node.lightKind = null;
+  }
+
+  /** True when the scene lights itself, so the host can drop its placeholder rig. */
+  hasLights(): boolean {
+    for (const node of this.nodes.values()) if (node.light) return true;
+    return false;
+  }
+}
+
+/** The aim point of a light that has one. Point lights don't. */
+function targetOf(light: THREE.Light): THREE.Object3D | null {
+  if (light instanceof THREE.DirectionalLight || light instanceof THREE.SpotLight) {
+    return light.target;
+  }
+  return null;
+}
+
+function shadowOf(light: THREE.Light): THREE.LightShadow | null {
+  if (
+    light instanceof THREE.DirectionalLight ||
+    light instanceof THREE.SpotLight ||
+    light instanceof THREE.PointLight
+  ) {
+    return light.shadow;
+  }
+  return null;
+}
+
+function createThreeLight(type: LightType): THREE.Light {
+  switch (type) {
+    case 'Point':
+      return new THREE.PointLight(0xffffff, 1);
+    case 'Spot':
+      return new THREE.SpotLight(0xffffff, 1);
+    case 'Directional':
+    default: {
+      const light = new THREE.DirectionalLight(0xffffff, 1);
+      // Three seeds directional lights at (0, 1, 0); the entity's transform is the only thing
+      // that should decide where this sits.
+      light.position.set(0, 0, 0);
+      return light;
+    }
   }
 }

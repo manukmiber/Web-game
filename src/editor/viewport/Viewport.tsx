@@ -31,11 +31,14 @@ export function Viewport({ onReady }: Props) {
     <div className="viewport" ref={containerRef}>
       {playing && (
         <div className="play-banner">
-          Play mode — gameplay systems land in Phase 3. Scene restores on stop.
+          Play mode — WASD move &nbsp;·&nbsp; ←/→ turn &nbsp;·&nbsp; Shift run &nbsp;·&nbsp; Esc
+          stops and restores the scene
         </div>
       )}
       <div className="viewport-hint">
-        Orbit: drag &nbsp;·&nbsp; Pan: middle / right drag &nbsp;·&nbsp; Zoom: scroll &nbsp;·&nbsp; Focus: F
+        {playing
+          ? 'Editor tools are paused while playing'
+          : 'Orbit: drag · Pan: middle / right drag · Zoom: scroll · Focus: F'}
       </div>
     </div>
   );
