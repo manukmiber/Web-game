@@ -13,6 +13,9 @@ export const PRIMITIVE_MENU: readonly PrimitiveKind[] = [
   'Cylinder',
   'Capsule',
   'Cone',
+  'Torus',
+  'Tube',
+  'Icosphere',
   'Empty',
 ];
 
@@ -23,6 +26,9 @@ const DEFAULT_NAMES: Record<PrimitiveKind, string> = {
   Cylinder: 'Cylinder',
   Capsule: 'Capsule',
   Cone: 'Cone',
+  Torus: 'Torus',
+  Tube: 'Tube',
+  Icosphere: 'Icosphere',
   Empty: 'Empty',
 };
 
@@ -37,6 +43,9 @@ const DEFAULT_PARAMS: Partial<Record<PrimitiveKind, Record<string, number>>> = {
   Capsule: { radius: 0.5, height: 1 },
   Cylinder: { radiusTop: 0.5, radiusBottom: 0.5, height: 1 },
   Cone: { radius: 0.5, height: 1 },
+  Torus: { radius: 0.5, tubeRadius: 0.18 },
+  Tube: { radius: 0.5, innerRadius: 0.3, height: 1 },
+  Icosphere: { radius: 0.5, subdivisions: 2 },
 };
 
 export interface CreatePrimitiveOptions {

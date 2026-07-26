@@ -1,6 +1,16 @@
 import { createMeshData, pushVertex, weldVertices, type MeshData } from './MeshData';
 
-export const PRIMITIVE_TYPES = ['Box', 'Sphere', 'Plane', 'Cylinder', 'Capsule', 'Cone'] as const;
+export const PRIMITIVE_TYPES = [
+  'Box',
+  'Sphere',
+  'Icosphere',
+  'Plane',
+  'Cylinder',
+  'Capsule',
+  'Cone',
+  'Torus',
+  'Tube',
+] as const;
 export type PrimitiveType = (typeof PRIMITIVE_TYPES)[number];
 
 export interface PrimitiveParams {
@@ -15,6 +25,14 @@ export interface PrimitiveParams {
   depthSegments: number;
   radialSegments: number;
   capSegments: number;
+  /** Torus: radius of the ring cross-section. */
+  tubeRadius: number;
+  /** Torus: segments around the cross-section. */
+  tubularSegments: number;
+  /** Tube: inner radius of the bore. */
+  innerRadius: number;
+  /** Icosphere: recursion depth. Each level quadruples the triangle count. */
+  subdivisions: number;
 }
 
 export const DEFAULT_PRIMITIVE_PARAMS: PrimitiveParams = {
@@ -29,6 +47,10 @@ export const DEFAULT_PRIMITIVE_PARAMS: PrimitiveParams = {
   depthSegments: 1,
   radialSegments: 24,
   capSegments: 6,
+  tubeRadius: 0.2,
+  tubularSegments: 16,
+  innerRadius: 0.3,
+  subdivisions: 2,
 };
 
 /** Which params each primitive consumes — drives the Inspector and the geometry cache key. */
@@ -39,6 +61,9 @@ const PARAMS_BY_PRIMITIVE: Record<PrimitiveType, (keyof PrimitiveParams)[]> = {
   Cylinder: ['radiusTop', 'radiusBottom', 'height', 'radialSegments', 'heightSegments'],
   Capsule: ['radius', 'height', 'radialSegments', 'capSegments'],
   Cone: ['radius', 'height', 'radialSegments', 'heightSegments'],
+  Torus: ['radius', 'tubeRadius', 'radialSegments', 'tubularSegments'],
+  Tube: ['radius', 'innerRadius', 'height', 'radialSegments', 'heightSegments'],
+  Icosphere: ['radius', 'subdivisions'],
 };
 
 export function relevantParams(primitive: PrimitiveType): (keyof PrimitiveParams)[] {
@@ -74,6 +99,12 @@ export function generatePrimitive(
       return generateCone(p);
     case 'Capsule':
       return generateCapsule(p);
+    case 'Torus':
+      return generateTorus(p);
+    case 'Tube':
+      return generateTube2(p);
+    case 'Icosphere':
+      return generateIcosphere(p);
     default:
       return generateBox(p);
   }
@@ -326,4 +357,178 @@ function generateCapsule(p: PrimitiveParams): MeshData {
 
   buildRingedSurface(mesh, ringStart, radial, southPole, northPole);
   return weldVertices(mesh, 1e-5);
+}
+
+/**
+ * Torus: a ring of cross-section rings, stitched into an all-quad surface with no poles.
+ *
+ * The cleanest topology of any primitive here — every vertex has valence four and there are no
+ * triangle fans, so it subdivides and deforms without artefacts. Useful as the reference shape
+ * when checking whether a modifier misbehaves on quads.
+ */
+function generateTorus(p: PrimitiveParams): MeshData {
+  const mesh = createMeshData();
+  const major = clampSegments(p.radialSegments, 3);
+  const minor = clampSegments(p.tubularSegments, 3);
+  mesh.uvs = [];
+  mesh.smoothFaces = [];
+
+  for (let i = 0; i < major; i += 1) {
+    const theta = (i / major) * Math.PI * 2;
+    const cosTheta = Math.cos(theta);
+    const sinTheta = Math.sin(theta);
+    for (let j = 0; j < minor; j += 1) {
+      const phi = (j / minor) * Math.PI * 2;
+      const r = p.radius + p.tubeRadius * Math.cos(phi);
+      pushVertex(mesh, cosTheta * r, p.tubeRadius * Math.sin(phi), sinTheta * r);
+      mesh.uvs.push(i / major, j / minor);
+    }
+  }
+
+  for (let i = 0; i < major; i += 1) {
+    const ring = i * minor;
+    const nextRing = ((i + 1) % major) * minor;
+    for (let j = 0; j < minor; j += 1) {
+      const next = (j + 1) % minor;
+      // Around the cross-section first, then along the ring: the opposite order winds the
+      // whole torus inside out, which no convex-shape test would catch.
+      mesh.faces.push([ring + j, ring + next, nextRing + next, nextRing + j]);
+      mesh.smoothFaces.push(true);
+    }
+  }
+
+  return mesh;
+}
+
+/**
+ * Tube: a cylinder with a bore through it.
+ *
+ * Outer wall, inner wall wound the other way so it faces into the hole, and annular caps
+ * bridging the two at each end. A degenerate `innerRadius` falls back to a solid cylinder
+ * rather than producing a zero-width shell.
+ */
+function generateTube2(p: PrimitiveParams): MeshData {
+  const inner = Math.max(0, Math.min(p.innerRadius, p.radius - 1e-4));
+  if (inner <= 1e-4) {
+    return generateTube(p.radius, p.radius, p.height, p.radialSegments, p.heightSegments);
+  }
+
+  const mesh = createMeshData();
+  const radial = clampSegments(p.radialSegments, 3);
+  const rings = clampSegments(p.heightSegments);
+  const half = p.height / 2;
+  mesh.uvs = [];
+  mesh.smoothFaces = [];
+
+  const wallStart: number[][] = [];
+  for (const radius of [p.radius, inner]) {
+    const starts: number[] = [];
+    for (let ring = 0; ring <= rings; ring += 1) {
+      const y = -half + p.height * (ring / rings);
+      starts.push(mesh.positions.length / 3);
+      for (let i = 0; i < radial; i += 1) {
+        const theta = (i / radial) * Math.PI * 2;
+        pushVertex(mesh, Math.cos(theta) * radius, y, Math.sin(theta) * radius);
+        mesh.uvs.push(i / radial, ring / rings);
+      }
+    }
+    wallStart.push(starts);
+  }
+
+  const [outer, bore] = wallStart as [number[], number[]];
+
+  for (let ring = 0; ring < rings; ring += 1) {
+    for (let i = 0; i < radial; i += 1) {
+      const next = (i + 1) % radial;
+      // Outer wall faces out; the bore is wound the opposite way so it faces inward.
+      mesh.faces.push([outer[ring]! + i, outer[ring + 1]! + i, outer[ring + 1]! + next, outer[ring]! + next]);
+      mesh.smoothFaces.push(true);
+      mesh.faces.push([bore[ring]! + i, bore[ring]! + next, bore[ring + 1]! + next, bore[ring + 1]! + i]);
+      mesh.smoothFaces.push(true);
+    }
+  }
+
+  // Annular caps: quads spanning the gap between the two walls.
+  for (let i = 0; i < radial; i += 1) {
+    const next = (i + 1) % radial;
+    mesh.faces.push([outer[0]! + i, outer[0]! + next, bore[0]! + next, bore[0]! + i]);
+    mesh.smoothFaces.push(false);
+    mesh.faces.push([outer[rings]! + i, bore[rings]! + i, bore[rings]! + next, outer[rings]! + next]);
+    mesh.smoothFaces.push(false);
+  }
+
+  return mesh;
+}
+
+/**
+ * Icosphere: an icosahedron subdivided and projected onto the sphere.
+ *
+ * Worth having alongside the UV sphere because its triangles are near-uniform everywhere,
+ * while a UV sphere crowds vertices at the poles and stretches them at the equator. That
+ * matters for displacement, physics hulls and anything that samples the surface evenly.
+ *
+ * Triangles rather than quads here is correct, not a compromise — an icosahedron has no quad
+ * subdivision that stays uniform.
+ */
+function generateIcosphere(p: PrimitiveParams): MeshData {
+  const mesh = createMeshData();
+  mesh.smoothFaces = [];
+
+  const t = (1 + Math.sqrt(5)) / 2;
+  const base: [number, number, number][] = [
+    [-1, t, 0], [1, t, 0], [-1, -t, 0], [1, -t, 0],
+    [0, -1, t], [0, 1, t], [0, -1, -t], [0, 1, -t],
+    [t, 0, -1], [t, 0, 1], [-t, 0, -1], [-t, 0, 1],
+  ];
+  let faces: [number, number, number][] = [
+    [0, 11, 5], [0, 5, 1], [0, 1, 7], [0, 7, 10], [0, 10, 11],
+    [1, 5, 9], [5, 11, 4], [11, 10, 2], [10, 7, 6], [7, 1, 8],
+    [3, 9, 4], [3, 4, 2], [3, 2, 6], [3, 6, 8], [3, 8, 9],
+    [4, 9, 5], [2, 4, 11], [6, 2, 10], [8, 6, 7], [9, 8, 1],
+  ];
+
+  const points = base.map(([x, y, z]) => {
+    const length = Math.hypot(x, y, z);
+    return [x / length, y / length, z / length] as [number, number, number];
+  });
+
+  // Cache midpoints per edge so neighbouring triangles share them; without it the surface
+  // splits into disconnected shells and smooth shading breaks along every seam.
+  const levels = Math.max(0, Math.min(5, Math.floor(p.subdivisions)));
+  for (let level = 0; level < levels; level += 1) {
+    const midpoints = new Map<string, number>();
+    const next: [number, number, number][] = [];
+
+    const midpoint = (a: number, b: number): number => {
+      const key = a < b ? `${a}_${b}` : `${b}_${a}`;
+      const cached = midpoints.get(key);
+      if (cached !== undefined) return cached;
+      const pa = points[a]!;
+      const pb = points[b]!;
+      const x = (pa[0] + pb[0]) / 2;
+      const y = (pa[1] + pb[1]) / 2;
+      const z = (pa[2] + pb[2]) / 2;
+      const length = Math.hypot(x, y, z);
+      points.push([x / length, y / length, z / length]);
+      const index = points.length - 1;
+      midpoints.set(key, index);
+      return index;
+    };
+
+    for (const [a, b, c] of faces) {
+      const ab = midpoint(a, b);
+      const bc = midpoint(b, c);
+      const ca = midpoint(c, a);
+      next.push([a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]);
+    }
+    faces = next;
+  }
+
+  for (const [x, y, z] of points) pushVertex(mesh, x * p.radius, y * p.radius, z * p.radius);
+  for (const face of faces) {
+    mesh.faces.push([...face]);
+    mesh.smoothFaces.push(true);
+  }
+
+  return mesh;
 }

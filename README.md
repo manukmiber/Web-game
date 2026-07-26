@@ -24,20 +24,33 @@ npm run dev        # http://localhost:5173
 
 ## Phase 1 — what works today
 
-**Primitives** — Box, Sphere, Plane, Cylinder, Capsule, Cone, and Empty (transform only, for
-grouping). Added from the toolbar's *Add* menu; they land where the viewport camera is looking.
-Each generates an editable **quad mesh** with segment controls, not a fixed triangle blob.
+**Primitives** — Box, Sphere, Icosphere, Plane, Cylinder, Capsule, Cone, Torus, Tube, and Empty
+(transform only, for grouping). Added from the toolbar's *Add* menu; they land where the
+viewport camera is looking. Each generates an editable **quad mesh** with segment controls, not
+a fixed triangle blob.
+
+Torus is the cleanest topology of the set — every vertex has valence four and there are no
+poles — which makes it the shape to reach for when checking whether a modifier misbehaves.
+Icosphere exists alongside the UV sphere because its triangles are near-uniform everywhere,
+where a UV sphere crowds vertices at the poles and stretches them at the equator.
 
 **Modifier stack** — non-destructive, reorderable, evaluated over the generated mesh:
 
 | Modifier | What it does |
 | --- | --- |
 | Subdivide | Full Catmull-Clark, up to 4 levels, with correct open-mesh and corner rules |
+| Bevel | Rounds every edge by insetting faces and bridging the gaps, 1–6 segments |
 | Mirror | Reflects across X/Y/Z, welding the seam so it stays one smooth surface |
 | Array | Repeats with relative and constant offsets |
 | Solidify | Gives a surface thickness, closing open borders with rim faces |
 | Twist / Bend / Taper | Deformers, parameterised against the object's own bounds |
 | Noise Displace | Deterministic, position-hashed so welded seams do not tear |
+| Weld | Merges vertices by distance — closes seams other modifiers leave split |
+| Triangulate | Fans n-gons into triangles as real topology, not just at render time |
+| Shade Smooth / Flat | Overrides per-face shading for the whole mesh |
+
+Bevel is the one that makes rendered geometry stop looking like programmer art: real objects
+have no perfectly sharp edges, and a bevel is what gives them a highlight to catch.
 
 Order matters and is editable — Mirror then Array tiles a mirrored pair, Array then Mirror
 mirrors a whole row. Each entry toggles on and off without being removed, and the evaluated
@@ -132,9 +145,9 @@ untouched, so a scene saved by a newer build never loses data in an older one.
 
 ## What's next
 
-Modelling: edit mode (vertex/edge/face selection with extrude, inset, bevel and loop cut),
-splines with lathe and sweep generators, and Boolean — which needs robust CSG and is
-deliberately not attempted yet.
+Modelling: edit mode (vertex/edge/face selection with extrude, inset and loop cut), splines
+with lathe and sweep generators, and Boolean — which needs robust CSG and is deliberately not
+attempted yet.
 
 Engine: adaptive quality driven by the HUD's numbers, then instancing, LOD and chunk
 streaming. `ScatterLayer` and the `Script` component's client/server split are reserved in the
@@ -147,7 +160,11 @@ schema so neither needs a migration.
 ```bash
 git checkout release/v0.1.0   # Phase 1 editor MVP
 git checkout release/v0.2.0   # RenderHost + performance harness
+git checkout release/v0.3.0   # Editable meshes + modifier stack
 ```
+
+CI (`.github/workflows/ci.yml`) runs typecheck, tests and build on every push and pull
+request. It needs GitHub Actions enabled on the repository to do anything.
 
 ## Layout
 

@@ -192,11 +192,19 @@ same field schemas the component Inspector uses, so a new modifier is one file p
 throwing, matching how unknown components are handled.
 
 Shipping now: Subdivide (full Catmull-Clark, with the open-mesh boundary and pinned-corner
-rules), Mirror, Array, Solidify, Twist, Bend, Taper and Noise Displace.
+rules), Bevel, Mirror, Array, Solidify, Twist, Bend, Taper, Noise Displace, Weld, Triangulate
+and Shade.
 
-Still to come: edit mode (vertex/edge/face selection with extrude, inset, bevel, loop cut),
-splines with lathe/sweep generators, and Boolean — which needs robust CSG and is deliberately
-not attempted yet.
+Still to come: edit mode (vertex/edge/face selection with extrude, inset, loop cut), splines
+with lathe/sweep generators, and Boolean — which needs robust CSG and is deliberately not
+attempted yet.
+
+**Testing closed surfaces.** Winding correctness is checked with signed volume via the
+divergence theorem, not a centroid-dot-normal test. The centroid test only holds for convex
+shapes — a torus face on the inside of the ring legitimately points back toward the axis — and
+it silently passed an inside-out torus that signed volume caught immediately. A second check
+verifies each directed edge appears exactly once with exactly one opposite, which catches holes
+and individually flipped faces that a global volume check would average away.
 
 ## 4. Render bridge
 

@@ -6,6 +6,8 @@ import './subdivide';
 import './mirror';
 import './array';
 import './solidify';
+import './bevel';
+import './utility';
 import './deform';
 
 export * from './registry';
@@ -13,4 +15,6 @@ export * from './subdivide';
 export * from './mirror';
 export * from './array';
 export * from './solidify';
+export * from './bevel';
+export * from './utility';
 export * from './deform';

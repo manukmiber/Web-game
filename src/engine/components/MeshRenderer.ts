@@ -41,6 +41,10 @@ const PARAM_LABELS: Record<keyof PrimitiveParams, string> = {
   depthSegments: 'Depth Segments',
   radialSegments: 'Radial Segments',
   capSegments: 'Cap Segments',
+  tubeRadius: 'Tube Radius',
+  tubularSegments: 'Tubular Segments',
+  innerRadius: 'Inner Radius',
+  subdivisions: 'Subdivisions',
 };
 
 const SEGMENT_KEYS = new Set<keyof PrimitiveParams>([
@@ -49,7 +53,11 @@ const SEGMENT_KEYS = new Set<keyof PrimitiveParams>([
   'depthSegments',
   'radialSegments',
   'capSegments',
+  'tubularSegments',
 ]);
+
+/** Icosphere recursion is capped much lower — each level quadruples the triangle count. */
+const RECURSION_KEYS = new Set<keyof PrimitiveParams>(['subdivisions']);
 
 export function createMeshRenderer(
   overrides: Partial<MeshRendererComponent> = {},
@@ -76,16 +84,17 @@ registerComponent<MeshRendererComponent>({
     ];
     for (const key of relevantParams(component.primitive)) {
       const isSegment = SEGMENT_KEYS.has(key);
+      const isRecursion = RECURSION_KEYS.has(key);
       fields.push({
         kind: 'number',
         key: `params.${key}`,
         label: PARAM_LABELS[key],
         // Segment counts are the direct lever on triangle count, so they are capped: a
         // 512-segment sphere behind a Subdivide modifier is millions of triangles.
-        min: isSegment ? 1 : 0.001,
-        max: isSegment ? 256 : undefined,
-        step: isSegment ? 1 : 0.1,
-        integer: isSegment,
+        min: isSegment ? 1 : isRecursion ? 0 : 0.001,
+        max: isSegment ? 256 : isRecursion ? 5 : undefined,
+        step: isSegment || isRecursion ? 1 : 0.1,
+        integer: isSegment || isRecursion,
       });
     }
     fields.push(

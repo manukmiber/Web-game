@@ -13,6 +13,10 @@ import { generatePrimitive } from '../generators';
 import {
   applyModifiers,
   createArrayModifier,
+  createBevelModifier,
+  createShadeModifier,
+  createTriangulateModifier,
+  createWeldModifier,
   createBendModifier,
   createMirrorModifier,
   createNoiseModifier,
@@ -24,6 +28,14 @@ import {
   subdivide,
   type Modifier,
 } from './index';
+
+function getVertexOf(mesh: ReturnType<typeof createMeshData>, index: number): [number, number, number] {
+  return [
+    mesh.positions[index * 3] ?? 0,
+    mesh.positions[index * 3 + 1] ?? 0,
+    mesh.positions[index * 3 + 2] ?? 0,
+  ];
+}
 
 /** Distance of the furthest vertex from the origin. */
 function maxRadius(mesh: ReturnType<typeof createMeshData>): number {
@@ -248,6 +260,98 @@ describe('deformers', () => {
   });
 });
 
+describe('Bevel', () => {
+  it('replaces each sharp corner with geometry', () => {
+    const box = generatePrimitive('Box');
+    const result = applyModifiers(box, [createBevelModifier({ width: 0.1 })]);
+
+    // 6 shrunken faces + 12 edge bridges + 8 corner polygons.
+    expect(result.faces).toHaveLength(26);
+    expect(result.positions.every(Number.isFinite)).toBe(true);
+  });
+
+  it('keeps the bevelled solid the right way out', () => {
+    const box = generatePrimitive('Box');
+    const result = applyModifiers(box, [createBevelModifier({ width: 0.1 })]);
+
+    let volume = 0;
+    for (const face of result.faces) {
+      for (let i = 1; i < face.length - 1; i += 1) {
+        const a = getVertexOf(result, face[0]!);
+        const b = getVertexOf(result, face[i]!);
+        const c = getVertexOf(result, face[i + 1]!);
+        volume +=
+          a[0] * (b[1] * c[2] - b[2] * c[1]) -
+          a[1] * (b[0] * c[2] - b[2] * c[0]) +
+          a[2] * (b[0] * c[1] - b[1] * c[0]);
+      }
+    }
+    expect(volume).toBeGreaterThan(0);
+  });
+
+  it('adds rings of geometry as segments increase', () => {
+    const box = generatePrimitive('Box');
+    const flat = applyModifiers(box, [createBevelModifier({ width: 0.1, segments: 1 })]);
+    const round = applyModifiers(box, [createBevelModifier({ width: 0.1, segments: 4 })]);
+
+    expect(round.faces.length).toBeGreaterThan(flat.faces.length);
+    expect(round.positions.every(Number.isFinite)).toBe(true);
+  });
+
+  it('never folds a face through its own centroid on a tiny mesh', () => {
+    // Width far larger than the face: clamping is what stops the inset inverting the polygon.
+    const box = generatePrimitive('Box', { width: 0.1, height: 0.1, depth: 0.1 });
+    const result = applyModifiers(box, [createBevelModifier({ width: 10 })]);
+
+    expect(result.positions.every(Number.isFinite)).toBe(true);
+    const bounds = meshBounds(result)!;
+    expect(bounds.max[0] - bounds.min[0]).toBeLessThanOrEqual(0.1 + 1e-6);
+  });
+
+  it('is a no-op at zero width', () => {
+    const box = generatePrimitive('Box');
+    expect(applyModifiers(box, [createBevelModifier({ width: 0 })]).faces).toHaveLength(6);
+  });
+
+  it('leaves an open mesh border unbridged rather than inventing faces', () => {
+    const plane = generatePrimitive('Plane');
+    const result = applyModifiers(plane, [createBevelModifier({ width: 0.1 })]);
+    // A single quad has no shared edges, so only the inset face survives.
+    expect(result.faces).toHaveLength(1);
+  });
+});
+
+describe('utility modifiers', () => {
+  it('welds a mirrored seam that was left split', () => {
+    const box = generatePrimitive('Box', { width: 1 });
+    for (let i = 0; i < box.positions.length; i += 3) box.positions[i] = box.positions[i]! + 0.5;
+
+    const split = applyModifiers(box, [createMirrorModifier({ axis: 'X', merge: false })]);
+    const welded = applyModifiers(split, [createWeldModifier({ distance: 0.01 })]);
+
+    expect(vertexCount(welded)).toBeLessThan(vertexCount(split));
+  });
+
+  it('fans every n-gon into triangles', () => {
+    const box = generatePrimitive('Box');
+    const result = applyModifiers(box, [createTriangulateModifier()]);
+
+    expect(result.faces).toHaveLength(12);
+    expect(result.faces.every((face) => face.length === 3)).toBe(true);
+    // Same surface, so the triangle total is unchanged.
+    expect(triangleCount(result)).toBe(triangleCount(box));
+  });
+
+  it('overrides shading for the whole mesh', () => {
+    const box = generatePrimitive('Box');
+    const smooth = applyModifiers(box, [createShadeModifier({ smooth: true })]);
+    const flat = applyModifiers(box, [createShadeModifier({ smooth: false })]);
+
+    expect(smooth.smoothFaces?.every(Boolean)).toBe(true);
+    expect(flat.smoothFaces?.every((value) => value === false)).toBe(true);
+  });
+});
+
 describe('modifier stack', () => {
   it('applies in order, and order changes the result', () => {
     const box = generatePrimitive('Box', { width: 1 });
@@ -300,7 +404,7 @@ describe('modifier stack', () => {
 
   it('registers every built-in modifier with a create and fields function', () => {
     const definitions = listModifierDefinitions();
-    expect(definitions.length).toBeGreaterThanOrEqual(7);
+    expect(definitions.length).toBeGreaterThanOrEqual(11);
     for (const definition of definitions) {
       const instance = definition.create();
       expect(instance.type, definition.type).toBe(definition.type);

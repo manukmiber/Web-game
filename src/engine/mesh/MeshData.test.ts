@@ -5,6 +5,7 @@ import {
   faceCentroid,
   faceNormal,
   flipFaces,
+  getVertex,
   meshBounds,
   mergeMeshes,
   pushVertex,
@@ -14,6 +15,38 @@ import {
   weldVertices,
 } from './MeshData';
 import { PRIMITIVE_TYPES, generatePrimitive } from './generators';
+
+/** Primitives that enclose a volume, so winding and manifold checks apply to them. */
+const CLOSED_PRIMITIVES = [
+  'Box',
+  'Sphere',
+  'Icosphere',
+  'Cylinder',
+  'Cone',
+  'Capsule',
+  'Torus',
+  'Tube',
+] as const;
+
+/**
+ * Six times the signed volume of a closed mesh. Positive when faces wind counter-clockwise
+ * seen from outside, negative when the solid is inside out.
+ */
+function signedVolume(mesh: ReturnType<typeof createMeshData>): number {
+  let total = 0;
+  for (const face of mesh.faces) {
+    for (let i = 1; i < face.length - 1; i += 1) {
+      const a = getVertex(mesh, face[0]!);
+      const b = getVertex(mesh, face[i]!);
+      const c = getVertex(mesh, face[i + 1]!);
+      total +=
+        a[0] * (b[1] * c[2] - b[2] * c[1]) -
+        a[1] * (b[0] * c[2] - b[2] * c[0]) +
+        a[2] * (b[0] * c[1] - b[1] * c[0]);
+    }
+  }
+  return total;
+}
 
 /** A unit quad in the XZ plane, facing up. */
 function quad() {
@@ -176,15 +209,33 @@ describe('primitive generators', () => {
   });
 
   it('points every closed primitive outward', () => {
-    // An inside-out solid looks fine untextured and wrong the moment it is lit, so this is
-    // checked for all of them rather than spot-checked on the sphere.
-    for (const primitive of ['Box', 'Sphere', 'Cylinder', 'Cone', 'Capsule'] as const) {
+    // Signed volume via the divergence theorem rather than a centroid-dot-normal check.
+    // The centroid test only holds for convex shapes — a torus face on the inside of the ring
+    // legitimately points back toward the axis — whereas signed volume is positive for any
+    // correctly wound closed surface and negative for an inside-out one.
+    for (const primitive of CLOSED_PRIMITIVES) {
       const mesh = generatePrimitive(primitive, { radius: 1, radiusTop: 0.6, radiusBottom: 1 });
+      expect(signedVolume(mesh), `${primitive} is inside out`).toBeGreaterThan(0);
+    }
+  });
+
+  it('produces a consistently wound manifold for every closed primitive', () => {
+    // Each directed edge should appear exactly once, with its reverse appearing exactly once
+    // in the neighbouring face. A hole leaves an unmatched edge; a flipped face produces a
+    // duplicate in the same direction. Neither is visible until something downstream breaks.
+    for (const primitive of CLOSED_PRIMITIVES) {
+      const mesh = generatePrimitive(primitive, { radius: 1, radiusTop: 0.6, radiusBottom: 1 });
+      const directed = new Map<string, number>();
       for (const face of mesh.faces) {
-        const centroid = faceCentroid(mesh, face);
-        const normal = faceNormal(mesh, face);
-        const dot = centroid[0] * normal[0] + centroid[1] * normal[1] + centroid[2] * normal[2];
-        expect(dot, `${primitive} face ${face.join(',')}`).toBeGreaterThan(0);
+        for (let i = 0; i < face.length; i += 1) {
+          const key = `${face[i]}>${face[(i + 1) % face.length]}`;
+          directed.set(key, (directed.get(key) ?? 0) + 1);
+        }
+      }
+      for (const [key, count] of directed) {
+        const [a, b] = key.split('>');
+        expect(count, `${primitive}: edge ${key} used ${count} times`).toBe(1);
+        expect(directed.get(`${b}>${a}`), `${primitive}: edge ${key} has no opposite`).toBe(1);
       }
     }
   });
@@ -198,6 +249,58 @@ describe('primitive generators', () => {
   it('faces a plane upward', () => {
     const plane = generatePrimitive('Plane');
     expect(faceNormal(plane, plane.faces[0]!)[1]).toBeCloseTo(1);
+  });
+
+  it('builds a torus as an all-quad surface with no poles', () => {
+    const torus = generatePrimitive('Torus', { radialSegments: 12, tubularSegments: 8 });
+
+    expect(torus.faces).toHaveLength(96);
+    expect(torus.faces.every((face) => face.length === 4)).toBe(true);
+    // Closed surface with every vertex valence four: V - E + F = 0 for a torus.
+    expect(vertexCount(torus) - edgeCount(torus) + torus.faces.length).toBe(0);
+  });
+
+  it('gives a tube an inner wall facing into the bore', () => {
+    const tube = generatePrimitive('Tube', { radius: 1, innerRadius: 0.5, radialSegments: 8 });
+    const bounds = meshBounds(tube)!;
+
+    expect(bounds.max[0]).toBeCloseTo(1, 1);
+    // Inner wall vertices exist at the bore radius.
+    const hasBore = tube.positions.some((_, i) => {
+      if (i % 3 !== 0) return false;
+      const r = Math.hypot(tube.positions[i]!, tube.positions[i + 2]!);
+      return Math.abs(r - 0.5) < 1e-6;
+    });
+    expect(hasBore).toBe(true);
+  });
+
+  it('falls back to a solid cylinder when the tube bore collapses', () => {
+    const solid = generatePrimitive('Tube', { radius: 1, innerRadius: 0, radialSegments: 8 });
+    expect(solid.faces.length).toBeGreaterThan(0);
+    expect(solid.positions.every(Number.isFinite)).toBe(true);
+  });
+
+  it('gives an icosphere near-uniform triangles, unlike a UV sphere', () => {
+    const ico = generatePrimitive('Icosphere', { radius: 1, subdivisions: 2 });
+
+    // 20 base triangles, quadrupled per level.
+    expect(ico.faces).toHaveLength(20 * 4 ** 2);
+    expect(ico.faces.every((face) => face.length === 3)).toBe(true);
+
+    // Every vertex sits on the sphere, and edge lengths cluster tightly — the property a UV
+    // sphere lacks, where poles crowd and the equator stretches.
+    for (let i = 0; i < ico.positions.length; i += 3) {
+      const r = Math.hypot(ico.positions[i]!, ico.positions[i + 1]!, ico.positions[i + 2]!);
+      expect(r).toBeCloseTo(1, 6);
+    }
+  });
+
+  it('shares icosphere midpoints so the surface stays one connected shell', () => {
+    const ico = generatePrimitive('Icosphere', { subdivisions: 2 });
+    // Without a midpoint cache each triangle would own its own corners: 320 * 3 = 960 verts.
+    expect(vertexCount(ico)).toBeLessThan(400);
+    // Closed solid.
+    expect(vertexCount(ico) - edgeCount(ico) + ico.faces.length).toBe(2);
   });
 
   it('scales triangle count with segments, which is the heavy-geometry lever', () => {
