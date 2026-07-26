@@ -1,0 +1,109 @@
+import { describe, expect, it } from 'vitest';
+import { Scene } from './Scene';
+import { createPrimitiveEntity, uniqueName } from './primitives';
+
+function sceneWith(...kinds: Parameters<typeof createPrimitiveEntity>[0][]) {
+  const scene = new Scene();
+  const ids = kinds.map((kind) => scene.add(createPrimitiveEntity(kind)).id);
+  return { scene, ids };
+}
+
+describe('Scene hierarchy', () => {
+  it('tracks roots and children', () => {
+    const { scene, ids } = sceneWith('Box', 'Sphere');
+    const [box, sphere] = ids as [string, string];
+
+    expect(scene.rootIds()).toEqual([box, sphere]);
+
+    scene.reparent(sphere, box);
+    expect(scene.rootIds()).toEqual([box]);
+    expect(scene.childrenOf(box)).toEqual([sphere]);
+    expect(scene.ancestorsOf(sphere)).toEqual([box]);
+  });
+
+  it('refuses to create a cycle', () => {
+    const { scene, ids } = sceneWith('Empty', 'Empty');
+    const [parent, child] = ids as [string, string];
+    scene.reparent(child, parent);
+
+    expect(() => scene.reparent(parent, child)).toThrow(/descendant/);
+    expect(() => scene.reparent(parent, parent)).toThrow(/itself/);
+  });
+
+  it('removes the whole subtree and reports what went', () => {
+    const { scene, ids } = sceneWith('Empty', 'Box', 'Sphere');
+    const [root, mid, leaf] = ids as [string, string, string];
+    scene.reparent(mid, root);
+    scene.reparent(leaf, mid);
+
+    const removed = scene.remove(root);
+
+    expect(removed.map((e) => e.id)).toEqual([root, mid, leaf]);
+    expect(scene.size).toBe(0);
+    expect(scene.rootIds()).toEqual([]);
+  });
+
+  it('preserves sibling order when reparenting with an index', () => {
+    const { scene, ids } = sceneWith('Box', 'Sphere', 'Cone');
+    const [a, b, c] = ids as [string, string, string];
+
+    scene.reparent(c, null, 0);
+    expect(scene.rootIds()).toEqual([c, a, b]);
+    expect(scene.indexOf(c)).toBe(0);
+  });
+
+  it('buckets entities into chunks by world position', () => {
+    const scene = new Scene();
+    const near = scene.add(createPrimitiveEntity('Box', { position: [10, 0, 10] }));
+    const far = scene.add(createPrimitiveEntity('Box', { position: [600, 0, -300] }));
+
+    // Default chunk size is 256 m.
+    expect(scene.chunkKeyOf(near.id)).toBe('0,0');
+    expect(scene.chunkKeyOf(far.id)).toBe('2,-2');
+  });
+
+  it('accumulates parent offsets when deciding a chunk', () => {
+    const scene = new Scene();
+    const parent = scene.add(createPrimitiveEntity('Empty', { position: [500, 0, 0] }));
+    const child = scene.add(createPrimitiveEntity('Box', { position: [100, 0, 0] }));
+    scene.reparent(child.id, parent.id);
+
+    // 500 + 100 = 600 -> chunk 2 on x.
+    expect(scene.chunkKeyOf(child.id)).toBe('2,0');
+  });
+});
+
+describe('Scene components', () => {
+  it('reads, patches and removes components by type', () => {
+    const { scene, ids } = sceneWith('Box');
+    const id = ids[0]!;
+
+    expect(scene.getComponent(id, 'Material')?.color).toBe('#cccccc');
+
+    scene.updateComponent(id, 'Material', { color: '#ff0000' });
+    expect(scene.getComponent(id, 'Material')?.color).toBe('#ff0000');
+
+    scene.removeComponent(id, 'Material');
+    expect(scene.getComponent(id, 'Material')).toBeUndefined();
+  });
+
+  it('gives an Empty only a transform', () => {
+    const { scene, ids } = sceneWith('Empty');
+    expect(scene.expect(ids[0]!).components).toEqual([]);
+  });
+});
+
+describe('uniqueName', () => {
+  it('leaves an unused name alone', () => {
+    expect(uniqueName('Box', ['Sphere'])).toBe('Box');
+  });
+
+  it('appends the first free index', () => {
+    expect(uniqueName('Box', ['Box'])).toBe('Box (1)');
+    expect(uniqueName('Box', ['Box', 'Box (1)'])).toBe('Box (2)');
+  });
+
+  it('does not stack suffixes when duplicating a duplicate', () => {
+    expect(uniqueName('Box (1)', ['Box', 'Box (1)'])).toBe('Box (2)');
+  });
+});

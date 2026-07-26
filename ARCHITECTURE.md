@@ -1,10 +1,15 @@
 # Architecture — Web 3D Scene Editor → Mini Game Engine
 
-Status: **proposal, awaiting confirmation** (see §8). Nothing in `src/` is built yet.
+Status: **confirmed** (see §8). Phase 1 in progress.
 
-The single constraint that drives every decision below: the scene that is authored in the
-editor today must be *played* by the same code tomorrow. So the core is written as a
-standalone, UI-free library, and the editor is one of (eventually) two consumers of it.
+Two constraints drive every decision below.
+
+1. The scene authored in the editor today must be *played* by the same code tomorrow. So the
+   core is a standalone, UI-free library, and the editor is one of (eventually) two consumers.
+2. The target game is a **25 km × 25 km** open world — zombie survival, farming, seasons.
+   That number is not a detail we can bolt on later: it invalidates "one flat entity array,
+   all loaded, one draw call each" as a data model. §9 covers what it forces us to decide now
+   versus what we can defer, and the Phase 1 schema already reflects it.
 
 ---
 
@@ -104,24 +109,32 @@ a scene saved by a newer build never loses data in an older one.
 
 ### Scene JSON (v1)
 
-Superset of the brief's schema — adds `version` and `assets` so Phase 2 textures and Phase 3
-scripts need no migration.
+Superset of the brief's schema. Entity shape is unchanged from the brief; what is added is
+`version` (migrations), `assets` (Phase 2 textures) and `world.chunkSize` + chunk-grouped
+entities (§9.2). A small scene is one chunk, so it reads almost exactly like the brief's
+example.
 
 ```jsonc
 {
   "version": 1,
   "name": "Untitled Scene",
+  "world": { "chunkSize": 256 },
   "assets": [ { "id": "tex_1", "type": "texture", "name": "crate.png", "src": "data:…" } ],
-  "entities": [
+  "chunks": [
     {
-      "id": "e1",
-      "name": "Box 1",
-      "parentId": null,
-      "transform": { "position": [0,0,0], "rotation": [0,0,0], "scale": [1,1,1] },
-      "components": [
-        { "type": "MeshRenderer", "primitive": "Box", "params": { "widthSegments": 1 } },
-        { "type": "Material", "color": "#ffffff", "alpha": 1, "mode": "Opaque",
-          "metalness": 0, "roughness": 0.8, "map": null }
+      "key": "0,0",
+      "entities": [
+        {
+          "id": "e1",
+          "name": "Box 1",
+          "parentId": null,
+          "transform": { "position": [0,0,0], "rotation": [0,0,0], "scale": [1,1,1] },
+          "components": [
+            { "type": "MeshRenderer", "primitive": "Box", "params": { "widthSegments": 1 } },
+            { "type": "Material", "color": "#ffffff", "alpha": 1, "mode": "Opaque",
+              "metalness": 0, "roughness": 0.8, "map": null }
+          ]
+        }
       ]
     }
   ]
@@ -129,6 +142,8 @@ scripts need no migration.
 ```
 
 `version` + a `migrations` table means the schema can evolve without breaking saved scenes.
+Chunk payloads are separable — the Cloudflare adapter (§8.2) will store them as individual
+objects rather than one document.
 
 ---
 
@@ -183,17 +198,103 @@ it from Phase 1 (disabled until Phase 3 fills in the systems).
 
 - **Phase 1 (MVP)** — primitives, transform gizmo + hotkeys Q/W/E/R, local/global, snapping,
   Inspector (two-way with gizmo), Hierarchy with drag-reparent/rename/multi-select/context
-  menu, full undo/redo, solid-colour material, save/load JSON.
-- **Phase 2** — texture slots + upload, alpha modes (Opaque/Transparent/Cutout), paint tool,
-  asset browser panel, UI polish.
-- **Phase 3** — Play/runtime mode, `Script` component. Out of scope now; §6 is its landing pad.
+  menu, full undo/redo, solid-colour material, save/load JSON (chunk-aware, §9.6).
+- **Phase 2** — texture slots + upload + procedural defaults, alpha modes
+  (Opaque/Transparent/Cutout), texture painting, then scatter painting into `ScatterLayer`
+  (§9.3), asset browser panel, UI polish.
+- **Phase 3** — Play/runtime mode (§6), `Script` component, Cloudflare persistence adapter,
+  and the world-scale systems from §9: streaming, LOD, camera-relative rendering, workers.
 
 ---
 
-## 8. Open questions (answer before Phase 1 starts)
+## 8. Confirmed decisions
 
-1. **"Paint"** — texture painting onto UVs, or object/scatter brush? (Default assumption:
-   texture painting.)
-2. **Persistence** — localStorage only, or a backend?
-3. **Textures** — user-uploaded only, or ship a small default library?
-4. **This stack** — confirm §1.
+1. **"Paint" = both.** Texture painting first (Phase 2), object/scatter painting after.
+   Scatter is not a second-class add-on — see §9.3, it is the feature that forces the
+   instancing/chunking model into the schema now.
+2. **Persistence: localStorage + JSON export/import now; Cloudflare backend after the MVP.**
+   Everything goes through one `ScenePersistence` interface with a `LocalStorageAdapter`
+   today, so the Cloudflare adapter (Workers + R2 for assets, D1/KV for scene metadata,
+   Durable Objects if multiplayer arrives) is a new implementation, not a refactor. Scene and
+   asset payloads are kept separately addressable from day one because a 25 km world will not
+   round-trip as one JSON blob.
+3. **Textures: user upload + procedurally generated defaults** (checker, grid, UV test).
+   No binary assets in the repo.
+4. **Stack: confirmed as §1**, with the scale work in §9 folded into the roadmap.
+
+## 9. Designing for 25 km × 25 km
+
+Most of the heavy machinery below belongs to later phases — building it now, against an empty
+world, would be guessing. What *cannot* wait is anything that would otherwise become a
+breaking change to the save format or the core data model. Those are marked **now**.
+
+### 9.1 Coordinates and precision — decide **now**
+
+Float32 has ~7 decimal digits. At 12,500 m from origin, a float32 position quantises to
+roughly 1 mm, and *rendered* vertex positions (which go through float32 matrices) start
+visibly jittering and z-fighting well before the world edge.
+
+- Scene data stores positions as plain JS numbers (**float64**) — already true, no cost.
+- Rendering uses **camera-relative transforms**: the render bridge rebases world matrices
+  around the active camera each frame, so the GPU only ever sees small coordinates.
+- The editor viewport gets the same treatment, so what you author at x=24000 looks the way it
+  will look at runtime.
+
+The rebase is implemented in the render bridge, i.e. one place. Phase 1 keeps origin at zero;
+the seam is a single `originOffset` in the bridge.
+
+### 9.2 Spatial partitioning and streaming — schema **now**, systems later
+
+The scene is partitioned into a **uniform chunk grid** (default 256 m, configurable per
+scene — a 25 km world is then ~98 × 98 chunks). Chunk coordinates are derived from an
+entity's world position, never hand-authored.
+
+Consequences baked into the v1 format:
+- The save format is **chunk-addressable**: a scene is a manifest plus per-chunk payloads.
+  A small scene serialises to a single file with one chunk — identical ergonomics to the flat
+  schema in the brief — but the reader/writer already speaks chunks, so growing to 9,600 of
+  them is data, not a migration.
+- Entities carry stable ids that are unique scene-wide, so cross-chunk references (a door
+  referencing its building) survive independent chunk loading.
+
+Streaming, chunk LOD and background (worker) load/unload land with Phase 3, behind a
+`StreamingSystem` that the loop already has a slot for.
+
+### 9.3 Mass instancing — schema **now**
+
+A 25 km world has millions of trees, rocks and grass tufts. One entity each is not viable at
+any level: not in memory, not in the hierarchy panel, not in the draw call budget.
+
+So **scatter output is not entities.** A `ScatterLayer` component holds a prototype list plus
+packed typed arrays (`Float32Array` of position/rotation/scale/variant per instance), rendered
+through `InstancedMesh` — one draw call per prototype per chunk. It is one component on one
+entity in the Hierarchy, however many million instances it contains.
+
+This is the decision that had to be made before Phase 2's scatter brush, not after: the brush
+writes into instance buffers, and undo/redo for it records buffer deltas rather than entity
+add/remove commands.
+
+Hand-placed entities stay entities. Both paths render through the same bridge.
+
+### 9.4 Draw-call and memory budget — later, but not accidental
+
+- Geometry/material caching + refcounted disposal (already in §4) — the foundation.
+- Frustum culling per chunk before per object; LOD chains per prototype; imposters for
+  distant vegetation.
+- glTF with Draco/meshopt compression for authored assets; KTX2/Basis for textures so VRAM
+  cost is a fraction of PNG.
+- Terrain as heightfield chunks with GPU-side clipmap LOD, not a mesh entity per tile.
+
+### 9.5 Threading — constraint **now**
+
+`engine/**` must stay free of `window`/`document` (§2 already forbids DOM-editor imports;
+this extends it to the DOM entirely, enforced by the same lint rule). That keeps chunk
+generation, streaming, pathfinding and physics movable into Web Workers later without
+untangling them from the browser main thread first.
+
+### 9.6 What Phase 1 actually ships against this
+
+Chunk-aware serializer, camera-relative seam in the bridge, `ScatterLayer` reserved in the
+component registry, DOM-free engine core. Everything else in §9 is scheduled, not built —
+an editor with twelve cubes in it does not need a streaming system, and writing one now would
+mean tuning it against a world that does not exist.
