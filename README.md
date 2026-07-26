@@ -4,8 +4,12 @@ A browser-based 3D scene editor, built as the first stage of a web game engine. 
 authored here are meant to be *played* later by the same core — so the engine is a standalone,
 UI-free library and the editor is one consumer of it.
 
-See [ARCHITECTURE.md](./ARCHITECTURE.md) for the design, and §9 for what the 25 km × 25 km
-open-world target forces us to decide up front.
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for the engine-wide design (§9 covers what the
+25 km × 25 km open-world target forces us to decide up front), and
+[docs/MODELING.md](./docs/MODELING.md) for the mesh/modifier/edit-mode pipeline specifically —
+kept as its own file so working on modelling doesn't require reading the rest.
+[CHANGELOG.md](./CHANGELOG.md) has the current version, what's planned next, and why each past
+change happened — read it first if you're picking this project back up.
 
 ## Running it
 
@@ -145,9 +149,10 @@ untouched, so a scene saved by a newer build never loses data in an older one.
 
 ## What's next
 
-Modelling: edit mode (vertex/edge/face selection with extrude, inset and loop cut), splines
-with lathe and sweep generators, and Boolean — which needs robust CSG and is deliberately not
-attempted yet.
+See [CHANGELOG.md](./CHANGELOG.md#next-version-v060--planned-not-started) for the active plan
+in detail. In short: edit mode (vertex/edge/face selection with extrude, inset and loop cut) is
+the next big piece — splines with lathe/sweep generators and Boolean (needs robust CSG,
+deliberately deferred) come after it.
 
 Engine: adaptive quality driven by the HUD's numbers, then instancing, LOD and chunk
 streaming. `ScatterLayer` and the `Script` component's client/server split are reserved in the
@@ -155,13 +160,20 @@ schema so neither needs a migration.
 
 ## Versions
 
-`main` holds the stable line. Release branches mark known-good states to roll back to:
+Every shipped version has a `release/vX.Y.Z` branch at the exact commit it corresponds to, so
+a regression can always be isolated by rolling back to the last one known good — see
+[CHANGELOG.md](./CHANGELOG.md) for what changed in each and why:
 
 ```bash
-git checkout release/v0.1.0   # Phase 1 editor MVP
+git checkout release/v0.5.0   # current — transform gizmo rewrite (this branch)
+git checkout release/v0.4.0   # Torus/Tube/Icosphere primitives + Bevel + utility modifiers
+git checkout release/v0.3.0   # editable quad meshes + modifier stack
 git checkout release/v0.2.0   # RenderHost + performance harness
-git checkout release/v0.3.0   # Editable meshes + modifier stack
+git checkout release/v0.1.0   # Phase 1 editor MVP
 ```
+
+`release/*` branches are rollback checkpoints, not integration targets — active work happens
+on a feature branch and merges via PR; nothing is committed directly to a `release/*` branch.
 
 CI (`.github/workflows/ci.yml`) runs typecheck, tests and build on every push and pull
 request. It needs GitHub Actions enabled on the repository to do anything.

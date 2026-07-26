@@ -176,35 +176,21 @@ before being triangulated for the GPU:
 primitive params ──▶ MeshData (quads) ──▶ modifier stack ──▶ BufferGeometry
 ```
 
-**Why quads rather than triangles.** Every modelling operation worth having depends on quad
-topology. Catmull-Clark subdivision on triangles produces pinched, uneven surfaces; extrude,
-inset and bevel are face operations, and a triangulated cube has twelve faces to push instead
-of six; edge loops only exist in quads at all. Triangulation happens exactly once, at the end.
+This is a large enough subsystem to document on its own — primitive generation, the modifier
+registry, the mesh topology/adjacency layer, and edit-mode selection rules all live in
+**[`docs/MODELING.md`](docs/MODELING.md)**, kept self-contained so a session working on
+modelling doesn't need the rest of this file (scene graph, render bridge, serialization,
+streaming). Two facts worth keeping here because they reach outside the mesh pipeline itself:
 
-**Why a stack rather than baked edits.** Non-destructive is what makes the editor comparable
-to Blender's modifiers or C4D's generators — change the source primitive's segment count and
-everything downstream re-evaluates. Order is meaningful and editable: Mirror then Array tiles
-a mirrored pair, Array then Mirror mirrors a whole row.
-
-Modifiers register through their own registry (`engine/mesh/modifiers/registry.ts`) using the
-same field schemas the component Inspector uses, so a new modifier is one file plus one import
-— no Inspector, serializer or undo changes. Unknown modifier types are skipped rather than
-throwing, matching how unknown components are handled.
-
-Shipping now: Subdivide (full Catmull-Clark, with the open-mesh boundary and pinned-corner
-rules), Bevel, Mirror, Array, Solidify, Twist, Bend, Taper, Noise Displace, Weld, Triangulate
-and Shade.
-
-Still to come: edit mode (vertex/edge/face selection with extrude, inset, loop cut), splines
-with lathe/sweep generators, and Boolean — which needs robust CSG and is deliberately not
-attempted yet.
-
-**Testing closed surfaces.** Winding correctness is checked with signed volume via the
-divergence theorem, not a centroid-dot-normal test. The centroid test only holds for convex
-shapes — a torus face on the inside of the ring legitimately points back toward the axis — and
-it silently passed an inside-out torus that signed volume caught immediately. A second check
-verifies each directed edge appears exactly once with exactly one opposite, which catches holes
-and individually flipped faces that a global volume check would average away.
+- Geometry and materials downstream of this pipeline are cached and refcounted by a key
+  derived from the primitive, its params and the modifier stack — relevant to §4 below.
+- **Testing closed surfaces:** winding correctness is checked with signed volume via the
+  divergence theorem, not a centroid-dot-normal test, because the centroid test only holds for
+  convex shapes — a torus face on the inside of the ring legitimately points back toward the
+  axis — and it silently passed an inside-out torus that signed volume caught immediately. A
+  general lesson, not just a mesh-pipeline detail: a correctness check that works on your first
+  three test shapes isn't verified until it's tried against one where the easy invariant
+  doesn't hold.
 
 ## 4. Render bridge
 
