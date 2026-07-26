@@ -55,6 +55,8 @@ interface EditorState {
   canUndo: boolean;
   canRedo: boolean;
   statusMessage: string | null;
+  /** Live numbers shown in the viewport while a gizmo handle is held. Null when idle. */
+  dragReadout: string | null;
   perf: PerfSettings;
 
   setSelection(ids: EntityId[]): void;
@@ -69,6 +71,7 @@ interface EditorState {
   bumpSceneRevision(): void;
   setHistoryState(canUndo: boolean, canRedo: boolean): void;
   setStatusMessage(message: string | null): void;
+  setDragReadout(readout: string | null): void;
   setPerf(patch: Partial<PerfSettings>): void;
 }
 
@@ -95,6 +98,7 @@ export const useEditorStore = create<EditorState>((set) => ({
   canUndo: false,
   canRedo: false,
   statusMessage: null,
+  dragReadout: null,
   perf: { ...DEFAULT_PERF },
 
   setSelection: (ids) => set({ selection: ids, lastSelected: ids[ids.length - 1] ?? null }),
@@ -114,6 +118,7 @@ export const useEditorStore = create<EditorState>((set) => ({
   bumpSceneRevision: () => set((state) => ({ sceneRevision: state.sceneRevision + 1 })),
   setHistoryState: (canUndo, canRedo) => set({ canUndo, canRedo }),
   setStatusMessage: (statusMessage) => set({ statusMessage }),
+  setDragReadout: (dragReadout) => set({ dragReadout }),
   setPerf: (patch) => set((state) => ({ perf: { ...state.perf, ...patch } })),
 }));
 
