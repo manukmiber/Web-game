@@ -1,14 +1,20 @@
 name: CI
 
+# Push covers the stable line only; everything else is covered by its pull request.
+#
+# Listing feature branches under `push` as well produced three identical runs for one commit:
+# one for the branch push, one for the pull request, and one more for the release branch
+# pointing at the same SHA. Release branches are markers on already-tested commits, so they
+# need no run of their own.
 on:
   push:
-    branches: [main, 'claude/**', 'release/**']
+    branches: [main]
   pull_request:
     branches: [main]
 
-# A newer push to the same branch makes an in-flight run irrelevant.
+# A newer push to the same ref makes an in-flight run irrelevant.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
