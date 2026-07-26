@@ -274,9 +274,11 @@ export class ViewportController {
   }
 
   private render(): void {
-    this.orbit.enabled = !this.gizmo.isDragging;
     this.orbit.update();
     this.grid.update(this.camera);
+    // Sized per frame so the handles stay a constant number of pixels across as the camera
+    // moves — a gizmo that shrinks into the distance is one you cannot grab.
+    this.gizmo.update();
     this.host.render();
   }
 
