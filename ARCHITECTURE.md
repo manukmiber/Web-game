@@ -46,7 +46,8 @@ Two constraints drive every decision below.
 src/
   engine/                 ← pure core. NO React, NO DOM-editor imports, NO editor concepts.
     scene/                  Scene, Entity, Transform, hierarchy ops
-    mesh/                   editable quad meshes, primitive generators, modifier stack
+    mesh/                   editable quad meshes, 2D shape contours, primitive generators,
+                            ear-clip tessellation, sweep/border helpers, modifier stack
     components/             component definitions + registry
     render/                 Three.js bridge (Scene data ──▶ Object3D tree) + RenderHost,
                             which owns the renderer, cameras, environment and frame draw
@@ -184,6 +185,9 @@ Primitives are not opaque parametric blobs. Each one generates an **editable qua
 before being triangulated for the GPU:
 
 ```
+                     2D shape (contours)
+                             │ fill
+                             ▼
 primitive params ──▶ MeshData (quads) ──▶ modifier stack ──▶ BufferGeometry
 ```
 
@@ -203,12 +207,32 @@ same field schemas the component Inspector uses, so a new modifier is one file p
 throwing, matching how unknown components are handled.
 
 Shipping now: Subdivide (full Catmull-Clark, with the open-mesh boundary and pinned-corner
-rules), Bevel, Mirror, Array, Solidify, Twist, Bend, Taper, Noise Displace, Weld, Triangulate
-and Shade.
+rules), Bevel, Extrude, Lathe, Inset, Transform, Mirror, Array, Solidify, Twist, Bend, Taper,
+Noise Displace, Weld, Triangulate and Shade.
 
-Still to come: edit mode (vertex/edge/face selection with extrude, inset, loop cut), splines
-with lathe/sweep generators, and Boolean — which needs robust CSG and is deliberately not
-attempted yet.
+**2D shapes are primitives, not a second object type.** `engine/mesh/shapes.ts` produces closed
+contours in ordinary 2D coordinates, and `fillShape` maps them into a flat mesh in XZ. Making
+them a parallel kind of scene object would have meant a second Inspector, a second serializer
+path and a conversion step before any modifier could touch them; making them primitives means
+Extrude, Bevel, Subdivide and the material all work on day one. The 2D stage stays genuinely 2D
+so winding, area and convexity are testable as plain numbers rather than as properties of a mesh.
+
+A shape's hole is filled as a ring of quads bridging the two contours, which is why a hole must
+have as many points as its outline. The alternative — bridging the hole into the outline with a
+zero-width slit, so the whole thing is one face — is what a general triangulator needs, and it
+produces a face that Subdivide, Bevel and Solidify all mangle.
+
+**Extrude and Lathe are one construction** (`engine/mesh/sweep.ts`) differing only in the
+transform applied along the path. Sweeping the mesh's *border* (`engine/mesh/loops.ts`) rather
+than a separate curve type is what keeps 2D and 3D on the same pipeline. The sweep also decides
+its own orientation, by measuring whether the first small step moves the surface along its
+normals or against them: a negative extrude distance, a lathe profile on the far side of the
+axis and a negative angle all produce walls wound backwards, and having one rule in one place
+beats three sign conventions in two callers.
+
+Still to come: edit mode (vertex/edge/face selection, loop cut, and extrude/inset over a
+selection rather than the whole mesh), editable Bézier paths and sweeping along one, and
+Boolean — which needs robust CSG and is deliberately not attempted yet.
 
 **Testing closed surfaces.** Winding correctness is checked with signed volume via the
 divergence theorem, not a centroid-dot-normal test. The centroid test only holds for convex
@@ -216,6 +240,23 @@ shapes — a torus face on the inside of the ring legitimately points back towar
 it silently passed an inside-out torus that signed volume caught immediately. A second check
 verifies each directed edge appears exactly once with exactly one opposite, which catches holes
 and individually flipped faces that a global volume check would average away.
+
+Swept solids are checked against closed-form volumes — a circle extruded is a cylinder, an
+offset circle lathed is a torus by Pappus's theorem, a half disc lathed is a sphere — because
+those catch a wrong radius or a dropped ring that a manifold check happily accepts.
+
+**Triangulation is ear clipping, not a fan** (`engine/mesh/tessellate.ts`). Fanning an n-gon
+from its first corner is correct only for convex faces, which every primitive generator happens
+to produce; Star, Gear and a wide Arc are not, and neither is a quad after a deformer has pushed
+one corner through the opposite edge. A fanned star paves over the notches between its points
+and lays triangles back-to-front on top of them. Convex faces keep the fan behind a convexity
+scan, so only concave ones pay.
+
+Worth recording how that bug hides: **signed area cannot detect it.** A fan's signed triangle
+areas telescope to the polygon's own area for any simple polygon, concave included, because the
+triangles that spill outside the border come back with the opposite sign. The arithmetic
+balances while the rendered surface does not, so the test measures area with the sign discarded
+and separately asserts that no triangle faces backwards.
 
 ## 4. Render bridge
 

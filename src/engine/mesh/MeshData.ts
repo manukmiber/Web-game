@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Vec3 } from '../scene/types';
+import { newellNormal, triangulatePolygon3D } from './tessellate';
 
 /**
  * An editable mesh: vertices plus **polygon** faces, not a triangle soup.
@@ -101,24 +102,27 @@ export function faceCentroid(mesh: MeshData, face: number[]): Vec3 {
 }
 
 /**
- * Face normal via Newell's method.
- *
- * Newell rather than a cross product of the first three vertices because it is correct for
- * n-gons and for faces that are not perfectly planar — both of which happen constantly once
- * deformers start moving vertices around.
+ * Face normal via Newell's method — correct for n-gons and for faces that are not perfectly
+ * planar, both of which happen constantly once deformers start moving vertices around.
  */
-export function faceNormal(mesh: MeshData, face: number[]): Vec3 {
-  const normal: Vec3 = [0, 0, 0];
-  for (let i = 0; i < face.length; i += 1) {
-    const current = getVertex(mesh, face[i]!);
-    const next = getVertex(mesh, face[(i + 1) % face.length]!);
-    normal[0] += (current[1] - next[1]) * (current[2] + next[2]);
-    normal[1] += (current[2] - next[2]) * (current[0] + next[0]);
-    normal[2] += (current[0] - next[0]) * (current[1] + next[1]);
-  }
-  const length = Math.hypot(normal[0], normal[1], normal[2]);
-  if (length < 1e-12) return [0, 1, 0];
-  return [normal[0] / length, normal[1] / length, normal[2] / length];
+export function faceNormal(mesh: MeshData, face: readonly number[]): Vec3 {
+  return newellNormal(face.map((index) => getVertex(mesh, index)));
+}
+
+/**
+ * Splits one face into triangles, as vertex indices, keeping the face's winding.
+ *
+ * The single place n-gons become triangles. Concave faces are ear-clipped; convex ones (every
+ * primitive generator's output) take a plain fan. See `tessellate.ts` for why the fan alone is
+ * not enough once 2D shapes like Star and Gear exist.
+ */
+export function triangulateFace(mesh: MeshData, face: readonly number[]): [number, number, number][] {
+  if (face.length < 3) return [];
+  if (face.length === 3) return [[face[0]!, face[1]!, face[2]!]];
+  const points = face.map((index) => getVertex(mesh, index));
+  return triangulatePolygon3D(points).map(
+    ([a, b, c]) => [face[a]!, face[b]!, face[c]!] as [number, number, number],
+  );
 }
 
 /** Bounding box, or null when the mesh is empty. */
@@ -280,10 +284,8 @@ export function toBufferGeometry(mesh: MeshData): THREE.BufferGeometry {
     const flatNormal = faceNormal(mesh, face);
     const smooth = mesh.smoothFaces?.[faceIndex] ?? false;
 
-    // Fan triangulation from the first vertex. Correct for convex faces, which is what all
-    // the generators and modifiers here produce.
-    for (let i = 1; i < face.length - 1; i += 1) {
-      for (const index of [face[0]!, face[i]!, face[i + 1]!]) {
+    for (const triangle of triangulateFace(mesh, face)) {
+      for (const index of triangle) {
         const [x, y, z] = getVertex(mesh, index);
         positions.push(x, y, z);
         const normal = (smooth ? smoothNormals.get(index) : undefined) ?? flatNormal;

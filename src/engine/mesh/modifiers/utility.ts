@@ -1,4 +1,10 @@
-import { cloneMeshData, createMeshData, weldVertices, type MeshData } from '../MeshData';
+import {
+  cloneMeshData,
+  createMeshData,
+  triangulateFace,
+  weldVertices,
+  type MeshData,
+} from '../MeshData';
 import { registerModifier, type Modifier } from './registry';
 
 // -------------------------------------------------------------------- Weld
@@ -41,12 +47,12 @@ export function createTriangulateModifier(
 }
 
 /**
- * Fans every n-gon into triangles as actual mesh data.
+ * Splits every n-gon into triangles as actual mesh data.
  *
- * The renderer triangulates anyway on its way to the GPU, so this changes nothing visually.
- * What it changes is the *topology downstream*: once triangulated, Subdivide behaves like a
- * triangle subdivider and Bevel sees three edges per face instead of four. That is occasionally
- * what you want, and it is what an exporter or a physics hull needs.
+ * The renderer triangulates anyway on its way to the GPU, through the same code, so this changes
+ * nothing visually. What it changes is the *topology downstream*: once triangulated, Subdivide
+ * behaves like a triangle subdivider and Bevel sees three edges per face instead of four. That is
+ * occasionally what you want, and it is what an exporter or a physics hull needs.
  */
 export function triangulate(mesh: MeshData): MeshData {
   const out = createMeshData();
@@ -56,8 +62,8 @@ export function triangulate(mesh: MeshData): MeshData {
 
   for (const [faceIndex, face] of mesh.faces.entries()) {
     const smooth = mesh.smoothFaces?.[faceIndex] ?? false;
-    for (let i = 1; i < face.length - 1; i += 1) {
-      out.faces.push([face[0]!, face[i]!, face[i + 1]!]);
+    for (const triangle of triangulateFace(mesh, face)) {
+      out.faces.push([...triangle]);
       out.smoothFaces.push(smooth);
     }
   }

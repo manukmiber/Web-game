@@ -28,15 +28,25 @@ npm run dev        # http://localhost:5173
 
 ## Authoring
 
-**Primitives** — Box, Sphere, Icosphere, Plane, Cylinder, Capsule, Cone, Torus, Tube, and Empty
-(transform only, for grouping). Added from the toolbar's *Add* menu; they land where the
-viewport camera is looking. Each generates an editable **quad mesh** with segment controls, not
-a fixed triangle blob.
+**3D primitives** — Box, Sphere, Icosphere, Plane, Cylinder, Capsule, Cone, Torus, Tube, Wedge,
+and Empty (transform only, for grouping). Added from the toolbar's *Add* menu; they land where
+the viewport camera is looking. Each generates an editable **quad mesh** with segment controls,
+not a fixed triangle blob.
 
 Torus is the cleanest topology of the set — every vertex has valence four and there are no
 poles — which makes it the shape to reach for when checking whether a modifier misbehaves.
 Icosphere exists alongside the UV sphere because its triangles are near-uniform everywhere,
-where a UV sphere crowds vertices at the poles and stretches them at the equator.
+where a UV sphere crowds vertices at the poles and stretches them at the equator. Wedge is
+there because ramps are the second thing anyone blocks a level out with.
+
+**2D shapes** — Circle, Ellipse, Rectangle (with corner rounding), Polygon, Star, Arc, Ring and
+Gear. Flat profiles lying in the XZ plane, in the *Add ▾* menu under **2D**.
+
+They are ordinary primitives rather than a separate kind of object, so the material, the
+modifier stack, the serializer and the Inspector all already work on them. Usually a 2D shape is
+a step on the way to a solid: **Extrude** it into a badge or a column, **Lathe** it into a
+torus, a vase or a spring. A building footprint drawn as a Rectangle and extruded is the same
+pipeline as a Star extruded with a twist.
 
 **Modifier stack** — non-destructive, reorderable, evaluated over the generated mesh:
 
@@ -44,17 +54,31 @@ where a UV sphere crowds vertices at the poles and stretches them at the equator
 | --- | --- |
 | Subdivide | Full Catmull-Clark, up to 4 levels, with correct open-mesh and corner rules |
 | Bevel | Rounds every edge by insetting faces and bridging the gaps, 1–6 segments |
+| Extrude | Pushes a profile into a solid, along any axis, with steps, taper and twist |
+| Lathe | Revolves a profile around an axis — plus a rise, which makes screws and springs |
+| Inset Faces | Shrinks every face inside its own border with mitred corners, and bridges the gap |
+| Transform | Moves, rotates and scales the mesh *inside* the stack, where it changes what comes next |
 | Mirror | Reflects across X/Y/Z, welding the seam so it stays one smooth surface |
 | Array | Repeats with relative and constant offsets |
 | Solidify | Gives a surface thickness, closing open borders with rim faces |
 | Twist / Bend / Taper | Deformers, parameterised against the object's own bounds |
 | Noise Displace | Deterministic, position-hashed so welded seams do not tear |
 | Weld | Merges vertices by distance — closes seams other modifiers leave split |
-| Triangulate | Fans n-gons into triangles as real topology, not just at render time |
+| Triangulate | Splits n-gons into triangles as real topology, not just at render time |
 | Shade Smooth / Flat | Overrides per-face shading for the whole mesh |
 
 Bevel is the one that makes rendered geometry stop looking like programmer art: real objects
 have no perfectly sharp edges, and a bevel is what gives them a highlight to catch.
+
+Extrude and Lathe both sweep the mesh's **border**, so they need an open surface — a 2D shape,
+or anything else with a hole in it. A closed solid has no border and passes through untouched;
+the operation people usually want there is Solidify.
+
+Transform looks redundant next to the object's own transform and is not, because position in
+the stack is the whole point. Lathe spins the profile around the *object origin*, so the only
+way to set the radius of the resulting ring is to move the profile off the axis first — and
+doing that with the entity transform would move the finished ring instead. A Circle, a Transform
+of 1 along X, and a Lathe is a torus.
 
 Order matters and is editable — Mirror then Array tiles a mirrored pair, Array then Mirror
 mirrors a whole row. Each entry toggles on and off without being removed, and the evaluated
@@ -210,9 +234,10 @@ walk through walls and each other. Then line-of-sight instead of plain distance 
 navigation around obstacles, and moving scripts into a Worker, which is the same change as
 making the sandbox a real one.
 
-Modelling: edit mode (vertex/edge/face selection with extrude, inset and loop cut), splines with
-lathe and sweep generators, and Boolean — which needs robust CSG and is deliberately not
-attempted yet.
+Modelling: edit mode (vertex/edge/face selection, loop cut, and extrude/inset on a *selection*
+rather than on every face), editable Bézier paths so a profile can be drawn rather than picked
+from the shape list, sweeping a profile along one of those paths, and Boolean — which needs
+robust CSG and is deliberately not attempted yet.
 
 Engine: adaptive quality driven by the HUD's numbers, then instancing, LOD and chunk streaming.
 `ScatterLayer` is reserved in the schema so it needs no migration.
@@ -226,11 +251,14 @@ git checkout release/v0.1.0   # Phase 1 editor MVP
 git checkout release/v0.2.0   # RenderHost + performance harness
 git checkout release/v0.3.0   # Editable meshes + modifier stack
 git checkout release/v0.4.0   # More primitives, bevel and utility modifiers
+git checkout release/v0.5.0   # Scripting, NPCs and scene-owned rendering
 ```
 
-This version adds scripting, NPCs and scene-owned rendering. It needed **no schema change** —
-the new components are additive, and unknown ones already round-trip, so a scene saved by the
-previous build opens untouched and one saved by this build opens in it minus the new behaviour.
+This version (v0.6.0) adds the 2D shapes, the Extrude/Lathe/Inset/Transform modifiers and the
+Wedge. It needed **no schema change**: new primitive parameters and new modifier types are both
+additive, unknown modifiers are skipped rather than throwing, and every parameter falls back to
+its default. A scene saved by the previous build opens untouched, and one saved by this build
+opens in the previous build with the new modifiers simply not applied.
 
 CI (`.github/workflows/ci.yml`) runs typecheck, tests and build on every push and pull
 request. It needs GitHub Actions enabled on the repository to do anything.

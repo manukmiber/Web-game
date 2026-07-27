@@ -7,6 +7,7 @@ import type { Component } from '../scene/types';
  */
 export type FieldSchema =
   | { kind: 'number'; key: string; label: string; min?: number; max?: number; step?: number; integer?: boolean }
+  | { kind: 'vec3'; key: string; label: string; step?: number }
   | { kind: 'boolean'; key: string; label: string }
   | { kind: 'string'; key: string; label: string }
   | { kind: 'color'; key: string; label: string }

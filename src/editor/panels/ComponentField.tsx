@@ -1,5 +1,5 @@
 import type { FieldSchema } from '@engine/components/registry';
-import { Field, NumberField } from './fields';
+import { Field, NumberField, Vec3Field } from './fields';
 
 /**
  * Renders one field from a registry field schema.
@@ -31,6 +31,27 @@ export function ComponentField({
           />
         </Field>
       );
+    case 'vec3': {
+      // Writes the whole triple rather than one axis, because the command layer records a value
+      // per path — a per-axis path would make an undo entry for X and one for Y out of a single
+      // drag across the row.
+      const vector: [number, number, number] = Array.isArray(value)
+        ? [Number(value[0]) || 0, Number(value[1]) || 0, Number(value[2]) || 0]
+        : [0, 0, 0];
+      return (
+        <Field label={schema.label}>
+          <Vec3Field
+            value={vector}
+            step={schema.step}
+            onChange={(axis, next) => {
+              const updated: [number, number, number] = [...vector];
+              updated[axis] = next;
+              onChange(updated);
+            }}
+          />
+        </Field>
+      );
+    }
     case 'boolean':
       return (
         <Field label={schema.label}>

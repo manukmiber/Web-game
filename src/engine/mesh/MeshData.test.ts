@@ -26,6 +26,7 @@ const CLOSED_PRIMITIVES = [
   'Capsule',
   'Torus',
   'Tube',
+  'Wedge',
 ] as const;
 
 /**
@@ -166,6 +167,31 @@ describe('toBufferGeometry', () => {
     }
   });
 
+  it('keeps a concave n-gon inside its own outline', () => {
+    // A star is one ten-corner face. Fanning it from the first corner would pave over the
+    // notches between its points and lay triangles back-to-front on top of them, so the shape
+    // rendered as a filled decagon. Every triangle should face the same way as the face itself.
+    const star = generatePrimitive('Star', { radius: 1, innerRadius: 0.3, points: 5 });
+    const geometry = toBufferGeometry(star);
+    const positions = geometry.getAttribute('position');
+
+    expect(positions.count).toBe(8 * 3);
+    let area = 0;
+    for (let i = 0; i < positions.count; i += 3) {
+      // Signed area in XZ, where the shape lies. A negative one is a triangle that folded out.
+      const ax = positions.getX(i);
+      const az = positions.getZ(i);
+      const triangle =
+        ((positions.getX(i + 1) - ax) * (positions.getZ(i + 2) - az) -
+          (positions.getZ(i + 1) - az) * (positions.getX(i + 2) - ax)) /
+        2;
+      expect(triangle).toBeLessThan(0); // Facing +Y means clockwise seen down the Z/X plane.
+      area += Math.abs(triangle);
+    }
+    // Exactly the star's own area — no double covering.
+    expect(area).toBeCloseTo(5 * 1 * 0.3 * Math.sin(Math.PI / 5), 6);
+  });
+
   it('averages normals across smooth faces so a sphere has no facets', () => {
     const sphere = generatePrimitive('Sphere', { radius: 1, radialSegments: 16, heightSegments: 8 });
     const geometry = toBufferGeometry(sphere);
@@ -301,6 +327,19 @@ describe('primitive generators', () => {
     expect(vertexCount(ico)).toBeLessThan(400);
     // Closed solid.
     expect(vertexCount(ico) - edgeCount(ico) + ico.faces.length).toBe(2);
+  });
+
+  it('builds a wedge as a closed ramp sloping toward +Z', () => {
+    const wedge = generatePrimitive('Wedge', { width: 2, height: 1, depth: 4 });
+
+    expect(vertexCount(wedge)).toBe(6);
+    expect(wedge.faces).toHaveLength(5);
+    expect(vertexCount(wedge) - edgeCount(wedge) + wedge.faces.length).toBe(2);
+
+    // The high edge is at the back, so nothing at +Z rises above the floor.
+    for (let i = 0; i < wedge.positions.length; i += 3) {
+      if (wedge.positions[i + 2]! > 0) expect(wedge.positions[i + 1]).toBeCloseTo(-0.5);
+    }
   });
 
   it('scales triangle count with segments, which is the heavy-geometry lever', () => {

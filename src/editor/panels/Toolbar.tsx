@@ -1,6 +1,11 @@
 import { useRef } from 'react';
 import { PREFAB_MENU, createPrefab, type PrefabKind } from '@engine/scene/prefabs';
-import { PRIMITIVE_MENU, createPrimitiveEntity, type PrimitiveKind } from '@engine/scene/primitives';
+import {
+  SHAPE_MENU,
+  SOLID_MENU,
+  createPrimitiveEntity,
+  type PrimitiveKind,
+} from '@engine/scene/primitives';
 import { useEditor } from '../EditorContext';
 import { useEditorStore, type TransformTool } from '../state/editorStore';
 import { AddEntitiesCommand, AddEntityCommand } from '../commands/sceneCommands';
@@ -167,16 +172,25 @@ export function Toolbar({ spawnPoint }: Props) {
             if (event.currentTarget.value) addPrimitive(event.currentTarget.value as PrimitiveKind);
             event.currentTarget.value = '';
           }}
-          title="Create a 3D object"
+          title="Create an object — a solid, or a flat 2D profile to extrude or lathe"
         >
           <option value="" disabled>
             Add ▾
           </option>
-          {PRIMITIVE_MENU.map((kind) => (
-            <option key={kind} value={kind}>
-              {kind}
-            </option>
-          ))}
+          <optgroup label="3D">
+            {SOLID_MENU.map((kind) => (
+              <option key={kind} value={kind}>
+                {kind}
+              </option>
+            ))}
+          </optgroup>
+          <optgroup label="2D">
+            {SHAPE_MENU.map((kind) => (
+              <option key={kind} value={kind}>
+                {kind}
+              </option>
+            ))}
+          </optgroup>
         </select>
         <select
           value=""

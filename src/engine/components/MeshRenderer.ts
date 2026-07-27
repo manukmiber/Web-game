@@ -45,6 +45,14 @@ const PARAM_LABELS: Record<keyof PrimitiveParams, string> = {
   tubularSegments: 'Tubular Segments',
   innerRadius: 'Inner Radius',
   subdivisions: 'Subdivisions',
+  cornerRadius: 'Corner Radius',
+  cornerSegments: 'Corner Segments',
+  sides: 'Sides',
+  points: 'Points',
+  startAngle: 'Start Angle °',
+  sweepAngle: 'Sweep Angle °',
+  teeth: 'Teeth',
+  toothDepth: 'Tooth Depth',
 };
 
 const SEGMENT_KEYS = new Set<keyof PrimitiveParams>([
@@ -54,10 +62,38 @@ const SEGMENT_KEYS = new Set<keyof PrimitiveParams>([
   'radialSegments',
   'capSegments',
   'tubularSegments',
+  'cornerSegments',
+  'sides',
+  'points',
+  'teeth',
 ]);
+
+/** Angles are the only params that legitimately go negative. */
+const ANGLE_KEYS = new Set<keyof PrimitiveParams>(['startAngle', 'sweepAngle']);
+
+/** Counts that need more than one to describe anything. */
+const MIN_COUNT: Partial<Record<keyof PrimitiveParams, number>> = {
+  sides: 3,
+  points: 3,
+  teeth: 3,
+};
+
+/**
+ * Sizes where zero is a real choice rather than a degenerate one: no corner rounding, no bore,
+ * no teeth standing out. Every other dimension is clamped just above zero, because a
+ * zero-radius sphere is nothing at all.
+ */
+const ZERO_ALLOWED = new Set<keyof PrimitiveParams>(['cornerRadius', 'innerRadius', 'toothDepth']);
 
 /** Icosphere recursion is capped much lower — each level quadruples the triangle count. */
 const RECURSION_KEYS = new Set<keyof PrimitiveParams>(['subdivisions']);
+
+function lowerBound(key: keyof PrimitiveParams): number | undefined {
+  if (ANGLE_KEYS.has(key)) return undefined;
+  if (SEGMENT_KEYS.has(key)) return MIN_COUNT[key] ?? 1;
+  if (RECURSION_KEYS.has(key) || ZERO_ALLOWED.has(key)) return 0;
+  return 0.001;
+}
 
 export function createMeshRenderer(
   overrides: Partial<MeshRendererComponent> = {},
@@ -85,15 +121,16 @@ registerComponent<MeshRendererComponent>({
     for (const key of relevantParams(component.primitive)) {
       const isSegment = SEGMENT_KEYS.has(key);
       const isRecursion = RECURSION_KEYS.has(key);
+      const isAngle = ANGLE_KEYS.has(key);
       fields.push({
         kind: 'number',
         key: `params.${key}`,
         label: PARAM_LABELS[key],
+        min: lowerBound(key),
         // Segment counts are the direct lever on triangle count, so they are capped: a
         // 512-segment sphere behind a Subdivide modifier is millions of triangles.
-        min: isSegment ? 1 : isRecursion ? 0 : 0.001,
         max: isSegment ? 256 : isRecursion ? 5 : undefined,
-        step: isSegment || isRecursion ? 1 : 0.1,
+        step: isSegment || isRecursion ? 1 : isAngle ? 5 : 0.1,
         integer: isSegment || isRecursion,
       });
     }
