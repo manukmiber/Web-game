@@ -2,6 +2,7 @@ import { Emitter } from '../core/Emitter';
 import { Scene } from '../scene/Scene';
 import { AssetStore } from '../assets/AssetStore';
 import { GameState } from '../gameplay/GameState';
+import { HardwareBus } from '../hardware/HardwareBus';
 import { InputState } from '../input/InputState';
 import { FrameStats } from '../perf/FrameStats';
 import { bindAssetStore } from '../render/material';
@@ -83,6 +84,15 @@ export class Engine {
   readonly input = new InputState();
   /** Runtime gameplay state — health, factions, script variables. Cleared on every mode change. */
   readonly game = new GameState();
+  /**
+   * Attached boards and their channels. Beside `input` rather than inside it because hardware
+   * is bidirectional and input is not — but pumped on the same schedule, for the same reason.
+   *
+   * Devices survive Play and Stop: which board is plugged in is a property of the desk, not of
+   * the scene, and closing a serial port the user opened by hand because they pressed Stop
+   * would be its own kind of rude.
+   */
+  readonly hardware = new HardwareBus();
 
   private systems: System[] = [];
   private mode: EngineMode = 'edit';
@@ -141,6 +151,11 @@ export class Engine {
 
   tick(dt: number): void {
     this.stats.beginFrame();
+    // Serial arrives whenever the USB stack feels like it. Applying it here, once, is what
+    // gives a frame one consistent view of the rig instead of a stick that moves mid-tick —
+    // the same contract `InputState` keeps for the keyboard. Pumped in edit mode too, so the
+    // hardware panel shows live channel values while a pot is being calibrated.
+    this.hardware.pump();
     for (const system of this.systems) {
       if (system.runsIn.includes(this.mode)) system.update(dt, this);
     }
@@ -153,6 +168,7 @@ export class Engine {
     this.stats.record(dt);
     // Edges (`wasPressed`) last exactly one tick, so this has to be after the systems ran.
     this.input.endFrame();
+    this.hardware.endFrame();
   }
 
   /**
@@ -175,6 +191,9 @@ export class Engine {
     this.mode = mode;
     this.game.reset();
     this.input.clear();
+    // Buffered lines and edges go; the connections stay. Before the systems reset, so a
+    // system zeroing its outputs writes to a device that has forgotten what it last sent.
+    this.hardware.reset();
     for (const system of this.systems) system.reset?.(this);
     this.events.emit('modeChanged', { mode });
   }
@@ -184,6 +203,7 @@ export class Engine {
     for (const system of this.systems) system.dispose?.();
     this.systems = [];
     this.assets.disposeAll();
+    this.hardware.dispose();
     this.events.clear();
   }
 }

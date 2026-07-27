@@ -22,7 +22,7 @@ export interface ScriptComponent extends Component {
 }
 
 export const DEFAULT_SCRIPT_SOURCE = `// Runs in Play mode. See docs/SCRIPTING.md for the full API.
-// Injected: entity, scene, input, time, props, game, console.
+// Injected: entity, scene, input, time, props, game, hardware, console.
 
 function start() {
   console.log(entity.name + ' started');

@@ -34,7 +34,7 @@ export interface EditorContextValue {
 const EditorContext = createContext<EditorContextValue | null>(null);
 
 /** Reported to MCP clients in `initialize`, so a client can tell which build it is driving. */
-const EDITOR_VERSION = '0.7.0';
+const EDITOR_VERSION = '0.7.1';
 
 export function EditorProvider({ children }: { children: ReactNode }) {
   // Refs rather than state: these are created once and must survive every re-render, and
@@ -101,6 +101,24 @@ export function EditorProvider({ children }: { children: ReactNode }) {
           source: message.source,
           text: message.text,
           entityId: message.entityId,
+        }),
+      ),
+      // A board connecting, disconnecting or complaining belongs in the same place script
+      // errors do: it is the only way to find out that a rig stopped reporting mid-session.
+      engine.hardware.events.on('log', ({ deviceId, level, text }) =>
+        useEditorStore.getState().pushConsole({
+          level: level === 'warn' ? 'warn' : level,
+          source: deviceId,
+          text,
+          entityId: null,
+        }),
+      ),
+      systems.hardware.events.on('problem', ({ entityId, text }) =>
+        useEditorStore.getState().pushConsole({
+          level: 'error',
+          source: 'Hardware',
+          text,
+          entityId,
         }),
       ),
       engine.game.events.on('damaged', ({ id, amount, health, sourceId }) => {

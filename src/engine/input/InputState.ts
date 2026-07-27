@@ -82,6 +82,7 @@ export class InputState {
   private down = new Set<string>();
   private pressed = new Set<string>();
   private released = new Set<string>();
+  private axes = new Map<string, number>();
 
   // ------------------------------------------------------------------ writes
 
@@ -111,6 +112,32 @@ export class InputState {
 
   addWheel(delta: number): void {
     this.wheelDelta += delta;
+  }
+
+  /**
+   * Sets a named analog axis, -1..1.
+   *
+   * Keys are a poor fit for a control that is not on or off: a potentiometer at a third of its
+   * travel is not "W held". Named axes are the seam where continuous hardware — a stick, a
+   * pedal, a wheel — reaches gameplay without every system growing a second input path. The
+   * standard names the built-in systems read are `move`, `strafe` and `turn`; anything else is
+   * free for scripts.
+   *
+   * Level state, not edge state: an axis holds its value until something writes another one,
+   * which is why `endFrame` leaves it alone and `clear` does not.
+   */
+  setAxis(name: string, value: number): void {
+    this.axes.set(name, value < -1 ? -1 : value > 1 ? 1 : value);
+  }
+
+  getAxis(name: string): number {
+    return this.axes.get(name) ?? 0;
+  }
+
+  /** Keyboard axis plus the analog one, clamped — so a stick and the arrow keys can coexist. */
+  combinedAxis(negative: string, positive: string, name: string): number {
+    const total = this.axis(negative, positive) + this.getAxis(name);
+    return total < -1 ? -1 : total > 1 ? 1 : total;
   }
 
   // ------------------------------------------------------------------- reads
@@ -161,6 +188,7 @@ export class InputState {
     this.down.clear();
     this.pressed.clear();
     this.released.clear();
+    this.axes.clear();
     this.buttons = 0;
     this.pointerDeltaX = 0;
     this.pointerDeltaY = 0;

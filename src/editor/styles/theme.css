@@ -1057,3 +1057,276 @@ input[type='color'] {
   align-self: end;
   padding: 3px 10px;
 }
+
+/* --------------------------------------------------------------- hardware */
+
+.field-text {
+  display: block;
+}
+
+.field-text > label {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--text-dim);
+}
+
+.field-text textarea {
+  width: 100%;
+  resize: vertical;
+  font: inherit;
+  line-height: 1.45;
+}
+
+.field-text textarea.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
+.hardware-toggle {
+  position: absolute;
+  left: 96px;
+  bottom: 8px;
+  padding: 3px 10px;
+  font-size: 11px;
+  opacity: 0.85;
+}
+
+.hardware-toggle.live {
+  background: #2f5d3a;
+  border-color: #3f7a4d;
+  color: #d9ffe2;
+  opacity: 1;
+}
+
+.hardware {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 300px;
+  display: flex;
+  flex-direction: column;
+  background: rgba(24, 24, 24, 0.96);
+  border-right: 1px solid var(--border-light);
+}
+
+.hardware-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 3px 8px;
+  background: var(--bg-header);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+.hardware-header select {
+  max-width: 84px;
+  font-size: 10px;
+}
+
+.hardware-header button {
+  margin-left: 4px;
+  padding: 1px 6px;
+  font-size: 10px;
+}
+
+.hardware-connect {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel-alt);
+}
+
+.hardware-connect input {
+  grid-column: 1 / -1;
+  font-size: 11px;
+}
+
+.hardware-connect button {
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+.hardware-note {
+  margin: 6px 8px;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+
+.hardware-note.error {
+  color: #ff8f8f;
+}
+
+.hardware-note code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text);
+}
+
+.hardware-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  font-size: 11px;
+}
+
+.hardware-empty {
+  padding: 4px 4px 10px;
+  color: var(--text-dim);
+}
+
+.hardware-empty p {
+  margin: 6px 8px;
+}
+
+.hardware-device {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 5px;
+}
+
+.hardware-device-header {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px 4px 8px;
+  background: var(--bg-panel-alt);
+}
+
+.hardware-name {
+  color: var(--text-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hardware-id,
+.hardware-status {
+  grid-column: 1;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.hardware-status.open {
+  color: #7ac74f;
+}
+
+.hardware-status.error {
+  color: #ff8f8f;
+}
+
+.hardware-status.opening {
+  color: #e8c46a;
+}
+
+.hardware-device-header button {
+  margin-left: 3px;
+  padding: 1px 5px;
+  font-size: 10px;
+}
+
+.hardware-channels {
+  padding: 3px 8px 0;
+}
+
+.hardware-channel {
+  display: grid;
+  grid-template-columns: 52px 1fr 44px;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.hardware-channel-name.down {
+  color: #7ac74f;
+}
+
+.hardware-bar {
+  display: block;
+  height: 6px;
+  background: var(--bg-input);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.hardware-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 60ms linear;
+}
+
+.hardware-raw {
+  text-align: right;
+  color: var(--text-dim);
+}
+
+.hardware-sim {
+  margin: 6px 8px 2px;
+  padding: 5px 6px;
+  background: var(--bg-panel-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.hardware-sim-row {
+  display: grid;
+  grid-template-columns: 28px 1fr 40px;
+  align-items: center;
+  gap: 6px;
+  padding: 1px 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+}
+
+.hardware-sim-row input[type='range'] {
+  width: 100%;
+}
+
+.hardware-sim-row button {
+  padding: 0 6px;
+  font-size: 10px;
+}
+
+.hardware-sim-row button.active {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--accent-text);
+}
+
+.hardware-sim-outputs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid var(--border);
+}
+
+.hardware-sim-outputs .hardware-note {
+  margin: 0;
+}
+
+.hardware-output {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 10px;
+  color: var(--text);
+}
+
+.hardware-lamp {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #e8c46a;
+}

@@ -12,6 +12,8 @@ import './Environment';
 import './Script';
 import './NpcAgent';
 import './CharacterController';
+import './HardwareInput';
+import './HardwareOutput';
 
 export * from './registry';
 export * from './MeshRenderer';
@@ -23,3 +25,5 @@ export * from './Environment';
 export * from './Script';
 export * from './NpcAgent';
 export * from './CharacterController';
+export * from './HardwareInput';
+export * from './HardwareOutput';

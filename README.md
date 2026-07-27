@@ -10,9 +10,13 @@ character walks and the zombies notice.
 Press **F2** and it takes instructions: the built-in assistant authors scenes through the same
 tool layer an external MCP client can drive it with.
 
+Press **F9** and it takes a controller: an Arduino on the end of a USB cable becomes an analog
+steering axis, and the player's health dims an LED on the desk.
+
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the design and §9 for what the 25 km × 25 km
 open-world target forces us to decide up front, [docs/SCRIPTING.md](./docs/SCRIPTING.md) for
-the script API, and [docs/AI.md](./docs/AI.md) for the tools and MCP.
+the script API, [docs/AI.md](./docs/AI.md) for the tools and MCP, and
+[docs/HARDWARE.md](./docs/HARDWARE.md) for external hardware.
 
 ## Running it
 
@@ -103,7 +107,7 @@ see what subdivision did to the topology.
 | `Del` | Delete | | `Ctrl+G` | Group selected |
 | `F2` | Rename | | `Ctrl+A` | Select all |
 | `Esc` | Deselect | | `Ctrl+S` | Save to local storage |
-| `F8` | Perf HUD | | | |
+| `F8` | Perf HUD | | `F9` | Hardware panel |
 
 Coloured axis handles (X red, Y green, Z blue), rotation rings, scale boxes with a centre
 handle for uniform scale. Local/Global space toggle. Grid snapping for move and angle snapping
@@ -173,6 +177,7 @@ exactly — positions, spawned entities, health, script state, all of it.
 | `←` `→` or `Q` `E` | Turn |
 | `Shift` | Sprint |
 | `Esc` | Stop and restore |
+| `F9` | Hardware panel — live channel values, while playing |
 
 **Scripting** — a `Script` component runs JavaScript on its entity, with `start`, `update(dt)`
 and `destroy` hooks and an API for the entity, the scene, input, time, gameplay state and the
@@ -196,7 +201,8 @@ whole third-person rig; the transform hierarchy does the following.
 select whatever produced it.
 
 Add any of it from the toolbar's **Game ▾** menu: Player, Zombie, Villager, Animal, Camera,
-lights, Environment, or a Game Logic object carrying an example spawner script.
+lights, Environment, a Game Logic object carrying an example spawner script, or a Hardware Rig
+carrying the default bindings.
 
 ## AI integration
 
@@ -234,6 +240,40 @@ to the tool layer.
 
 Full reference, including how to add a tool and what the sandbox does *not* protect, in
 [docs/AI.md](./docs/AI.md).
+
+## External hardware
+
+An Arduino can drive a scene, and a scene can drive it back. Press **F9** for the hardware panel.
+
+**Connecting** — **USB Serial** over Web Serial (Chrome and Edge, from a click), **WebSocket**
+for a networked board or a bridge process, or **Simulated**: a board made of sliders, so the
+bindings can be built and tested before any hardware arrives.
+
+**The protocol** is lines of ASCII, both directions — `A0=512 D2=1` in, `D13=255` out — which is
+a protocol you can debug with the Arduino IDE's own serial monitor and type by hand to test a
+servo. Reference firmware is in [`firmware/WebGameLink`](./firmware/WebGameLink), and it is
+worth reading for the rate-limiting alone: report on change, cap the rate, never `delay()`.
+
+**Bindings** live on two components and are plain text, one per line:
+
+```
+A0 -> axis:turn bipolar deadzone=0.06     a potentiometer steers
+D2 -> key:Space                           a button jumps
+D13 <- health01 scale=255 rate=8          a lamp dims as the player is hurt
+```
+
+A binding to `key:Space` writes the same key state a keyboard does, so **nothing downstream can
+tell the difference** — a scene built with a keyboard works with a rig plugged in, and a scene
+built for a rig degrades to the keyboard when it is unplugged. Analog controls arrive as named
+axes (`move`, `strafe`, `turn`) which are summed with the keys, so the character walks at a third
+speed for a third of the travel: the thing keys cannot do.
+
+Inbound lines are applied once per frame, before any system runs, so a frame sees one consistent
+snapshot of the rig and `wasPressed` means "since the last frame". Devices are never serialized —
+which board is on the desk is not a property of the level.
+
+Scripts get `hardware` for what bindings cannot express. Full reference, including the wire
+format and the security note, in [docs/HARDWARE.md](./docs/HARDWARE.md).
 
 ## Scene format
 
@@ -283,6 +323,9 @@ robust CSG and is deliberately not attempted yet.
 Engine: adaptive quality driven by the HUD's numbers, then instancing, LOD and chunk streaming.
 `ScatterLayer` is reserved in the schema so it needs no migration.
 
+Hardware: the Gamepad API as a third device kind — the same channel model, a different pipe —
+and a serial-to-WebSocket bridge for browsers without Web Serial.
+
 ## Versions
 
 `main` holds the stable line. Release branches mark known-good states to roll back to:
@@ -294,12 +337,23 @@ git checkout release/v0.3.0   # Editable meshes + modifier stack
 git checkout release/v0.4.0   # More primitives, bevel and utility modifiers
 git checkout release/v0.5.0   # Scripting, NPCs and scene-owned rendering
 git checkout release/v0.6.0   # 2D shapes, extrude/lathe, tessellation
+git checkout release/v0.7.0   # Assistant tool layer and MCP server
 ```
 
-This version (v0.7.0) adds the assistant tool layer and the MCP server. It needed **no schema
-change and no engine changes** beyond a new directory: the tools are a consumer of the scene
-model, not an extension of it, and the one thing they needed from the editor — undo — was
-already an interface away. Scenes are unaffected in both directions.
+v0.7.0 added the assistant tool layer and the MCP server. It needed **no schema change and no
+engine changes** beyond a new directory: the tools are a consumer of the scene model, not an
+extension of it, and the one thing they needed from the editor — undo — was already an interface
+away. Scenes are unaffected in both directions.
+
+This version (v0.7.1) adds external hardware. Also **no schema change**: two new components,
+which round-trip like any other, and a bus beside `input` on the Engine. Two things did change
+in existing code, both found by making an analog stick agree with the keyboard:
+
+- `A` strafed **right**. `axis('KeyD', 'KeyA')` reads "A minus D", and local +X is right — a
+  sign nobody had to write down until a stick had to agree with it.
+- Movement was **normalised** to the unit circle rather than clamped to it, which fixed
+  diagonals (the intent) and also rescaled every partial input to full speed (not the intent,
+  and invisible while keys were the only source). Now only lengths above 1 are shortened.
 
 CI (`.github/workflows/ci.yml`) runs typecheck, tests and build on every push and pull
 request. It needs GitHub Actions enabled on the repository to do anything.
@@ -309,10 +363,13 @@ request. It needs GitHub Actions enabled on the repository to do anything.
 ```
 src/
   engine/    core — scene graph, mesh pipeline, components, render host, serialization,
-             loop, scripting, AI, gameplay, input, and the assistant tool layer + MCP
-             server. No React, no DOM. This is what the runtime uses.
-  editor/    panels, gizmo, undo/redo, persistence, console, assistant panel. Editor only.
+             loop, scripting, AI, gameplay, input, hardware (protocol, bus, bindings)
+             and the assistant tool layer + MCP server. No React, no DOM. This is what
+             the runtime uses.
+  editor/    panels, gizmo, undo/redo, persistence, console, assistant panel, and the
+             hardware transports (Web Serial, WebSocket). Editor only.
 tools/       mcp-bridge.mjs — stdio ↔ dev server, for external MCP clients.
+firmware/    WebGameLink — reference Arduino sketch for the hardware protocol.
 ```
 
 `src/engine/boundary.test.ts` enforces that split.

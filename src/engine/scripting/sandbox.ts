@@ -1,6 +1,13 @@
 import type { ScriptPropValue } from '../components/Script';
 import type { InputState } from '../input/InputState';
-import type { EntityHandle, ScriptConsole, ScriptGame, ScriptTime, ScriptWorld } from './ScriptApi';
+import type {
+  EntityHandle,
+  ScriptConsole,
+  ScriptGame,
+  ScriptHardware,
+  ScriptTime,
+  ScriptWorld,
+} from './ScriptApi';
 
 /** Everything injected into a script's scope. Order must match `CONTEXT_KEYS`. */
 export interface ScriptContext {
@@ -10,6 +17,7 @@ export interface ScriptContext {
   time: ScriptTime;
   props: Record<string, ScriptPropValue>;
   game: ScriptGame;
+  hardware: ScriptHardware;
   console: ScriptConsole;
 }
 
@@ -24,7 +32,16 @@ export type ScriptFactory = (context: ScriptContext) => ScriptHooks;
 
 export type CompileResult = { ok: true; factory: ScriptFactory } | { ok: false; error: string };
 
-const CONTEXT_KEYS = ['entity', 'scene', 'input', 'time', 'props', 'game', 'console'] as const;
+const CONTEXT_KEYS = [
+  'entity',
+  'scene',
+  'input',
+  'time',
+  'props',
+  'game',
+  'hardware',
+  'console',
+] as const;
 
 /**
  * Identifiers bound to `undefined` in the script's scope.
@@ -123,17 +140,11 @@ export function compileScript(source: string): CompileResult {
     const blanks = SHADOWED_GLOBALS.map(() => undefined);
     result = {
       ok: true,
-      factory: (context) =>
-        raw(
-          context.entity,
-          context.scene,
-          context.input,
-          context.time,
-          context.props,
-          context.game,
-          context.console,
-          ...blanks,
-        ),
+      // Read off CONTEXT_KEYS rather than listed by hand: the parameter names and the
+      // arguments are positional, and a hand-written list drifts from the array above the
+      // first time a key is added in the middle — silently, because the mismatch shows up as
+      // `console` being whatever the key after it holds.
+      factory: (context) => raw(...CONTEXT_KEYS.map((key) => context[key]), ...blanks),
     };
   } catch (error) {
     result = { ok: false, error: describeError(error) };

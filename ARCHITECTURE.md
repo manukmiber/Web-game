@@ -59,6 +59,9 @@ src/
     serialization/          toJSON / fromJSON + schema version + migrations
     loop/                   Engine: RAF loop, fixed-step update, system list, mode flag
     input/                  key/pointer state as data, written by the host, read by systems
+    hardware/               external devices: the line protocol, the device/channel model,
+                            the binding language and the system that applies it (§12).
+                            Transport-free, for the same reason `input/` is listener-free
     scripting/              Script compilation, the script API, ScriptSystem
     ai/                     steering maths + NpcSystem
     gameplay/               GameState (health, factions, script vars), CharacterSystem,
@@ -76,9 +79,13 @@ src/
                             AssistantPanel
     assistant/              CommandSceneEditor (tools → undo stack), the Anthropic
                             tool-use loop, and the MCP transports
+    hardware/               the transports themselves: Web Serial, WebSocket, and the
+                            simulated rig the panel drives
     styles/                 dark Unity-like theme
 
   runtime/                ← Phase 3 placeholder. Same engine, no panels.
+
+firmware/                 ← reference Arduino sketch for the hardware protocol (§12)
 ```
 
 Enforced by a test, `src/engine/boundary.test.ts`: **`engine/**` may never import from
@@ -132,10 +139,11 @@ Adding `Script`/`Behaviour` in Phase 3 is then *one `registerComponent` call* �
 serializer, Inspector, undo/redo and hierarchy all handle it generically, with no switch
 statement anywhere to extend. That is the whole point of the registry.
 
-That claim has now been cashed. `Script`, `Camera`, `Light`, `Environment`, `NpcAgent` and
-`CharacterController` were six `registerComponent` calls; the serializer, the undo stack and the
-Hierarchy needed no changes at all, and the Inspector needed none beyond the two panels that are
-genuinely bespoke (the modifier stack and the script source editor). It also meant **no schema
+That claim has now been cashed. `Script`, `Camera`, `Light`, `Environment`, `NpcAgent`,
+`CharacterController`, `HardwareInput` and `HardwareOutput` were eight `registerComponent`
+calls; the serializer, the undo stack and the Hierarchy needed no changes at all, and the
+Inspector needed none beyond the two panels that are genuinely bespoke (the modifier stack and
+the script source editor) plus one new field kind. It also meant **no schema
 bump**: the new components are additive, so a scene from the previous build opens untouched.
 
 Unknown component types encountered on load are **preserved verbatim** and round-tripped, so
@@ -689,3 +697,95 @@ Scripts an assistant writes run in the same guard-rail sandbox as hand-written o
 Scene JSON was already executable code and still is; a model authoring it neither worsens that
 nor fixes it. The real fix is the same one §10.2 names — a Worker or a sandboxed iframe — and it
 is still the same piece of work.
+
+---
+
+## 12. External hardware
+
+An Arduino is a host, not a feature. That framing decides most of this section.
+
+### 12.1 The transport belongs to the host, the protocol belongs to the engine
+
+Web Serial is `navigator.serial`, and §2 forbids `navigator` below the editor line — a constraint
+that could have been an obstacle and turned out to be the design. The engine holds a
+`HardwareTransport` interface (open, close, send, on-data) and knows nothing else; the concrete
+pipes live in `editor/hardware/`. A Phase 3 runtime driving a real board from Node implements the
+same four methods over a serial port, and everything above — protocol, channels, bindings,
+systems — is untouched.
+
+It is exactly the split `input/` already had, and for the same reason §9.5 gives: the engine
+describes what it needs and the host supplies it, so the whole stack stays testable and
+worker-ready. The loopback transport is not a test double bolted on afterwards; it is what the
+editor's simulated rig runs on, which is why the entire feature can be exercised with no
+hardware attached.
+
+### 12.2 Lines of ASCII, on purpose
+
+The wire format is text: `A0=512 D2=1` in, `D13=255` out. A packed binary framing would save a
+handful of bytes per sample and cost the ability to debug the link with the Arduino IDE's own
+serial monitor — which is the first thing anyone reaches for when a rig goes quiet. At 115200
+baud the budget is about 190 characters per frame at 60 fps, and `A0=512\n` is seven of them.
+
+The scarce resource is real, though, so both ends manage it. The firmware reports only on change,
+with a deadband and a rate cap; the engine never writes an output whose value has not changed,
+and every output binding carries its own rate limit. A health lamp at 8 Hz looks identical to one
+at 60 Hz and costs a seventh of the link.
+
+### 12.3 A frame sees one snapshot of the rig
+
+Serial arrives on the USB stack's schedule — three lines between two frames, none for the next
+four. Inbound lines are therefore queued as they arrive and applied in one pass at the top of
+`Engine.tick`, before any system runs. A frame sees one consistent state of the world rather than
+a stick that moved halfway through it, and `wasPressed` means "since the last frame" rather than
+"since some point in the last 16 ms".
+
+That is the same contract `InputState` keeps for the keyboard, and it is what makes hardware
+behaviour reproducible: `HardwareSystem.test.ts` drives a character with a potentiometer, at a
+fixed timestep, with no hardware and no timing assumptions.
+
+The pump runs in edit mode too, because calibration is an editing task — watching a channel while
+turning a knob should not require pressing Play.
+
+### 12.4 A button is a key, and that is the whole trick
+
+Bindings do not introduce a second input path. `D2 -> key:Space` calls the same
+`InputState.setKey` a keyboard event does, so held/pressed/released behave identically and
+nothing downstream can tell where the press came from. Continuous controls needed something keys
+cannot express, so `InputState` grew named analog axes; `CharacterSystem` sums `move`, `strafe`
+and `turn` with its keys rather than choosing between them.
+
+The result is the property worth having: a scene built with a keyboard works with a rig plugged
+in, and a scene built for a rig degrades to the keyboard when it is unplugged. Neither needs a
+second code path, and neither is a mode.
+
+Making an analog stick agree with the keyboard turned up two bugs that keys alone could not
+reveal. `A` strafed right, because `axis('KeyD', 'KeyA')` reads "A minus D" and local +X is
+right. And movement was normalised to the unit circle rather than clamped to it — correct for the
+diagonal case it was written for, and it rescaled every partial input to full speed, which is
+invisible when every input is 0 or ±1. Both are the kind of thing a second input source finds and
+a test suite does not.
+
+### 12.5 Devices are not scene data
+
+Nothing about a connection is serialized. Which board is on the desk is not a property of the
+level, so scenes reference channels by name (`A0`, or `uno:A0` when a rig has two boards) and run
+on anything that provides them. A scene carrying a `HardwareInput` opens on a machine with
+nothing attached: channels read zero, the keyboard still works.
+
+Play and Stop do not close ports either — closing a port the user opened by hand because they
+pressed Stop would be its own kind of rude. What they do drop is buffered lines, edges, and the
+record of what was last written, so the next session re-sends its outputs rather than assuming
+the board remembers. Outputs a session lit are zeroed on stop, which is §6's promise extended to
+the desk: a lamp still lit after Stop is a play session leaking state.
+
+### 12.6 What this does not attempt
+
+No HID, no Bluetooth, no gamepad — a gamepad is a different API with a different shape, and
+pretending it is a serial device would cost more than the second implementation it saves. No
+firmware upload. No auto-reconnect, because a board being flashed drops the link and a transport
+that redials every second turns a flash cycle into a console full of failures.
+
+And the security position is the one §10.2 already states, extended: a scene file is executable
+code, and with a device attached it is executable code with a wire to a pin. Web Serial's
+per-port, per-origin, click-gated permission is the real boundary; the engine does not pretend to
+add one.

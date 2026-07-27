@@ -78,6 +78,11 @@ const turn = input.axis('ArrowRight', 'ArrowLeft'); // -1, 0 or 1
 
 Press and release edges last exactly one frame.
 
+Named analog axes sit beside the keys — `getAxis(name)`, and `setAxis(name, value)` to drive one
+from a script. External hardware writes `move`, `strafe` and `turn` there, which is how a
+potentiometer steers a character that was written against `KeyW`. Unlike keys, an axis holds its
+value until something writes another one.
+
 ### `time`
 
 `time.dt` (same value `update` receives), `time.elapsed` (seconds since Play started),
@@ -99,6 +104,24 @@ and `game.health(target)`, `game.maxHealth(target)`, `game.isAlive(target)`,
 an entity id.
 
 None of it survives leaving Play mode, which is the point — see the note on restores below.
+
+### `hardware` — attached boards
+
+Channels from an Arduino or any other device on the hardware bus. Reads are safe with nothing
+plugged in — 0, or false — so a scene that uses a rig stays playable without one.
+
+```js
+if (hardware.wasPressed('D2')) console.log('fired');
+entity.moveForward(hardware.value('A0') * 4 * dt);
+hardware.write('D13', entity.health > 30 ? 0 : 255);   // unchanged writes cost nothing
+```
+
+`connected`, `devices()`, `raw(ch)`, `value(ch)`, `isDown(ch)`, `wasPressed(ch)`,
+`wasReleased(ch)`, `write(ch, value)`, `send(line, deviceId?)`, `axis(name)`.
+
+Most rigs need no script at all: a `HardwareInput` component maps a button onto a *key* and a
+potentiometer onto a named axis, and the game reads those exactly as it reads a keyboard. This
+is for what bindings cannot express. Full reference in [HARDWARE.md](./HARDWARE.md).
 
 ### `console`
 

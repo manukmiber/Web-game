@@ -10,6 +10,8 @@ export type FieldSchema =
   | { kind: 'vec3'; key: string; label: string; step?: number }
   | { kind: 'boolean'; key: string; label: string }
   | { kind: 'string'; key: string; label: string }
+  /** Multi-line text — binding lists, and anything else where a one-line input hides the value. */
+  | { kind: 'text'; key: string; label: string; rows?: number; monospace?: boolean }
   | { kind: 'color'; key: string; label: string }
   | { kind: 'enum'; key: string; label: string; options: readonly string[] }
   | { kind: 'asset'; key: string; label: string; assetType: 'texture' };

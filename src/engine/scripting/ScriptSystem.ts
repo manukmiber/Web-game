@@ -2,7 +2,13 @@ import type { ScriptComponent, ScriptPropValue } from '../components/Script';
 import { Emitter } from '../core/Emitter';
 import type { Engine, EngineMode, System } from '../loop/Engine';
 import type { EntityId } from '../scene/types';
-import { EntityHandle, ScriptGame, ScriptWorld, type ScriptTime } from './ScriptApi';
+import {
+  EntityHandle,
+  ScriptGame,
+  ScriptHardware,
+  ScriptWorld,
+  type ScriptTime,
+} from './ScriptApi';
 import { compileScript, describeError, type ScriptContext, type ScriptHooks } from './sandbox';
 
 export interface ScriptMessage {
@@ -156,6 +162,7 @@ export class ScriptSystem implements System {
         time: this.time,
         props: script.props,
         game: new ScriptGame(engine),
+        hardware: new ScriptHardware(engine),
         console: {
           log: (...args) => this.emit('log', instance, format(args)),
           warn: (...args) => this.emit('warn', instance, format(args)),

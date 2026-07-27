@@ -95,6 +95,24 @@ export function ComponentField({
           />
         </Field>
       );
+    case 'text':
+      // Full width, under its label rather than beside it: a binding list is read in lines,
+      // and squeezing it into the value column of a two-column grid makes both unreadable.
+      return (
+        <div className="field field-text">
+          <label>{schema.label}</label>
+          <textarea
+            className={schema.monospace === false ? '' : 'mono'}
+            rows={schema.rows ?? 4}
+            spellCheck={false}
+            value={typeof value === 'string' ? value : ''}
+            onChange={(event) => onChange(event.currentTarget.value)}
+            // Play mode owns the keyboard, and W is "walk forward" there — a textarea has to
+            // swallow keys or editing a binding would drive the character.
+            onKeyDown={(event) => event.stopPropagation()}
+          />
+        </div>
+      );
     case 'asset':
       // Texture slots need the asset browser to be useful; wired up in Phase 2.
       return (

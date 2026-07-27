@@ -11,6 +11,7 @@ function context(props: Record<string, ScriptPropValue> = {}): ScriptContext {
     time: { dt: 0, elapsed: 0, frame: 0 },
     props,
     game: {} as never,
+    hardware: {} as never,
     console: { log() {}, warn() {}, error() {} },
   };
 }

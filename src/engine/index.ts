@@ -32,6 +32,7 @@ export * from './gameplay/systems';
 export * from './scripting/sandbox';
 export * from './scripting/ScriptApi';
 export * from './scripting/ScriptSystem';
+export * from './hardware';
 export * from './ai/steering';
 export * from './ai/NpcSystem';
 export * from './assistant';

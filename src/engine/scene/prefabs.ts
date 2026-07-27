@@ -1,6 +1,8 @@
 import { createCamera } from '../components/Camera';
 import { createCharacterController } from '../components/CharacterController';
 import { createEnvironment } from '../components/Environment';
+import { createHardwareInput } from '../components/HardwareInput';
+import { createHardwareOutput } from '../components/HardwareOutput';
 import { createLight } from '../components/Light';
 import type { MeshRendererComponent, PrimitiveParams } from '../components/MeshRenderer';
 import { createNpcAgent, type NpcArchetype } from '../components/NpcAgent';
@@ -31,7 +33,8 @@ export type PrefabKind =
   | 'Zombie'
   | 'Villager'
   | 'Animal'
-  | 'Game Logic';
+  | 'Game Logic'
+  | 'Hardware Rig';
 
 export const PREFAB_MENU: readonly PrefabKind[] = [
   'Player',
@@ -44,6 +47,7 @@ export const PREFAB_MENU: readonly PrefabKind[] = [
   'Spot Light',
   'Environment',
   'Game Logic',
+  'Hardware Rig',
 ];
 
 export interface PrefabOptions {
@@ -183,6 +187,17 @@ export function createPrefab(kind: PrefabKind, options: PrefabOptions = {}): Ent
 
     case 'Animal':
       return character(options.name ?? 'Animal', [ground[0], 0.9, ground[2]], '#9a6b45', 'Animal');
+
+    /**
+     * An empty carrying the default bindings, because the hardware layer is otherwise
+     * invisible until someone has read the docs: this is a scene object you can add, plug a
+     * board into and press Play.
+     */
+    case 'Hardware Rig': {
+      const entity = empty(options.name ?? 'Hardware Rig', ground);
+      entity.components.push(createHardwareInput(), createHardwareOutput());
+      return [entity];
+    }
 
     case 'Game Logic':
     default: {

@@ -3,6 +3,7 @@ import { createStarterScene } from '@engine/scene/prefabs';
 import { EditorProvider, useEditor } from './EditorContext';
 import { AssistantPanel } from './panels/AssistantPanel';
 import { Console } from './panels/Console';
+import { HardwarePanel } from './panels/HardwarePanel';
 import { Hierarchy } from './panels/Hierarchy';
 import { Inspector } from './panels/Inspector';
 import { PerfHud } from './panels/PerfHud';
@@ -53,6 +54,7 @@ function EditorShell() {
           <Viewport onReady={setViewport} />
           <PerfHud viewport={viewport} />
           <Console />
+          <HardwarePanel />
           <AssistantPanel />
         </div>
         <Inspector />

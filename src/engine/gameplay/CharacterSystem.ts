@@ -14,6 +14,11 @@ import { DEG2RAD, wrapAngle } from '../ai/steering';
  * - `←`/`→` or `Q`/`E` — turn
  * - `Shift` — sprint
  *
+ * External hardware reaches the same character through three named analog axes — `move`,
+ * `strafe` and `turn`, all positive forward/right/right — which are summed with the keys
+ * rather than replacing them. A scene therefore does not have to know whether it is being
+ * played with a keyboard or a cockpit, and one built with either works with the other.
+ *
  * A Camera entity parented to the character inherits all of it, which is the whole third-person
  * rig: no follow code, no lerp, just the transform hierarchy doing its job.
  */
@@ -35,14 +40,24 @@ export class CharacterSystem implements System {
 
       const { position, rotation } = entity.transform;
 
-      const turn = input.axis('ArrowRight', 'ArrowLeft') + input.axis('KeyE', 'KeyQ');
-      const forward = input.axis('KeyS', 'KeyW') + input.axis('ArrowDown', 'ArrowUp');
-      const strafe = input.axis('KeyD', 'KeyA');
+      // Keys and the named analog axes are summed, so a stick and the keyboard drive the same
+      // character without either knowing about the other — and an unplugged rig leaves the
+      // axes at zero, which is exactly the keyboard-only behaviour this had before.
+      const turn =
+        input.axis('ArrowRight', 'ArrowLeft') + input.axis('KeyE', 'KeyQ') - input.getAxis('turn');
+      const forward =
+        input.axis('KeyS', 'KeyW') + input.axis('ArrowDown', 'ArrowUp') + input.getAxis('move');
+      // A strafes left. It used to strafe right — `axis('KeyD', 'KeyA')` reads "A minus D",
+      // and local +X is right — which nobody noticed until an analog stick had to agree with
+      // it and the sign had to be written down.
+      const strafe = input.axis('KeyA', 'KeyD') + input.getAxis('strafe');
 
       let moved = false;
 
       if (turn !== 0) {
-        rotation[1] = wrapAngle(rotation[1] + Math.sign(turn) * controller.turnSpeed * dt);
+        // Analog turn is proportional; the keys still turn at full rate because they read ±1.
+        const rate = Math.max(-1, Math.min(1, turn));
+        rotation[1] = wrapAngle(rotation[1] + rate * controller.turnSpeed * dt);
         moved = true;
       }
 
@@ -58,9 +73,17 @@ export class CharacterSystem implements System {
 
         let dx = fx * forwardInput + rx * strafeInput;
         let dz = fz * forwardInput + rz * strafeInput;
-        // Normalising is what stops diagonal movement being 1.41x faster than straight ahead.
+        /**
+         * Clamped to the unit disc rather than normalised to it.
+         *
+         * Normalising still stops diagonal movement being 1.41x faster than straight ahead —
+         * two keys give a length of √2 and come back to 1 — but it also rescaled *every*
+         * input to full speed, which is invisible with keys (they only ever read 0 or ±1) and
+         * ruins an analog stick: a third of the travel walked at full pace. Only shortening
+         * what is longer than 1 keeps both.
+         */
         const length = Math.hypot(dx, dz);
-        if (length > 1e-6) {
+        if (length > 1) {
           dx /= length;
           dz /= length;
         }

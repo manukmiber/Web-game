@@ -88,6 +88,7 @@ interface EditorState {
   assistantVisible: boolean;
   assistantBusy: boolean;
   assistantEntries: AssistantEntry[];
+  hardwareVisible: boolean;
 
   setSelection(ids: EntityId[]): void;
   toggleSelection(id: EntityId): void;
@@ -109,6 +110,7 @@ interface EditorState {
   setAssistantBusy(busy: boolean): void;
   pushAssistantEntry(entry: Omit<AssistantEntry, 'id'>): void;
   clearAssistant(): void;
+  setHardwareVisible(visible: boolean): void;
 }
 
 let consoleCounter = 0;
@@ -143,6 +145,7 @@ export const useEditorStore = create<EditorState>((set) => ({
   assistantVisible: false,
   assistantBusy: false,
   assistantEntries: [],
+  hardwareVisible: false,
 
   setSelection: (ids) => set({ selection: ids, lastSelected: ids[ids.length - 1] ?? null }),
   toggleSelection: (id) =>
@@ -182,6 +185,7 @@ export const useEditorStore = create<EditorState>((set) => ({
       return { assistantEntries: [...state.assistantEntries, { ...entry, id: assistantCounter }] };
     }),
   clearAssistant: () => set({ assistantEntries: [] }),
+  setHardwareVisible: (hardwareVisible) => set({ hardwareVisible }),
 }));
 
 /** Reads current state outside React (gizmo handlers, keyboard shortcuts). */

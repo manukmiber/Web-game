@@ -35,6 +35,10 @@ export function useShortcuts(viewport: ViewportController | null): void {
         } else if (event.key === 'F8') {
           event.preventDefault();
           store.setPerf({ hudVisible: !store.perf.hudVisible });
+        } else if (event.key === 'F9') {
+          // Watching a channel while the character moves is exactly when you need it.
+          event.preventDefault();
+          store.setHardwareVisible(!store.hardwareVisible);
         }
         return;
       }
@@ -120,6 +124,10 @@ export function useShortcuts(viewport: ViewportController | null): void {
         case 'F8':
           event.preventDefault();
           store.setPerf({ hudVisible: !store.perf.hudVisible });
+          break;
+        case 'F9':
+          event.preventDefault();
+          store.setHardwareVisible(!store.hardwareVisible);
           break;
         case 'Escape':
           store.clearSelection();

@@ -337,3 +337,68 @@ export class ScriptGame {
 function idOf(target: EntityHandle | EntityId): EntityId {
   return typeof target === 'string' ? target : target.id;
 }
+
+/**
+ * Attached boards, exposed to scripts as `hardware`.
+ *
+ * Bindings on a `HardwareInput` component cover the common case — a button *is* a key, a stick
+ * *is* an axis — and this is for everything they cannot express: a rotary encoder that means
+ * "next weapon", a lamp that should blink twice when a wave starts, a rig that needs a command
+ * this protocol does not model. Reads are frame-consistent (`Engine.tick` pumps once, before
+ * any system runs) and writes are dropped when the value has not changed, so `write` in
+ * `update` is not the mistake it looks like.
+ *
+ * Every method is safe with nothing plugged in: reads return 0 or false, writes return false.
+ * A scene that uses hardware must still be playable without it, or the rig becomes a
+ * requirement for opening the project.
+ */
+export class ScriptHardware {
+  constructor(private readonly engine: Engine) {}
+
+  /** True while at least one device has an open link. */
+  get connected(): boolean {
+    return this.engine.hardware.connected;
+  }
+
+  /** Ids of every attached device, for `hardware.write(id + ':D13', 1)`. */
+  devices(): string[] {
+    return this.engine.hardware.list().map((device) => device.id);
+  }
+
+  /** Exactly what the board sent: 512, not 0.5. */
+  raw(channel: string): number {
+    return this.engine.hardware.raw(channel);
+  }
+
+  /** 0..1 against the channel's assumed range — 10-bit for `A*`, 0/1 for everything else. */
+  value(channel: string): number {
+    return this.engine.hardware.value(channel);
+  }
+
+  isDown(channel: string): boolean {
+    return this.engine.hardware.isDown(channel);
+  }
+
+  wasPressed(channel: string): boolean {
+    return this.engine.hardware.wasPressed(channel);
+  }
+
+  wasReleased(channel: string): boolean {
+    return this.engine.hardware.wasReleased(channel);
+  }
+
+  /** Returns false when nothing took it: no device, closed link, or the value is unchanged. */
+  write(channel: string, value: number): boolean {
+    return this.engine.hardware.write(channel, value);
+  }
+
+  /** A raw protocol line, for firmware commands the channel model does not cover. */
+  send(line: string, deviceId?: string): boolean {
+    return this.engine.hardware.send(line, deviceId);
+  }
+
+  /** Named analog axis, whether it came from a binding or from another script. */
+  axis(name: string): number {
+    return this.engine.input.getAxis(name);
+  }
+}
