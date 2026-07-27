@@ -128,6 +128,17 @@ export class ViewportController {
     return this.stress?.getStats() ?? null;
   }
 
+  /**
+   * What the scene's scatter layers cost right now.
+   *
+   * Beside the stress presets rather than folded into them: those are synthetic loads, this is
+   * authored content, and a forest you painted is exactly the thing you want to watch the frame
+   * budget against while you paint it.
+   */
+  scatterStats() {
+    return this.bridge.scatterStats();
+  }
+
   frameReport() {
     return this.engine.stats.report();
   }

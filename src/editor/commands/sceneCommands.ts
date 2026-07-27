@@ -329,6 +329,45 @@ export class SetComponentPropertyCommand implements Command {
   }
 }
 
+/**
+ * Several fields of one component, changed together as a single undo step.
+ *
+ * `SetComponentPropertyCommand` writes one path, which is right for an Inspector field and
+ * wrong for an operation whose result spans fields — refilling a scatter layer rewrites its
+ * instance buffer, its variant buffer and its count, and any two of those without the third is
+ * a corrupt layer. Undo has to put all of them back at once, or not at all.
+ */
+export class SetComponentPropertiesCommand implements Command {
+  readonly label: string;
+  private previous: Record<string, unknown> = {};
+
+  constructor(
+    private readonly scene: Scene,
+    private readonly id: EntityId,
+    private readonly componentType: string,
+    private readonly patch: Record<string, unknown>,
+    label?: string,
+  ) {
+    this.label = label ?? `Set ${componentType}`;
+  }
+
+  execute(): void {
+    const component = this.scene.getComponent(this.id, this.componentType);
+    if (!component) return;
+    // Captured on execute rather than in the constructor so redo restores the state the *redo*
+    // replaced, not the one the original run did.
+    this.previous = {};
+    for (const key of Object.keys(this.patch)) {
+      this.previous[key] = structuredClone(component[key]);
+    }
+    this.scene.updateComponent(this.id, this.componentType, structuredClone(this.patch));
+  }
+
+  undo(): void {
+    this.scene.updateComponent(this.id, this.componentType, this.previous);
+  }
+}
+
 export class AddComponentCommand implements Command {
   readonly label: string;
 
@@ -396,7 +435,14 @@ export class DuplicateEntitiesCommand implements Command {
   }
 
   execute(): void {
-    this.created = [];
+    // Redo re-adds exactly what the first run produced. Minting fresh ids instead would leave
+    // every later entry in the redo stack pointing at entities that no longer exist, so
+    // redoing "duplicate, then move the copy" would silently skip the move.
+    if (this.created.length > 0) {
+      for (const entity of this.created) this.scene.add(snapshot(entity));
+      return;
+    }
+
     const names = takenNames(this.scene);
     const roots = this.ids.filter(
       (id) => !this.ids.some((other) => other !== id && this.scene.isDescendantOf(id, other)),

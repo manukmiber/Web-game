@@ -40,6 +40,9 @@ export class GameState {
     if (existing) {
       existing.faction = faction;
       existing.maxHealth = maxHealth;
+      // Lowering maxHealth in the Inspector mid-play must not leave an actor above its own
+      // ceiling: `health01` would read over 1 and drive a lamp binding past its `max`.
+      if (existing.health > maxHealth) existing.health = Math.max(0, maxHealth);
       return existing;
     }
     const actor: ActorState = { id, faction, health: maxHealth, maxHealth, alive: true };

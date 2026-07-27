@@ -53,9 +53,13 @@ src/
     render/                 Three.js bridge (Scene data ──▶ Object3D tree) + RenderHost,
                             which owns the renderer, cameras, environment and frame draw
                             shared by the editor and the runtime
+    scatter/                mass instancing: the packed instance codec and the seeded
+                            area brush that fills it (§9.3). No Three.js — the batches
+                            are built in render/
     perf/                   frame measurement + stress-scene generator
     material/               material definitions → THREE.Material
     assets/                 texture/asset store (id → resource)
+    core/                   Emitter, and the seeded PRNGs everything deterministic shares
     serialization/          toJSON / fromJSON + schema version + migrations
     loop/                   Engine: RAF loop, fixed-step update, system list, mode flag
     input/                  key/pointer state as data, written by the host, read by systems
@@ -76,7 +80,7 @@ src/
     viewport/               RenderHost host + OrbitControls, gizmo, grid, selection
                             outline, light/camera handles, picking, axis widget
     panels/                 Hierarchy, Inspector, Toolbar, Console, ScriptEditor,
-                            AssistantPanel
+                            ScatterEditor, AssistantPanel
     assistant/              CommandSceneEditor (tools → undo stack), the Anthropic
                             tool-use loop, and the MCP transports
     hardware/               the transports themselves: Web Serial, WebSocket, and the
@@ -353,6 +357,8 @@ gizmo drag is one entity and wants its event immediately.
 - **Phase 2** — texture slots + upload + procedural defaults, alpha modes
   (Opaque/Transparent/Cutout), texture painting, then scatter painting into `ScatterLayer`
   (§9.3), asset browser panel, UI polish.
+  *Shipped so far:* alpha modes, and scatter as an area brush — stroke painting waits on a
+  terrain to project onto. Still open: texture upload, texture painting, the asset browser.
 - **Phase 3** — Play/runtime mode (§6), `Script` component, Cloudflare persistence adapter,
   and the world-scale systems from §9: streaming, LOD, camera-relative rendering, workers.
   *Shipped so far:* the play seam itself, scripting, NPC agents, a character controller, and
@@ -413,7 +419,7 @@ Consequences baked into the v1 format:
 Streaming, chunk LOD and background (worker) load/unload land with Phase 3, behind a
 `StreamingSystem` that the loop already has a slot for.
 
-### 9.3 Mass instancing — schema **now**
+### 9.3 Mass instancing — schema **now**, brush shipped in v0.7.2
 
 A 25 km world has millions of trees, rocks and grass tufts. One entity each is not viable at
 any level: not in memory, not in the hierarchy panel, not in the draw call budget.
@@ -428,6 +434,28 @@ writes into instance buffers, and undo/redo for it records buffer deltas rather 
 add/remove commands.
 
 Hand-placed entities stay entities. Both paths render through the same bridge.
+
+**What v0.7.2 added**, two versions after the format was fixed and with no migration required —
+which is the entire return on having decided it early:
+
+- `scatter/codec` — the packed format, base64 over explicitly little-endian bytes. Written by
+  hand rather than through `btoa`, because §9.5 keeps `engine/**` free of DOM globals and this
+  codec is exactly the kind of work that will move into a Worker.
+- `scatter/generate` — the brush, a pure seeded function of area, density, scale range and
+  seed. A layer therefore stores a seed and a dozen numbers rather than a million transforms
+  until someone edits an individual instance, and re-opening a scene reproduces the forest that
+  was saved.
+- `render/RenderBridge` — one `InstancedMesh` per prototype, borrowing geometry and material
+  from the *source entity* through the same refcounted caches ordinary meshes use. That is what
+  makes editing the source tree — parameters, colour, modifier stack — update every instance
+  with no scatter-specific code in the mesh pipeline.
+
+Still open, and deliberately so: stroke-based painting (needs a surface to project onto — §9.4's
+terrain), per-instance selection and its buffer-delta undo, and per-chunk batching. Today it is
+one draw call per prototype rather than per prototype *per chunk*, which is the right answer
+until layers are big enough that culling half of one matters — and that arrives with streaming.
+
+The prototype list is also where an LOD chain hangs, and it is shaped for one.
 
 ### 9.4 Draw-call and memory budget — later, but not accidental
 
@@ -503,6 +531,10 @@ Chunk-aware serializer, camera-relative seam in the bridge, `ScatterLayer` reser
 component registry, DOM-free engine core. Everything else in §9 is scheduled, not built —
 an editor with twelve cubes in it does not need a streaming system, and writing one now would
 mean tuning it against a world that does not exist.
+
+Of those four, the reserved component is the one that paid off measurably: the brush that fills
+it arrived in v0.7.2 as new directories plus one method on the render bridge, with no schema
+version bump and no change to any scene already on disk.
 
 ---
 

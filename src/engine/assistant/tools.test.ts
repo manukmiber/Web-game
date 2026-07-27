@@ -282,3 +282,106 @@ describe('reading the scene', () => {
     expect(text).toContain('Zombie');
   });
 });
+
+describe('scatter_instances', () => {
+  it('creates one entity holding many instances, not many entities', () => {
+    const tree = createBox({ name: 'Tree' });
+    const before = scene.size;
+
+    const result = call('scatter_instances', {
+      prototypes: [tree],
+      extentX: 10,
+      extentZ: 10,
+      density: 5,
+    });
+
+    expect(result.isError).toBeUndefined();
+    // One new entity for twenty trees is the entire point of the packed format.
+    expect(scene.size).toBe(before + 1);
+    const layer = scene.all().find((entity) => entity.components.some((c) => c.type === 'ScatterLayer'));
+    expect(layer).toBeDefined();
+    expect(scene.getComponent(layer!.id, 'ScatterLayer')?.instanceCount).toBe(20);
+    expect(result.text).toContain('20 instances');
+  });
+
+  it('is reproducible — the same arguments produce the same layer', () => {
+    const tree = createBox({ name: 'Tree' });
+    const args = { prototypes: [tree], extentX: 8, extentZ: 8, density: 10, seed: 3 };
+
+    call('scatter_instances', args);
+    call('scatter_instances', args);
+
+    const layers = scene
+      .all()
+      .flatMap((entity) => entity.components.filter((c) => c.type === 'ScatterLayer'));
+    expect(layers).toHaveLength(2);
+    expect(layers[0]!.instances).toBe(layers[1]!.instances);
+  });
+
+  it('re-rolls with a different seed', () => {
+    const tree = createBox({ name: 'Tree' });
+    call('scatter_instances', { prototypes: [tree], seed: 1 });
+    call('scatter_instances', { prototypes: [tree], seed: 2 });
+
+    const layers = scene
+      .all()
+      .flatMap((entity) => entity.components.filter((c) => c.type === 'ScatterLayer'));
+    expect(layers[0]!.instances).not.toBe(layers[1]!.instances);
+  });
+
+  it('refills a named layer in place rather than adding a second one', () => {
+    const tree = createBox({ name: 'Tree' });
+    call('scatter_instances', { prototypes: [tree], density: 5, extentX: 10, extentZ: 10 });
+    const layer = scene.all().find((entity) => entity.components.some((c) => c.type === 'ScatterLayer'))!;
+    const before = scene.size;
+
+    call('scatter_instances', {
+      layer: layer.id,
+      prototypes: [tree],
+      density: 20,
+      extentX: 10,
+      extentZ: 10,
+    });
+
+    expect(scene.size).toBe(before);
+    expect(scene.getComponent(layer.id, 'ScatterLayer')?.instanceCount).toBe(80);
+  });
+
+  it('refuses a prototype with no mesh, naming the problem', () => {
+    call('create_primitive', { kind: 'Empty', name: 'Group' });
+    const result = call('scatter_instances', { prototypes: ['Group'] });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain('no mesh');
+  });
+
+  it('refuses a weight list that does not match the prototypes', () => {
+    const tree = createBox({ name: 'Tree' });
+    const result = call('scatter_instances', { prototypes: [tree], weights: [1, 2] });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain('one weight per prototype');
+  });
+
+  it('refuses to refill something that is not a scatter layer', () => {
+    const tree = createBox({ name: 'Tree' });
+    const result = call('scatter_instances', { layer: tree, prototypes: [tree] });
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain('not a scatter layer');
+  });
+
+  it('caps an absurd request instead of allocating it', () => {
+    const tree = createBox({ name: 'Tree' });
+    const result = call('scatter_instances', {
+      prototypes: [tree],
+      extentX: 2000,
+      extentZ: 2000,
+      density: 500,
+      maxInstances: 1000,
+    });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.text).toContain('Capped at 1000');
+  });
+});

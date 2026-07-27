@@ -13,10 +13,14 @@ tool layer an external MCP client can drive it with.
 Press **F9** and it takes a controller: an Arduino on the end of a USB cable becomes an analog
 steering axis, and the player's health dims an LED on the desk.
 
+Add a **Scatter Layer** and a hundred thousand trees are one row in the Hierarchy and one draw
+call — because a 25 km world cannot afford them as anything else.
+
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the design and §9 for what the 25 km × 25 km
 open-world target forces us to decide up front, [docs/SCRIPTING.md](./docs/SCRIPTING.md) for
-the script API, [docs/AI.md](./docs/AI.md) for the tools and MCP, and
-[docs/HARDWARE.md](./docs/HARDWARE.md) for external hardware.
+the script API, [docs/AI.md](./docs/AI.md) for the tools and MCP,
+[docs/HARDWARE.md](./docs/HARDWARE.md) for external hardware, and
+[docs/SCATTER.md](./docs/SCATTER.md) for mass instancing.
 
 ## Running it
 
@@ -105,7 +109,7 @@ see what subdivision did to the topology.
 | `E` | Rotate | | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / Redo |
 | `R` | Scale | | `Ctrl+D` | Duplicate |
 | `Del` | Delete | | `Ctrl+G` | Group selected |
-| `F2` | Rename | | `Ctrl+A` | Select all |
+| `F2` | Assistant | | `Ctrl+A` | Select all |
 | `Esc` | Deselect | | `Ctrl+S` | Save to local storage |
 | `F8` | Perf HUD | | `F9` | Hardware panel |
 
@@ -164,6 +168,46 @@ what you click to select it. They disappear in Play mode along with the grid, th
 selection outline. The built-in lighting rig stays out of the way the moment a scene adds a Light
 of its own.
 
+## Scatter
+
+Add a **Scatter Layer** from the *Game ▾* menu and you get a shrub and two hundred copies of it.
+One entity in the Hierarchy, one draw call — not two hundred of either. That is the whole feature,
+and it is the reason the format was reserved in the schema two versions before the brush existed
+([ARCHITECTURE.md §9.3](./ARCHITECTURE.md)): at 25 km × 25 km, painted vegetation cannot be one
+entity per instance in memory, in the panel, or in the frame budget.
+
+**Prototypes are entities.** The thing you scatter is an ordinary object in the scene — select it,
+recolour it, push a Bevel onto its modifier stack, and every instance follows, because the batch
+borrows its geometry through the same refcounted cache a normal mesh uses. Several prototypes with
+relative weights give a wood that is nine parts pine and one part birch.
+
+**The layer is a seed, not a million transforms.** Area, density, scale range and seed live on the
+component; press *Scatter* and the brush fills the packed buffers from them. A saved layer is a
+couple of hundred bytes until you re-roll it, and re-opening the scene reproduces exactly the
+forest you left. *Re-roll* bumps the seed, *Clear* empties it, and the Inspector shows what the
+current settings **would** place before you press anything — which matters when one keystroke on
+the density field is the difference between two hundred instances and two hundred thousand.
+
+| Setting | What it does |
+| --- | --- |
+| Shape | `Rect` (extent X × Z) or `Disc` (extent X is the radius) |
+| Per 100 m² | Density. 4 is a sparse wood, 40 is undergrowth |
+| Max | Hard cap, applied after density. A mistyped density is otherwise an allocation failure |
+| Seed | Change it to re-roll the same settings into a different layout |
+| Min / Max Scale | Per-instance uniform scale range |
+| Random Yaw | Rotate each instance about Y. Off for anything with a front |
+| Cast Shadows | **Off by default** — shadow-casting a hundred thousand instances is the fastest way to turn a forest into a slideshow |
+
+Clicking any instance selects the layer, which is the honest answer to clicking a forest: there is
+no per-instance selection, because the instances are buffer entries rather than objects.
+
+The assistant and MCP clients reach the same thing through `scatter_instances`, which exists
+partly so a model asked to "fill the clearing with trees" writes one layer instead of ten thousand
+`create_primitive` calls.
+
+Full reference in [docs/SCATTER.md](./docs/SCATTER.md), including the wire format and what the
+brush deliberately does not do yet.
+
 ## Play mode
 
 **Play** snapshots the scene, renders through the scene's own camera, and runs three systems:
@@ -210,8 +254,8 @@ The editor can be driven by a model, and by *your* model. Both go through one to
 (`engine/assistant`), so the schemas, the validation and the undo behaviour exist once.
 
 **Assistant panel** (**F2**) — ask for scene changes in plain language and Claude calls the
-tools: nineteen of them, covering primitives, prefabs, transforms, hierarchy, components,
-scripts and the modifier stack. It needs an Anthropic API key, entered in the panel and kept in
+tools: twenty of them, covering primitives, prefabs, transforms, hierarchy, components,
+scripts, the modifier stack and scatter layers. It needs an Anthropic API key, entered in the panel and kept in
 `localStorage`; there is no backend to proxy through, so the key is yours and goes straight from
 the browser to the API. Fine for a developer tool, wrong for a shipped product.
 
@@ -320,8 +364,9 @@ rather than on every face), editable Bézier paths so a profile can be drawn rat
 from the shape list, sweeping a profile along one of those paths, and Boolean — which needs
 robust CSG and is deliberately not attempted yet.
 
-Engine: adaptive quality driven by the HUD's numbers, then instancing, LOD and chunk streaming.
-`ScatterLayer` is reserved in the schema so it needs no migration.
+Engine: adaptive quality driven by the HUD's numbers, then LOD and chunk streaming. Instancing
+landed with the scatter brush; what is still missing around it is per-chunk frustum culling, LOD
+chains per prototype, and a stroke-based paint mode that needs a terrain to project onto.
 
 Hardware: the Gamepad API as a third device kind — the same channel model, a different pipe —
 and a serial-to-WebSocket bridge for browsers without Web Serial.
@@ -338,6 +383,7 @@ git checkout release/v0.4.0   # More primitives, bevel and utility modifiers
 git checkout release/v0.5.0   # Scripting, NPCs and scene-owned rendering
 git checkout release/v0.6.0   # 2D shapes, extrude/lathe, tessellation
 git checkout release/v0.7.0   # Assistant tool layer and MCP server
+git checkout release/v0.7.1   # External hardware over Web Serial and WebSocket
 ```
 
 v0.7.0 added the assistant tool layer and the MCP server. It needed **no schema change and no
@@ -345,15 +391,34 @@ engine changes** beyond a new directory: the tools are a consumer of the scene m
 extension of it, and the one thing they needed from the editor — undo — was already an interface
 away. Scenes are unaffected in both directions.
 
-This version (v0.7.1) adds external hardware. Also **no schema change**: two new components,
-which round-trip like any other, and a bus beside `input` on the Engine. Two things did change
-in existing code, both found by making an analog stick agree with the keyboard:
+v0.7.1 added external hardware. Also no schema change: two new components, which round-trip like
+any other, and a bus beside `input` on the Engine.
 
-- `A` strafed **right**. `axis('KeyD', 'KeyA')` reads "A minus D", and local +X is right — a
-  sign nobody had to write down until a stick had to agree with it.
-- Movement was **normalised** to the unit circle rather than clamped to it, which fixed
-  diagonals (the intent) and also rescaled every partial input to full speed (not the intent,
-  and invisible while keys were the only source). Now only lengths above 1 are shortened.
+This version (v0.7.2) connects `ScatterLayer` and fixes six bugs. The component had been in the
+registry since Phase 1 with nothing reading it — the format was fixed early on purpose, and the
+brush that fills it is what v0.7.2 adds. Still **no schema change**: the new brush settings are
+additive fields on a component that already round-tripped, and the packed instance buffers are
+strings.
+
+The bugs, all found by reading rather than by a failing test, and each now covered by one:
+
+- **Hiding an object did not stick.** The shading pass rewrote `visible` across the whole tree
+  from a `userData.entityVisible` flag that nothing had ever written, so unchecking *Visible*
+  worked until the next event that re-ran the pass — which is every transform change while a
+  wireframe mode is on.
+- **The wireframe overlay leaked a material per rebuild**, and it rebuilds on every frame of a
+  gizmo drag.
+- **A hardware output whose binding already named its board never went dark.** The zeroing write
+  on Stop reconstructed the reference from the component's device *and* the binding's channel,
+  producing `uno:uno:D13`. Keys were worse than axes for the same class of reason: a button held
+  when the USB cable came out stayed held forever.
+- **Redoing a duplicate minted new entity ids**, so anything later in the redo stack — the move
+  you made right after duplicating — silently applied to nothing.
+- **Lowering `maxHealth` mid-play left health above it**, and `health01` above 1, which drove a
+  lamp binding past its own maximum.
+- **Save, Load and Import ran during Play mode.** Saving autosaved the running simulation over
+  the authored scene; loading was discarded outright the moment you pressed Stop, because Stop
+  restores the snapshot taken before it. Those four buttons now say why they are off.
 
 CI (`.github/workflows/ci.yml`) runs typecheck, tests and build on every push and pull
 request. It needs GitHub Actions enabled on the repository to do anything.
@@ -363,9 +428,9 @@ request. It needs GitHub Actions enabled on the repository to do anything.
 ```
 src/
   engine/    core — scene graph, mesh pipeline, components, render host, serialization,
-             loop, scripting, AI, gameplay, input, hardware (protocol, bus, bindings)
-             and the assistant tool layer + MCP server. No React, no DOM. This is what
-             the runtime uses.
+             loop, scripting, AI, gameplay, input, hardware (protocol, bus, bindings),
+             scatter (packed instances + brush) and the assistant tool layer + MCP
+             server. No React, no DOM. This is what the runtime uses.
   editor/    panels, gizmo, undo/redo, persistence, console, assistant panel, and the
              hardware transports (Web Serial, WebSocket). Editor only.
 tools/       mcp-bridge.mjs — stdio ↔ dev server, for external MCP clients.

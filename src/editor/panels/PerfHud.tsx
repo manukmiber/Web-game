@@ -26,6 +26,7 @@ export function PerfHud({ viewport }: Props) {
   const setPerf = useEditorStore((s) => s.setPerf);
   const [report, setReport] = useState<FrameReport | null>(null);
   const [stress, setStress] = useState<StressStats | null>(null);
+  const [scatter, setScatter] = useState({ instances: 0, drawCalls: 0 });
   const lastPreset = useRef<string>('');
 
   // Poll rather than subscribe: the stats live inside the render loop, outside React.
@@ -34,6 +35,7 @@ export function PerfHud({ viewport }: Props) {
     const timer = setInterval(() => {
       setReport(viewport.frameReport());
       setStress(viewport.stressStats());
+      setScatter(viewport.scatterStats());
     }, REFRESH_MS);
     return () => clearInterval(timer);
   }, [viewport, perf.hudVisible]);
@@ -139,6 +141,15 @@ export function PerfHud({ viewport }: Props) {
         <Metric label="tris" value={compact(report?.triangles ?? 0)} />
         <Metric label="geom" value={String(report?.geometries ?? 0)} />
         <Metric label="tex" value={String(report?.textures ?? 0)} />
+        {scatter.instances > 0 && (
+          <Metric
+            label="scatter"
+            value={compact(scatter.instances)}
+            title={`Instances across ${scatter.drawCalls} scatter draw ${
+              scatter.drawCalls === 1 ? 'call' : 'calls'
+            }. This is the number the draw count would be without instancing.`}
+          />
+        )}
       </div>
 
       {report && report.bound !== 'unknown' && (

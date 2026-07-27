@@ -110,37 +110,8 @@ export function stepAway(
  *
  * Determinism is not decoration here: a wandering crowd is the hardest thing in the engine to
  * write a test for, and an unseeded `Math.random` would make "does this agent stay inside its
- * wander radius" a flaky test rather than an exact one.
+ * wander radius" a flaky test rather than an exact one. The implementation moved to
+ * `core/random` once the scatter brush needed the same guarantee for the same reason; it is
+ * re-exported so the AI's own import sites keep reading as steering maths.
  */
-export function mulberry32(seed: number): () => number {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) >>> 0;
-    let t = a;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
-/** FNV-1a over a string, so an entity id maps to a stable seed. */
-export function hashSeed(text: string): number {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < text.length; i += 1) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return hash >>> 0;
-}
-
-/** Uniformly sampled point inside a disc — sqrt keeps it uniform by area, not by radius. */
-export function randomPointInDisc(
-  rng: () => number,
-  centreX: number,
-  centreZ: number,
-  radius: number,
-): [number, number] {
-  const angle = rng() * Math.PI * 2;
-  const distance = Math.sqrt(rng()) * radius;
-  return [centreX + Math.cos(angle) * distance, centreZ + Math.sin(angle) * distance];
-}
+export { hashSeed, mulberry32, randomPointInDisc } from '../core/random';

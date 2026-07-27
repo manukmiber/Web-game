@@ -52,28 +52,40 @@ export class HardwareSystem implements System {
   private readonly lastWrite = new Map<string, number>();
   /** Axes this system wrote last frame, so releasing a stick zeroes them rather than latching. */
   private ownedAxes = new Set<string>();
+  /** Keys this system held down last frame, for the same reason. */
+  private ownedKeys = new Set<string>();
   private elapsed = 0;
-  /** Channels written during the session, zeroed on stop when `resetOnStop` is set. */
-  private readonly touched = new Map<string, { device: string; channel: string }>();
+  /**
+   * Channels written during the session, zeroed on stop when `resetOnStop` is set.
+   *
+   * The *resolved* reference is stored, not the component's device plus the binding's channel:
+   * a binding that already names its board (`uno:D13`) on a component that also has one would
+   * otherwise be rebuilt as `uno:uno:D13`, and the zeroing write would go nowhere.
+   */
+  private readonly touched = new Map<string, string>();
 
   update(dt: number, engine: Engine): void {
     this.elapsed += dt;
     const axes = new Set<string>();
+    const keys = new Set<string>();
 
     for (const entity of engine.scene.all()) {
       for (const component of entity.components) {
         if (component.type === 'HardwareInput') {
-          this.applyInput(engine, entity.id, component as HardwareInputComponent, axes);
+          this.applyInput(engine, entity.id, component as HardwareInputComponent, axes, keys);
         } else if (component.type === 'HardwareOutput') {
           this.applyOutput(engine, entity.id, component as HardwareOutputComponent);
         }
       }
     }
 
-    // An axis whose binding was removed, or whose device went away, must fall back to zero.
-    // Otherwise the last value a disconnected stick reported steers the character forever.
+    // An axis or key whose binding was removed, or whose device went away, must fall back to
+    // released. Otherwise the last value a disconnected stick reported steers the character
+    // forever, and a button that was down when the USB cable came out stays down.
     for (const axis of this.ownedAxes) if (!axes.has(axis)) engine.input.setAxis(axis, 0);
+    for (const key of this.ownedKeys) if (!keys.has(key)) engine.input.setKey(key, false);
     this.ownedAxes = axes;
+    this.ownedKeys = keys;
   }
 
   /**
@@ -81,13 +93,12 @@ export class HardwareSystem implements System {
    * matters on a desk rather than in memory — zeroes the outputs a session lit up.
    */
   reset(engine: Engine): void {
-    for (const [key, { device, channel }] of this.touched) {
-      const target = device ? `${device}:${channel}` : channel;
-      engine.hardware.write(target, 0, true);
-      this.touched.delete(key);
-    }
+    for (const reference of this.touched.values()) engine.hardware.write(reference, 0, true);
+    this.touched.clear();
     for (const axis of this.ownedAxes) engine.input.setAxis(axis, 0);
+    for (const key of this.ownedKeys) engine.input.setKey(key, false);
     this.ownedAxes = new Set();
+    this.ownedKeys = new Set();
     this.inputs.clear();
     this.outputs.clear();
     this.smoothed.clear();
@@ -108,6 +119,7 @@ export class HardwareSystem implements System {
     entityId: EntityId,
     component: HardwareInputComponent,
     axes: Set<string>,
+    keys: Set<string>,
   ): void {
     if (component.enabled === false) return;
     const compiled = this.compile(this.inputs, entityId, component.bindings ?? '', parseInputBindings);
@@ -124,6 +136,7 @@ export class HardwareSystem implements System {
         // A key from an analog channel needs a threshold; a digital one crosses 0.5 anyway.
         // `setKey` owns the edges, so held/pressed/released behave exactly as on a keyboard.
         engine.input.setKey(binding.target.key, Math.abs(value) >= binding.threshold);
+        keys.add(binding.target.key);
         continue;
       }
 
@@ -163,7 +176,7 @@ export class HardwareSystem implements System {
       const value = shapeOutput(this.readSource(engine, entityId, binding), binding);
       const reference = qualify(binding.channel, component.device);
       if (engine.hardware.write(reference, value) && component.resetOnStop !== false) {
-        this.touched.set(key, { device: component.device ?? '', channel: binding.channel });
+        this.touched.set(key, reference);
       }
     }
 

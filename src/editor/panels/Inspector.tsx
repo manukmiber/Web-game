@@ -14,6 +14,7 @@ import {
 import { Field, Section, Vec3Field } from './fields';
 import { ComponentField } from './ComponentField';
 import { ModifierStack } from './ModifierStack';
+import { ScatterEditor } from './ScatterEditor';
 import { ScriptEditor } from './ScriptEditor';
 
 type TransformKey = keyof Transform;
@@ -183,6 +184,14 @@ export function Inspector() {
               <ScriptEditor
                 entityId={primary.id}
                 script={primary.components.find((c) => c.type === 'Script')! as never}
+              />
+            )}
+            {/* The brush belongs with the layer it fills, and its prototype list names entities
+                in this scene — neither survives being applied across a multi-selection. */}
+            {type === 'ScatterLayer' && !multi && (
+              <ScatterEditor
+                entityId={primary.id}
+                layer={primary.components.find((c) => c.type === 'ScatterLayer')! as never}
               />
             )}
           </div>

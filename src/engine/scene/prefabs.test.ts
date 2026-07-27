@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { createCamera, findPrimaryCamera } from '../components/Camera';
 import { sceneFromJSON, sceneToJSON } from '../serialization/serialize';
+import type { ScatterLayerComponent } from '../components/ScatterLayer';
+import { unpackInstances } from '../scatter';
 import { Scene } from './Scene';
 import { PREFAB_MENU, createPrefab, createStarterScene } from './prefabs';
 import { createTransform, type Entity } from './types';
@@ -112,3 +114,46 @@ describe('starter scene', () => {
     expect(reloaded.size).toBe(entities.length);
   });
 });
+
+describe('the Scatter Layer prefab', () => {
+  it('arrives already drawing, with the source it scatters', () => {
+    const [layerEntity, source] = createPrefab('Scatter Layer', { position: [4, 0, -2] });
+
+    expect(source?.components.some((c) => c.type === 'MeshRenderer')).toBe(true);
+    const layer = layerEntity?.components.find((c) => c.type === 'ScatterLayer') as
+      | ScatterLayerComponent
+      | undefined;
+    expect(layer).toBeDefined();
+    expect(layer!.prototypes.map((p) => p.sourceId)).toEqual([source!.id]);
+    // Filled at creation, because an empty layer renders nothing and reads as broken.
+    expect(layer!.instanceCount).toBeGreaterThan(0);
+    expect(unpackInstances(layer!)).toHaveLength(layer!.instanceCount);
+  });
+
+  /**
+   * Adding it must select the layer and only the layer: `AddEntitiesCommand` selects every
+   * parentless entity it added, and a multi-selection hides the scatter panel.
+   */
+  it('has exactly one root, so adding it selects the layer alone', () => {
+    const entities = createPrefab('Scatter Layer');
+    const roots = entities.filter((entity) => entity.parentId === null);
+
+    expect(roots).toHaveLength(1);
+    expect(roots[0]!.components.some((c) => c.type === 'ScatterLayer')).toBe(true);
+    // Parents first, as `Scene.add` requires.
+    expect(entities[0]).toBe(roots[0]);
+  });
+
+  it('round-trips its packed instances through the serializer', () => {
+    const scene = new Scene();
+    for (const entity of createPrefab('Scatter Layer')) scene.add(entity);
+
+    const json = sceneToJSON(scene);
+    const reloaded = new Scene();
+    sceneFromJSON(reloaded, json);
+
+    // Additive component fields, so still no schema bump — the packed buffers are just strings.
+    expect(sceneToJSON(reloaded)).toBe(json);
+  });
+});
+

@@ -6,7 +6,9 @@ import { createHardwareOutput } from '../components/HardwareOutput';
 import { createLight } from '../components/Light';
 import type { MeshRendererComponent, PrimitiveParams } from '../components/MeshRenderer';
 import { createNpcAgent, type NpcArchetype } from '../components/NpcAgent';
+import { createScatterLayer } from '../components/ScatterLayer';
 import { createScript } from '../components/Script';
+import { createPrototype, refillLayer } from '../scatter/layer';
 import { createPrimitiveEntity } from './primitives';
 import { generateEntityId } from './Scene';
 import { createTransform, type Entity, type Vec3 } from './types';
@@ -34,7 +36,8 @@ export type PrefabKind =
   | 'Villager'
   | 'Animal'
   | 'Game Logic'
-  | 'Hardware Rig';
+  | 'Hardware Rig'
+  | 'Scatter Layer';
 
 export const PREFAB_MENU: readonly PrefabKind[] = [
   'Player',
@@ -46,6 +49,7 @@ export const PREFAB_MENU: readonly PrefabKind[] = [
   'Point Light',
   'Spot Light',
   'Environment',
+  'Scatter Layer',
   'Game Logic',
   'Hardware Rig',
 ];
@@ -197,6 +201,37 @@ export function createPrefab(kind: PrefabKind, options: PrefabOptions = {}): Ent
       const entity = empty(options.name ?? 'Hardware Rig', ground);
       entity.components.push(createHardwareInput(), createHardwareOutput());
       return [entity];
+    }
+
+    /**
+     * A layer *and* the thing it scatters, filled in and already drawing.
+     *
+     * An empty ScatterLayer renders nothing and reads as broken — the feature is only legible
+     * once there is a shrub in the viewport and two hundred copies of it around. The source is
+     * a plain entity, deliberately: select it, change its colour or push a Bevel onto its
+     * stack, and every instance follows.
+     *
+     * The source is parented *under* the layer so the pair is one top-level row that travels
+     * together — and so adding one selects the layer alone. Two roots would select both, and a
+     * multi-selection hides the scatter panel, which is the one thing you came for.
+     */
+    case 'Scatter Layer': {
+      const entity = empty(options.name ?? 'Scatter Layer', ground);
+
+      const source = withParams(
+        createPrimitiveEntity('Cone', { name: 'Scatter Source', color: '#5f7f4a' }),
+        { radius: 0.45, height: 1.4, radialSegments: 7 },
+      );
+      source.parentId = entity.id;
+
+      const layer = createScatterLayer({ prototypes: [createPrototype(source.id)] });
+      Object.assign(layer, refillLayer(layer));
+      entity.components.push(layer);
+
+      // Parent first, as every composite prefab must be. The layer references a source that
+      // does not exist yet, which is fine: prototypes resolve at render time, and the bridge
+      // rebuilds a layer when an entity it borrows from arrives.
+      return [entity, source];
     }
 
     case 'Game Logic':

@@ -182,6 +182,52 @@ describe('HardwareSystem', () => {
     expect(link.drain()).toBe('D13=0\n');
   });
 
+  it('zeroes an output whose binding already names its board', () => {
+    // The component supplies a device *and* the line qualifies the channel. Rebuilding the
+    // reference from both would produce `uno:uno:D13`, and the lamp would stay lit after Stop.
+    engine.scene.add(
+      entityWith('rig', [
+        createHardwareOutput({ device: 'uno', bindings: 'uno:D13 <- const:200 rate=60' }),
+      ]),
+    );
+    engine.setMode('play');
+    engine.tick(STEP);
+    expect(link.drain()).toBe('D13=200\n');
+
+    engine.setMode('edit');
+    expect(link.drain()).toBe('D13=0\n');
+  });
+
+  it('releases a key when the board driving it goes away', () => {
+    engine.scene.add(
+      entityWith('rig', [createHardwareInput({ bindings: 'D2 -> key:Space', smoothing: 0 })]),
+    );
+    engine.setMode('play');
+
+    link.receive('D2=1\n');
+    engine.tick(STEP);
+    expect(engine.input.isDown('Space')).toBe(true);
+
+    // The cable comes out mid-session. A latched key walks the character into the horizon.
+    engine.hardware.remove('uno');
+    engine.tick(STEP);
+    expect(engine.input.isDown('Space')).toBe(false);
+  });
+
+  it('releases a key when its binding is deleted mid-session', () => {
+    const component = createHardwareInput({ bindings: 'D2 -> key:Space', smoothing: 0 });
+    engine.scene.add(entityWith('rig', [component]));
+    engine.setMode('play');
+
+    link.receive('D2=1\n');
+    engine.tick(STEP);
+    expect(engine.input.isDown('Space')).toBe(true);
+
+    component.bindings = '';
+    engine.tick(STEP);
+    expect(engine.input.isDown('Space')).toBe(false);
+  });
+
   it('reports a bad binding once, not once per frame', () => {
     const problems: string[] = [];
     const system = new HardwareSystem();

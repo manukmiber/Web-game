@@ -8,5 +8,6 @@ import './create';
 import './edit';
 import './components';
 import './modifiers';
+import './scatter';
 
 export * from './shared';

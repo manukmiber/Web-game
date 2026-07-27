@@ -63,6 +63,12 @@ export class RenderHost {
   private stats: FrameStats | null;
   private shading: ShadingMode = 'shaded';
   private wireframeOverlay = new THREE.Group();
+  /**
+   * Owned rather than allocated per rebuild. Every line in a rebuild shares one material, and
+   * the rebuild runs on every transform change while a wireframe mode is on — a fresh material
+   * each time is a GPU allocation per frame of a gizmo drag that nothing ever disposes.
+   */
+  private wireframeMaterial: THREE.LineBasicMaterial | null = null;
 
   private readonly engineScene: Scene;
   /** The placeholder rig, hidden the moment the scene has a Light component of its own. */
@@ -408,17 +414,27 @@ export class RenderHost {
       const line = child as THREE.LineSegments;
       line.geometry?.dispose();
     }
-    if (this.shading === 'shaded') return;
+    if (this.shading === 'shaded') {
+      this.wireframeMaterial?.dispose();
+      this.wireframeMaterial = null;
+      return;
+    }
 
-    const material = new THREE.LineBasicMaterial({
-      color: this.shading === 'wireframe' ? 0x9ad0ff : 0x000000,
-      transparent: true,
-      opacity: this.shading === 'wireframe' ? 0.9 : 0.28,
-    });
+    // Standalone wireframe reads as a bright line drawing; over a shaded surface it wants to be
+    // a faint dark overlay, or it fights the material underneath it.
+    const standalone = this.shading === 'wireframe';
+    const material = (this.wireframeMaterial ??= new THREE.LineBasicMaterial({ transparent: true }));
+    material.color.setHex(standalone ? 0x9ad0ff : 0x000000);
+    material.opacity = standalone ? 0.9 : 0.28;
 
     this.bridge.root.traverse((object) => {
       const mesh = object as THREE.Mesh;
       if (!mesh.isMesh || !mesh.geometry) return;
+      // Hidden geometry has no wireframe: the overlay would otherwise be the one thing that
+      // ignores the Visible checkbox. Instanced scatter is skipped for a different reason —
+      // one WireframeGeometry would draw at the layer's origin, not at each instance.
+      if (mesh.userData.entityVisible === false) return;
+      if ((mesh as THREE.InstancedMesh).isInstancedMesh) return;
       const lines = new THREE.LineSegments(new THREE.WireframeGeometry(mesh.geometry), material);
       // Match the mesh's world transform without reparenting it out of the bridge's tree.
       mesh.updateMatrixWorld(true);
@@ -456,6 +472,8 @@ export class RenderHost {
     for (const unsubscribe of this.unsubscribes) unsubscribe();
     this.unsubscribes = [];
     this.setShadingMode('shaded');
+    this.wireframeMaterial?.dispose();
+    this.wireframeMaterial = null;
     this.disposeSky();
     this.bridge.dispose();
     this.renderer.dispose();

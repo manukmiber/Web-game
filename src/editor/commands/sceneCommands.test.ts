@@ -11,6 +11,7 @@ import {
   RemoveComponentCommand,
   RenameEntityCommand,
   ReparentEntitiesCommand,
+  SetComponentPropertiesCommand,
   SetComponentPropertyCommand,
   SetTransformCommand,
 } from './sceneCommands';
@@ -242,6 +243,32 @@ describe('DuplicateEntitiesCommand', () => {
     expect(scene.expect(scene.childrenOf(copyId)[0]!).name).toBe('Wheel');
   });
 
+  /**
+   * Redo has to re-add the *same* entities. Fresh ids would leave every later entry in the redo
+   * stack — the move that followed the duplicate — pointing at something that no longer exists,
+   * and those commands skip missing ids silently rather than throwing.
+   */
+  it('keeps its ids across undo and redo, so later history still applies', () => {
+    const id = addPrimitive('Box');
+    const duplicate = new DuplicateEntitiesCommand(scene, [id]);
+    history.execute(duplicate);
+
+    const copyId = duplicate.createdRootIds[0]!;
+    const move = new SetTransformCommand(scene, new Map([[copyId, { position: [5, 0, 0] }]]));
+    history.execute(move);
+
+    history.undo();
+    history.undo();
+    expect(scene.has(copyId)).toBe(false);
+
+    history.redo();
+    expect(duplicate.createdRootIds).toEqual([copyId]);
+    expect(scene.has(copyId)).toBe(true);
+
+    history.redo();
+    expect(scene.expect(copyId).transform.position).toEqual([5, 0, 0]);
+  });
+
   it('leaves the original untouched when the copy is edited', () => {
     const id = addPrimitive('Box');
     const command = new DuplicateEntitiesCommand(scene, [id]);
@@ -354,5 +381,42 @@ describe('CommandHistory', () => {
     while (history.canRedo()) history.redo();
     expect(scene.size).toBe(2);
     expect(scene.getComponent(scene.rootIds()[0]!, 'Material')?.color).toBe('#123456');
+  });
+});
+
+describe('SetComponentPropertiesCommand', () => {
+  it('changes several fields as one undo step', () => {
+    const id = addPrimitive('Box');
+    history.execute(
+      new SetComponentPropertiesCommand(scene, id, 'Material', {
+        color: '#112233',
+        roughness: 0.1,
+      }),
+    );
+
+    expect(scene.getComponent(id, 'Material')?.color).toBe('#112233');
+    expect(scene.getComponent(id, 'Material')?.roughness).toBe(0.1);
+
+    history.undo();
+    expect(scene.getComponent(id, 'Material')?.color).toBe('#cccccc');
+    expect(scene.getComponent(id, 'Material')?.roughness).not.toBe(0.1);
+  });
+
+  it('deep-copies the patch, so the caller can reuse the object it passed', () => {
+    const id = addPrimitive('Box');
+    const patch = { color: '#00ff00' };
+    history.execute(new SetComponentPropertiesCommand(scene, id, 'Material', patch));
+    patch.color = '#0000ff';
+
+    expect(scene.getComponent(id, 'Material')?.color).toBe('#00ff00');
+  });
+
+  it('does nothing when the component is not there', () => {
+    const id = addPrimitive('Empty');
+    const command = new SetComponentPropertiesCommand(scene, id, 'Material', { color: '#fff' });
+    expect(() => {
+      history.execute(command);
+      history.undo();
+    }).not.toThrow();
   });
 });

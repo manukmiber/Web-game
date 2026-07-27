@@ -2,6 +2,14 @@ import * as THREE from 'three';
 import type { LightComponent, LightType } from '../components/Light';
 import { createMaterial, type MaterialComponent } from '../components/Material';
 import type { MeshRendererComponent } from '../components/MeshRenderer';
+import type { ScatterLayerComponent } from '../components/ScatterLayer';
+import {
+  resolveScatterSources,
+  sameScatterKey,
+  scatterKey,
+  unpackInstances,
+  type ScatterKey,
+} from '../scatter/layer';
 import type { Scene } from '../scene/Scene';
 import type { Entity, EntityId, Vec3 } from '../scene/types';
 import { acquireGeometry, geometryCache } from './geometry';
@@ -17,6 +25,19 @@ const DEG2RAD = Math.PI / 180;
  */
 const PUNCTUAL_INTENSITY_SCALE = 12;
 
+/** One prototype's worth of a scatter layer: a single draw call, however many instances. */
+interface ScatterBatch {
+  mesh: THREE.InstancedMesh;
+  geometryKey: string;
+  materialKey: string;
+}
+
+interface ScatterNode {
+  batches: ScatterBatch[];
+  /** What the layer looked like when these batches were built. See `sameScatterKey`. */
+  key: ScatterKey;
+}
+
 interface EntityNode {
   /** Always present — carries the Transform. Empties are this and nothing else. */
   group: THREE.Group;
@@ -26,6 +47,8 @@ interface EntityNode {
   light: THREE.Light | null;
   /** Which light class `light` is, so a type change rebuilds rather than mis-configures. */
   lightKind: LightType | null;
+  /** Instanced geometry from a ScatterLayer, if the entity carries one. */
+  scatter: ScatterNode | null;
 }
 
 /**
@@ -76,10 +99,18 @@ export class RenderBridge {
     return undefined;
   }
 
-  /** Meshes only — what the viewport raycasts against. */
+  /**
+   * Meshes only — what the viewport raycasts against.
+   *
+   * Scatter batches are in here too: Three raycasts an `InstancedMesh` per instance, so a click
+   * on one tree in a forest hits, and the entity id on the batch resolves it to the layer.
+   */
   pickables(): THREE.Object3D[] {
     const out: THREE.Object3D[] = [];
-    for (const node of this.nodes.values()) if (node.mesh) out.push(node.mesh);
+    for (const node of this.nodes.values()) {
+      if (node.mesh) out.push(node.mesh);
+      for (const batch of node.scatter?.batches ?? []) out.push(batch.mesh);
+    }
     return out;
   }
 
@@ -104,11 +135,20 @@ export class RenderBridge {
   private subscribe(): void {
     const { events } = this.scene;
     this.unsubscribes.push(
-      events.on('entityAdded', ({ entity }) => this.createNode(entity)),
-      events.on('entityRemoved', ({ id }) => this.destroySubtree(id)),
+      events.on('entityAdded', ({ entity }) => {
+        this.createNode(entity);
+        this.rebuildScatterUsing(entity.id);
+      }),
+      events.on('entityRemoved', ({ id }) => {
+        this.destroySubtree(id);
+        this.rebuildScatterUsing(id);
+      }),
       events.on('entityReparented', ({ id }) => this.attachToParent(id)),
       events.on('transformChanged', ({ id }) => this.syncTransform(id)),
-      events.on('componentsChanged', ({ id }) => this.syncComponents(id)),
+      events.on('componentsChanged', ({ id }) => {
+        this.syncComponents(id);
+        this.rebuildScatterUsing(id);
+      }),
       events.on('sceneReplaced', () => this.rebuildAll()),
     );
   }
@@ -140,6 +180,7 @@ export class RenderBridge {
       materialKey: null,
       light: null,
       lightKind: null,
+      scatter: null,
     };
     this.nodes.set(entity.id, node);
 
@@ -171,6 +212,7 @@ export class RenderBridge {
     if (!node) return;
     this.releaseMesh(node);
     this.releaseLight(node);
+    this.releaseScatter(node);
     node.group.removeFromParent();
     this.nodes.delete(id);
   }
@@ -220,6 +262,7 @@ export class RenderBridge {
     node.group.name = entity.name;
     this.syncMesh(node, entity);
     this.syncLight(node, entity);
+    this.syncScatter(node, entity);
   }
 
   private syncMesh(node: EntityNode, entity: Entity): void {
@@ -264,6 +307,10 @@ export class RenderBridge {
     }
 
     node.mesh.visible = renderer.visible;
+    // Recorded as well as applied, because the host's shading pass rewrites `visible` for the
+    // whole tree and has no other way to know an entity was hidden on purpose. Without it,
+    // hiding an object and then touching anything that re-runs the pass brings it back.
+    node.mesh.userData.entityVisible = renderer.visible;
     node.mesh.castShadow = renderer.castShadow;
     node.mesh.receiveShadow = renderer.receiveShadow;
     // Meshes are lit by lights, but they are also *hit* by picking; keeping the entity id on
@@ -352,12 +399,151 @@ export class RenderBridge {
     node.lightKind = null;
   }
 
+  /**
+   * Projects a `ScatterLayer` onto one `InstancedMesh` per prototype.
+   *
+   * This is ARCHITECTURE.md §9.3's whole argument made real: a layer holding a hundred thousand
+   * trees is one entity in the Hierarchy, one node in this tree, and as many draw calls as it
+   * has prototypes — not one of each per tree. The instance matrices come out of packed typed
+   * arrays, so nothing here ever allocates per instance beyond the buffer the GPU needs.
+   *
+   * Geometry and material are borrowed from the *source entity* through the same refcounted
+   * caches ordinary meshes use, which is what makes editing the source tree — its parameters,
+   * its modifier stack, its colour — update every instance for free.
+   */
+  private syncScatter(node: EntityNode, entity: Entity): void {
+    const layer = entity.components.find(
+      (c): c is ScatterLayerComponent => c.type === 'ScatterLayer',
+    );
+    if (!layer) {
+      this.releaseScatter(node);
+      return;
+    }
+
+    const key = scatterKey(layer);
+    if (sameScatterKey(node.scatter?.key ?? null, key)) return;
+    this.releaseScatter(node);
+
+    const sources = resolveScatterSources(this.scene, layer);
+    if (sources.length === 0) {
+      node.scatter = { batches: [], key };
+      return;
+    }
+
+    const instances = unpackInstances(layer);
+    // Bucket by prototype first, so each batch is allocated once at its true size rather than
+    // at the layer's total and then trimmed.
+    const buckets = new Map<number, typeof instances>();
+    for (const instance of instances) {
+      const bucket = buckets.get(instance.prototype);
+      if (bucket) bucket.push(instance);
+      else buckets.set(instance.prototype, [instance]);
+    }
+
+    const batches: ScatterBatch[] = [];
+    for (const source of sources) {
+      const bucket = buckets.get(source.index);
+      if (!bucket || bucket.length === 0) continue;
+
+      const { key: geometryKey, geometry } = acquireGeometry(source.renderer);
+      const nextMaterialKey = materialKey(source.material);
+      const material = materialCache.acquire(nextMaterialKey);
+
+      const mesh = new THREE.InstancedMesh(geometry, material, bucket.length);
+      mesh.name = `${entity.name} · ${source.entity.name}`;
+      mesh.visible = key.visible;
+      mesh.castShadow = key.castShadow;
+      mesh.receiveShadow = key.receiveShadow;
+      // A click on any instance selects the layer. Selecting one tree out of a packed buffer
+      // would need a selection model that does not exist yet, and "you selected the forest" is
+      // the honest answer to clicking a forest.
+      mesh.userData.entityId = entity.id;
+      mesh.userData.scatterPrototype = source.prototype.id;
+
+      for (const [index, instance] of bucket.entries()) {
+        SCATTER_POSITION.set(instance.position[0], instance.position[1], instance.position[2]);
+        SCATTER_QUATERNION.set(
+          instance.rotation[0],
+          instance.rotation[1],
+          instance.rotation[2],
+          instance.rotation[3],
+        );
+        const scale = Number.isFinite(instance.scale) ? instance.scale : 1;
+        SCATTER_SCALE.setScalar(scale);
+        SCATTER_MATRIX.compose(SCATTER_POSITION, SCATTER_QUATERNION, SCATTER_SCALE);
+        mesh.setMatrixAt(index, SCATTER_MATRIX);
+      }
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.computeBoundingSphere();
+
+      node.group.add(mesh);
+      batches.push({ mesh, geometryKey, materialKey: nextMaterialKey });
+    }
+
+    node.scatter = { batches, key };
+  }
+
+  /**
+   * Rebuilds every layer that borrows its mesh from `sourceId`.
+   *
+   * A scatter batch is built from the *source entity's* renderer and material, so editing the
+   * tree that a forest was scattered from — its radius, its colour, a modifier on its stack —
+   * changes nothing the layer's own component can see. Without this, the source tree updates
+   * and the thousand copies of it do not, which reads as a broken feature rather than a missed
+   * event. Layers are counted in ones, so the scan costs nothing.
+   */
+  private rebuildScatterUsing(sourceId: EntityId): void {
+    for (const [id, node] of this.nodes) {
+      if (!node.scatter) continue;
+      const entity = this.scene.get(id);
+      if (!entity) continue;
+      const layer = entity.components.find(
+        (c): c is ScatterLayerComponent => c.type === 'ScatterLayer',
+      );
+      if (!layer?.prototypes?.some((prototype) => prototype.sourceId === sourceId)) continue;
+      this.releaseScatter(node);
+      this.syncScatter(node, entity);
+    }
+  }
+
+  private releaseScatter(node: EntityNode): void {
+    if (!node.scatter) return;
+    for (const batch of node.scatter.batches) {
+      batch.mesh.removeFromParent();
+      // The InstancedMesh owns its per-instance buffer and nothing else; the geometry and
+      // material belong to the caches, so they are released rather than disposed.
+      batch.mesh.dispose();
+      geometryCache.release(batch.geometryKey);
+      materialCache.release(batch.materialKey);
+    }
+    node.scatter = null;
+  }
+
   /** True when the scene lights itself, so the host can drop its placeholder rig. */
   hasLights(): boolean {
     for (const node of this.nodes.values()) if (node.light) return true;
     return false;
   }
+
+  /** Instances drawn by scatter layers, and the draw calls they cost. Read by the perf HUD. */
+  scatterStats(): { instances: number; drawCalls: number } {
+    let instances = 0;
+    let drawCalls = 0;
+    for (const node of this.nodes.values()) {
+      for (const batch of node.scatter?.batches ?? []) {
+        instances += batch.mesh.count;
+        drawCalls += 1;
+      }
+    }
+    return { instances, drawCalls };
+  }
 }
+
+/** Scratch objects for composing instance matrices — one allocation, not one per instance. */
+const SCATTER_MATRIX = new THREE.Matrix4();
+const SCATTER_POSITION = new THREE.Vector3();
+const SCATTER_QUATERNION = new THREE.Quaternion();
+const SCATTER_SCALE = new THREE.Vector3();
 
 /** The aim point of a light that has one. Point lights don't. */
 function targetOf(light: THREE.Light): THREE.Object3D | null {

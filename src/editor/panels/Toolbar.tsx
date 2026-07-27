@@ -58,6 +58,18 @@ export function Toolbar({ spawnPoint }: Props) {
     }, 4000);
   };
 
+  /**
+   * Saving, loading and exporting are edit-mode operations.
+   *
+   * While playing, the Scene holds the *running* simulation — a zombie is wherever it wandered
+   * to — and the authored version only exists in the Engine's play snapshot. Saving there would
+   * autosave a scene nobody authored; loading or importing would be discarded outright, because
+   * pressing Stop restores the snapshot taken before the load. Both are quiet data loss, so the
+   * buttons say why they are off rather than doing something surprising.
+   */
+  const persistenceTitle = (title: string) =>
+    playing ? `${title} — stop playing first, the scene is running` : title;
+
   const addPrimitive = (kind: PrimitiveKind) => {
     const command = new AddEntityCommand(
       engine.scene,
@@ -239,16 +251,32 @@ export function Toolbar({ spawnPoint }: Props) {
       <div className="toolbar-divider" />
 
       <div className="toolbar-group">
-        <button onClick={onSave} title="Save to browser local storage (Ctrl+S)">
+        <button
+          onClick={onSave}
+          disabled={playing}
+          title={persistenceTitle('Save to browser local storage (Ctrl+S)')}
+        >
           Save
         </button>
-        <button onClick={onLoad} title="Load from browser local storage">
+        <button
+          onClick={onLoad}
+          disabled={playing}
+          title={persistenceTitle('Load from browser local storage')}
+        >
           Load
         </button>
-        <button onClick={() => exportSceneFile(engine.scene)} title="Download scene as JSON">
+        <button
+          onClick={() => exportSceneFile(engine.scene)}
+          disabled={playing}
+          title={persistenceTitle('Download scene as JSON')}
+        >
           Export
         </button>
-        <button onClick={() => fileInput.current?.click()} title="Import a scene JSON file">
+        <button
+          onClick={() => fileInput.current?.click()}
+          disabled={playing}
+          title={persistenceTitle('Import a scene JSON file')}
+        >
           Import
         </button>
         <input

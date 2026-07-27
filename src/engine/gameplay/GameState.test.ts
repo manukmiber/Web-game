@@ -18,6 +18,17 @@ describe('GameState', () => {
     expect(game.get('e1')?.maxHealth).toBe(120);
   });
 
+  it('clamps health when maxHealth is edited downward mid-play', () => {
+    const game = new GameState();
+    game.register('e1', 'survivor', 100);
+    // Lowering the ceiling in the Inspector must bring the actor under it, or `health01`
+    // reads above 1 and drives an output binding past its own max.
+    game.register('e1', 'survivor', 30);
+
+    expect(game.get('e1')?.health).toBe(30);
+    expect(game.get('e1')?.maxHealth).toBe(30);
+  });
+
   it('reports damage and death exactly once', () => {
     const game = new GameState();
     game.register('e1', 'undead', 20);

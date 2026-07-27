@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { xorshift32 } from '../core/random';
 
 export type StressPreset = 'forest' | 'city';
 
@@ -46,18 +47,6 @@ export interface StressStats {
   triangles: number;
 }
 
-/** Deterministic PRNG so a measurement can be repeated exactly. */
-function makeRandom(seed: number): () => number {
-  let state = seed >>> 0 || 1;
-  return () => {
-    // xorshift32 — cheap, good enough for scatter placement, and reproducible.
-    state ^= state << 13;
-    state ^= state >>> 17;
-    state ^= state << 5;
-    return ((state >>> 0) % 100000) / 100000;
-  };
-}
-
 /**
  * Builds the two load shapes the engine has to survive, so the budget can be measured
  * instead of argued about.
@@ -102,7 +91,7 @@ export class StressScene {
   }
 
   private build(params: StressParams): void {
-    const random = makeRandom(params.seed);
+    const random = xorshift32(params.seed);
     const prototypes = this.buildPrototypes(params, random);
 
     // Area covered, converted from "objects per 100 m²" to an absolute count.
