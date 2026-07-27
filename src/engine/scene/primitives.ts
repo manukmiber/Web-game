@@ -5,8 +5,8 @@ import { createTransform, type Entity, type Vec3 } from './types';
 
 export type PrimitiveKind = PrimitiveType | 'Empty';
 
-/** Matches Unity's GameObject > 3D Object menu ordering. */
-export const PRIMITIVE_MENU: readonly PrimitiveKind[] = [
+/** Solids, ordered roughly like Unity's GameObject > 3D Object menu. */
+export const SOLID_MENU: readonly PrimitiveKind[] = [
   'Box',
   'Sphere',
   'Plane',
@@ -16,21 +16,27 @@ export const PRIMITIVE_MENU: readonly PrimitiveKind[] = [
   'Torus',
   'Tube',
   'Icosphere',
+  'Wedge',
   'Empty',
 ];
 
-const DEFAULT_NAMES: Record<PrimitiveKind, string> = {
-  Box: 'Box',
-  Sphere: 'Sphere',
-  Plane: 'Plane',
-  Cylinder: 'Cylinder',
-  Capsule: 'Capsule',
-  Cone: 'Cone',
-  Torus: 'Torus',
-  Tube: 'Tube',
-  Icosphere: 'Icosphere',
-  Empty: 'Empty',
-};
+/**
+ * Flat profiles. Separate from the solids in the menu because they are a different kind of
+ * thing to reach for: a 2D shape is usually a step on the way to a solid, via Extrude or Lathe,
+ * rather than the finished object.
+ */
+export const SHAPE_MENU: readonly PrimitiveKind[] = [
+  'Circle',
+  'Ellipse',
+  'Rectangle',
+  'Polygon',
+  'Star',
+  'Arc',
+  'Ring',
+  'Gear',
+];
+
+export const PRIMITIVE_MENU: readonly PrimitiveKind[] = [...SOLID_MENU, ...SHAPE_MENU];
 
 /**
  * Default geometry per primitive, sized so a fresh object reads at a sensible scale next to
@@ -46,6 +52,15 @@ const DEFAULT_PARAMS: Partial<Record<PrimitiveKind, Record<string, number>>> = {
   Torus: { radius: 0.5, tubeRadius: 0.18 },
   Tube: { radius: 0.5, innerRadius: 0.3, height: 1 },
   Icosphere: { radius: 0.5, subdivisions: 2 },
+  Wedge: { width: 1, height: 1, depth: 1 },
+  Circle: { radius: 0.5 },
+  Ellipse: { width: 1.4, depth: 1 },
+  Rectangle: { width: 1, depth: 1, cornerRadius: 0 },
+  Polygon: { radius: 0.5, sides: 6 },
+  Star: { radius: 0.5, innerRadius: 0.22, points: 5 },
+  Arc: { radius: 0.5, startAngle: 0, sweepAngle: 270 },
+  Ring: { radius: 0.5, innerRadius: 0.3 },
+  Gear: { radius: 0.5, toothDepth: 0.12, teeth: 12, innerRadius: 0.15 },
 };
 
 export interface CreatePrimitiveOptions {
@@ -65,7 +80,7 @@ export function createPrimitiveEntity(
 ): Entity {
   const entity: Entity = {
     id: generateEntityId(),
-    name: options.name ?? DEFAULT_NAMES[kind],
+    name: options.name ?? kind,
     parentId: options.parentId ?? null,
     transform: createTransform(options.position ?? [0, 0, 0]),
     components: [],

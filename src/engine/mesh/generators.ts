@@ -1,6 +1,18 @@
 import { createMeshData, pushVertex, weldVertices, type MeshData } from './MeshData';
+import {
+  arcShape,
+  circleShape,
+  ellipseShape,
+  fillShape,
+  gearShape,
+  polygonShape,
+  rectangleShape,
+  ringShape,
+  starShape,
+} from './shapes';
 
-export const PRIMITIVE_TYPES = [
+/** Solids. Everything here encloses a volume, apart from Plane. */
+export const SOLID_PRIMITIVE_TYPES = [
   'Box',
   'Sphere',
   'Icosphere',
@@ -10,8 +22,34 @@ export const PRIMITIVE_TYPES = [
   'Cone',
   'Torus',
   'Tube',
+  'Wedge',
 ] as const;
+
+/**
+ * Flat profiles, lying in the XZ plane and facing up.
+ *
+ * They are primitives rather than a separate kind of object because everything downstream —
+ * the modifier stack, the material, the serializer, the Inspector — already works on a
+ * MeshRenderer, and a flat mesh is a perfectly good mesh. Extrude or Lathe then turns one into
+ * a solid without anything having to convert between two representations.
+ */
+export const SHAPE_PRIMITIVE_TYPES = [
+  'Circle',
+  'Ellipse',
+  'Rectangle',
+  'Polygon',
+  'Star',
+  'Arc',
+  'Ring',
+  'Gear',
+] as const;
+
+export const PRIMITIVE_TYPES = [...SOLID_PRIMITIVE_TYPES, ...SHAPE_PRIMITIVE_TYPES] as const;
 export type PrimitiveType = (typeof PRIMITIVE_TYPES)[number];
+
+export function isShapePrimitive(primitive: PrimitiveType): boolean {
+  return (SHAPE_PRIMITIVE_TYPES as readonly string[]).includes(primitive);
+}
 
 export interface PrimitiveParams {
   width: number;
@@ -29,10 +67,26 @@ export interface PrimitiveParams {
   tubeRadius: number;
   /** Torus: segments around the cross-section. */
   tubularSegments: number;
-  /** Tube: inner radius of the bore. */
+  /** Tube, Ring, Star, Gear: inner radius — the bore, or the waist between a star's points. */
   innerRadius: number;
   /** Icosphere: recursion depth. Each level quadruples the triangle count. */
   subdivisions: number;
+  /** Rectangle: corner rounding, clamped to half the shorter side. */
+  cornerRadius: number;
+  /** Rectangle: steps across each rounded corner. */
+  cornerSegments: number;
+  /** Polygon: number of sides. */
+  sides: number;
+  /** Star: number of spikes. */
+  points: number;
+  /** Arc: where the wedge starts, in degrees counter-clockwise from +X. */
+  startAngle: number;
+  /** Arc: how far the wedge sweeps, in degrees. */
+  sweepAngle: number;
+  /** Gear: number of teeth. */
+  teeth: number;
+  /** Gear: how far each tooth stands out from the root radius. */
+  toothDepth: number;
 }
 
 export const DEFAULT_PRIMITIVE_PARAMS: PrimitiveParams = {
@@ -51,6 +105,14 @@ export const DEFAULT_PRIMITIVE_PARAMS: PrimitiveParams = {
   tubularSegments: 16,
   innerRadius: 0.3,
   subdivisions: 2,
+  cornerRadius: 0,
+  cornerSegments: 4,
+  sides: 6,
+  points: 5,
+  startAngle: 0,
+  sweepAngle: 270,
+  teeth: 12,
+  toothDepth: 0.12,
 };
 
 /** Which params each primitive consumes — drives the Inspector and the geometry cache key. */
@@ -64,10 +126,19 @@ const PARAMS_BY_PRIMITIVE: Record<PrimitiveType, (keyof PrimitiveParams)[]> = {
   Torus: ['radius', 'tubeRadius', 'radialSegments', 'tubularSegments'],
   Tube: ['radius', 'innerRadius', 'height', 'radialSegments', 'heightSegments'],
   Icosphere: ['radius', 'subdivisions'],
+  Wedge: ['width', 'height', 'depth'],
+  Circle: ['radius', 'radialSegments'],
+  Ellipse: ['width', 'depth', 'radialSegments'],
+  Rectangle: ['width', 'depth', 'cornerRadius', 'cornerSegments'],
+  Polygon: ['radius', 'sides'],
+  Star: ['radius', 'innerRadius', 'points'],
+  Arc: ['radius', 'startAngle', 'sweepAngle', 'radialSegments'],
+  Ring: ['radius', 'innerRadius', 'radialSegments'],
+  Gear: ['radius', 'toothDepth', 'teeth', 'innerRadius'],
 };
 
 export function relevantParams(primitive: PrimitiveType): (keyof PrimitiveParams)[] {
-  return PARAMS_BY_PRIMITIVE[primitive];
+  return PARAMS_BY_PRIMITIVE[primitive] ?? PARAMS_BY_PRIMITIVE.Box;
 }
 
 const clampSegments = (value: number, min = 1) => Math.max(min, Math.floor(value) || min);
@@ -105,6 +176,24 @@ export function generatePrimitive(
       return generateTube2(p);
     case 'Icosphere':
       return generateIcosphere(p);
+    case 'Wedge':
+      return generateWedge(p);
+    case 'Circle':
+      return fillShape(circleShape(p.radius, p.radialSegments));
+    case 'Ellipse':
+      return fillShape(ellipseShape(p.width / 2, p.depth / 2, p.radialSegments));
+    case 'Rectangle':
+      return fillShape(rectangleShape(p.width, p.depth, p.cornerRadius, p.cornerSegments));
+    case 'Polygon':
+      return fillShape(polygonShape(p.radius, p.sides));
+    case 'Star':
+      return fillShape(starShape(p.radius, p.innerRadius, p.points));
+    case 'Arc':
+      return fillShape(arcShape(p.radius, p.startAngle, p.sweepAngle, p.radialSegments));
+    case 'Ring':
+      return fillShape(ringShape(p.radius, p.innerRadius, p.radialSegments));
+    case 'Gear':
+      return fillShape(gearShape(p.radius, p.toothDepth, p.teeth, p.innerRadius));
     default:
       return generateBox(p);
   }
@@ -528,6 +617,50 @@ function generateIcosphere(p: PrimitiveParams): MeshData {
   for (const face of faces) {
     mesh.faces.push([...face]);
     mesh.smoothFaces.push(true);
+  }
+
+  return mesh;
+}
+
+/**
+ * Wedge: a box with its front edge dropped to the floor — a ramp.
+ *
+ * Six vertices and five faces, closed and all-quad apart from the two side triangles. Worth
+ * having as a primitive rather than as a Box with a deformer because ramps are the second thing
+ * anyone blocks out a level with, and reaching for a modifier stack to get one is silly.
+ *
+ * The slope runs down toward +Z, so the wedge climbs away from the camera in a default view.
+ */
+function generateWedge(p: PrimitiveParams): MeshData {
+  const mesh = createMeshData();
+  const hw = p.width / 2;
+  const hh = p.height / 2;
+  const hd = p.depth / 2;
+  mesh.uvs = [];
+  mesh.smoothFaces = [];
+
+  const corners: [number, number, number][] = [
+    [-hw, -hh, -hd], // 0 back  left  bottom
+    [hw, -hh, -hd], //  1 back  right bottom
+    [hw, -hh, hd], //   2 front right bottom
+    [-hw, -hh, hd], //  3 front left  bottom
+    [-hw, hh, -hd], //  4 back  left  top
+    [hw, hh, -hd], //   5 back  right top
+  ];
+  for (const [x, y, z] of corners) {
+    pushVertex(mesh, x, y, z);
+    mesh.uvs.push((x + hw) / (p.width || 1), (z + hd) / (p.depth || 1));
+  }
+
+  for (const face of [
+    [0, 1, 2, 3], // floor
+    [0, 4, 5, 1], // back wall
+    [5, 4, 3, 2], // slope
+    [4, 0, 3], //    left
+    [5, 2, 1], //    right
+  ]) {
+    mesh.faces.push(face);
+    mesh.smoothFaces.push(false);
   }
 
   return mesh;
