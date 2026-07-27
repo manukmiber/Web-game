@@ -55,6 +55,16 @@ export interface ConsoleMessage {
  */
 const CONSOLE_LIMIT = 200;
 
+/** One line in the assistant transcript. Tool calls are shown, not hidden behind the prose. */
+export interface AssistantEntry {
+  id: number;
+  kind: 'user' | 'assistant' | 'tool' | 'error';
+  text: string;
+  /** Present on tool entries: the tool that ran, and whether it came back an error. */
+  tool?: string;
+  failed?: boolean;
+}
+
 interface EditorState {
   selection: EntityId[];
   /** Anchor for shift-range selection in the Hierarchy. */
@@ -75,6 +85,9 @@ interface EditorState {
   perf: PerfSettings;
   consoleMessages: ConsoleMessage[];
   consoleVisible: boolean;
+  assistantVisible: boolean;
+  assistantBusy: boolean;
+  assistantEntries: AssistantEntry[];
 
   setSelection(ids: EntityId[]): void;
   toggleSelection(id: EntityId): void;
@@ -92,9 +105,14 @@ interface EditorState {
   pushConsole(message: Omit<ConsoleMessage, 'id'>): void;
   clearConsole(): void;
   setConsoleVisible(visible: boolean): void;
+  setAssistantVisible(visible: boolean): void;
+  setAssistantBusy(busy: boolean): void;
+  pushAssistantEntry(entry: Omit<AssistantEntry, 'id'>): void;
+  clearAssistant(): void;
 }
 
 let consoleCounter = 0;
+let assistantCounter = 0;
 
 /**
  * Editor UI state — selection, active tool, snapping. Deliberately separate from the Scene:
@@ -122,6 +140,9 @@ export const useEditorStore = create<EditorState>((set) => ({
   perf: { ...DEFAULT_PERF },
   consoleMessages: [],
   consoleVisible: false,
+  assistantVisible: false,
+  assistantBusy: false,
+  assistantEntries: [],
 
   setSelection: (ids) => set({ selection: ids, lastSelected: ids[ids.length - 1] ?? null }),
   toggleSelection: (id) =>
@@ -153,6 +174,14 @@ export const useEditorStore = create<EditorState>((set) => ({
     }),
   clearConsole: () => set({ consoleMessages: [] }),
   setConsoleVisible: (consoleVisible) => set({ consoleVisible }),
+  setAssistantVisible: (assistantVisible) => set({ assistantVisible }),
+  setAssistantBusy: (assistantBusy) => set({ assistantBusy }),
+  pushAssistantEntry: (entry) =>
+    set((state) => {
+      assistantCounter += 1;
+      return { assistantEntries: [...state.assistantEntries, { ...entry, id: assistantCounter }] };
+    }),
+  clearAssistant: () => set({ assistantEntries: [] }),
 }));
 
 /** Reads current state outside React (gizmo handlers, keyboard shortcuts). */

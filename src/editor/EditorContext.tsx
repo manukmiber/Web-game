@@ -1,6 +1,12 @@
 import { createContext, useContext, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import '@engine/assistant';
+import { McpServer } from '@engine/assistant/mcp/McpServer';
+import type { ToolContext } from '@engine/assistant/ToolRegistry';
 import { installGameplaySystems, type GameplaySystems } from '@engine/gameplay/systems';
 import { Engine } from '@engine/loop/Engine';
+import type { Vec3 } from '@engine/scene/types';
+import { CommandSceneEditor } from './assistant/CommandSceneEditor';
+import { connectMcpBridge, type McpBridgeState } from './assistant/mcpBridge';
 import type { Command } from './commands/Command';
 import { CommandHistory } from './commands/Command';
 import { LocalStorageAdapter, type ScenePersistence } from './state/persistence';
@@ -14,9 +20,21 @@ export interface EditorContextValue {
   systems: GameplaySystems;
   /** Runs a command through the history so it lands on the undo stack. */
   run(command: Command): void;
+  /**
+   * What the assistant tools and the MCP server are handed. Resolved per call because the
+   * scene and the viewport camera both move underneath a long-lived MCP connection.
+   */
+  toolContext(): ToolContext;
+  /** Wired up by the viewport once it exists, so new objects land where the camera looks. */
+  setSpawnPoint(resolve: () => Vec3): void;
+  mcp: McpServer;
+  mcpState(): McpBridgeState;
 }
 
 const EditorContext = createContext<EditorContextValue | null>(null);
+
+/** Reported to MCP clients in `initialize`, so a client can tell which build it is driving. */
+const EDITOR_VERSION = '0.7.0';
 
 export function EditorProvider({ children }: { children: ReactNode }) {
   // Refs rather than state: these are created once and must survive every re-render, and
@@ -30,17 +48,43 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   // second install would tick every gameplay system twice per frame.
   systemsRef.current ??= installGameplaySystems(engineRef.current);
 
+  // Replaced by the viewport once it has a camera; until then new objects land at the origin.
+  const spawnPointRef = useRef<() => Vec3>(() => [0, 0, 0]);
+  const mcpStateRef = useRef<McpBridgeState>({ channels: [], client: null, handled: 0 });
+
   const value = useMemo<EditorContextValue>(() => {
     const engine = engineRef.current!;
     const history = historyRef.current!;
+    const sceneEditor = new CommandSceneEditor(engine.scene, history);
+    const toolContext = (): ToolContext => ({
+      editor: sceneEditor,
+      spawnPoint: () => spawnPointRef.current(),
+    });
+
     return {
       engine,
       history,
       systems: systemsRef.current!,
       storage: new LocalStorageAdapter(),
       run: (command) => history.execute(command),
+      toolContext,
+      setSpawnPoint: (resolve) => {
+        spawnPointRef.current = resolve;
+      },
+      mcp: new McpServer({ name: 'web-3d-scene-editor', version: EDITOR_VERSION, context: toolContext }),
+      mcpState: () => mcpStateRef.current,
     };
   }, []);
+
+  // The MCP server is connected whether or not the assistant panel is open: an external client
+  // attaching to the editor should not depend on which panels the user happens to have up.
+  useEffect(
+    () =>
+      connectMcpBridge(value.mcp, (state) => {
+        mcpStateRef.current = state;
+      }),
+    [value],
+  );
 
   useEffect(() => {
     const { engine, history, systems } = value;

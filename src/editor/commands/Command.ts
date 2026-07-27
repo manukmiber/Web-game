@@ -105,6 +105,23 @@ export class CommandHistory {
     this.emitChanged();
   }
 
+  /**
+   * Records a command whose work has already been applied.
+   *
+   * The assistant tools decide each step from the state the previous one produced, so by the
+   * time there is a single composite worth pushing, everything in it has run. `execute()` here
+   * would re-apply it. Undo and redo behave normally from that point on.
+   */
+  pushExecuted(command: Command): void {
+    this.redoStack = [];
+    this.undoStack.push(command);
+    if (this.undoStack.length > this.limit) this.undoStack.shift();
+    // No merging: a composite is already one deliberate step, and merging it into whatever
+    // preceded it would fold an assistant edit into a user's gizmo drag.
+    this.lastPushTime = 0;
+    this.emitChanged();
+  }
+
   undo(): void {
     const command = this.undoStack.pop();
     if (!command) return;

@@ -1,7 +1,8 @@
 # Architecture — Web 3D Scene Editor → Mini Game Engine
 
 Status: **confirmed** (see §8). Phases 1 and 2 shipped; Phase 3 in progress — the play seam,
-scripting, agents and scene-owned rendering are in (§10), physics and streaming are not.
+scripting, agents and scene-owned rendering are in (§10), the assistant tool layer and MCP
+server are in (§11), physics and streaming are not.
 
 Two constraints drive every decision below.
 
@@ -62,13 +63,19 @@ src/
     ai/                     steering maths + NpcSystem
     gameplay/               GameState (health, factions, script vars), CharacterSystem,
                             and the one call that installs the Play-mode systems
+    assistant/              the machine-facing surface: tool definitions + JSON Schema
+                            validation, the SceneEditor seam, and a transport-free MCP
+                            server (§11)
 
   editor/                 ← everything the runtime will NOT ship
     state/                  Zustand store: selection, active tool, snapping, console
     commands/               command pattern + undo/redo stack
     viewport/               RenderHost host + OrbitControls, gizmo, grid, selection
                             outline, light/camera handles, picking, axis widget
-    panels/                 Hierarchy, Inspector, Toolbar, Console, ScriptEditor
+    panels/                 Hierarchy, Inspector, Toolbar, Console, ScriptEditor,
+                            AssistantPanel
+    assistant/              CommandSceneEditor (tools → undo stack), the Anthropic
+                            tool-use loop, and the MCP transports
     styles/                 dark Unity-like theme
 
   runtime/                ← Phase 3 placeholder. Same engine, no panels.
@@ -579,3 +586,106 @@ Agents and the character walk through walls. This is the largest remaining gap a
 open on purpose: a hand-rolled half-physics would be harder to remove later than a real one is to
 add now, and the state machine is shaped so line of sight and pathfinding slot into `findTarget`
 and the movement step rather than needing a rewrite.
+
+---
+
+## 11. The machine-facing surface: tool calls and MCP
+
+Two consumers arrived at once — an assistant panel inside the editor, and external MCP clients
+outside it — and they are one feature, because the hard part is neither of them. It is deciding
+what a model is allowed to do to a scene, and what happens when it gets an argument wrong.
+
+### 11.1 The tools live in the engine, not the editor
+
+`engine/assistant` holds the tool definitions, their schemas and their validation. That looks
+odd for something whose obvious consumer is a UI panel, and it is the same call §2 makes
+everywhere: the tools operate on scene data and nothing else, so they belong on the side of the
+line that a runtime can ship. The payoff is immediate rather than theoretical — the whole tool
+layer and the MCP server are tested in Node with no browser, no React and no editor, and the
+boundary test enforces that they stay that way.
+
+What that forced: `readPath`/`writePath` moved out of `editor/commands` into `engine/scene`,
+because three separate things now address component fields by path and only one of them is
+allowed to be editor code.
+
+### 11.2 `SceneEditor` is the seam, and undo is the reason
+
+The tools never touch `Scene`. They go through a `SceneEditor` interface with two
+implementations: `DirectSceneEditor` writes straight through, and the editor's
+`CommandSceneEditor` turns every call into a command on the undo stack.
+
+Handing the tools a `Scene` would have been less code and would have made the editor's undo
+history silently wrong the first time a model touched anything. "The assistant's edits are the
+only ones you cannot take back" is not a seam anyone would choose deliberately — and an
+assistant whose work cannot be undone is one nobody will try anything ambitious with, which
+removes the point of having it.
+
+One tool call is **one** undo entry. That needs a wrinkle: the steps inside a call are applied
+as they are decided, because a later step reads what an earlier one produced, so by the time
+there is a composite worth pushing the work has already happened. `CommandHistory.pushExecuted`
+records an already-applied command rather than pretending it has not run; the alternative — a
+composite whose first `execute()` secretly does nothing — is the same behaviour with a lie in it.
+
+### 11.3 Validation is the interesting part
+
+A tool call is a model's guess about an API it cannot see. Three decisions follow.
+
+- **Validate at the boundary, and report every error at once.** A model told about three
+  mistakes fixes them in one turn; told about the first, it spends three. The schema type and
+  the validated type are deliberately the same type — anything the validator could not enforce
+  would be a promise on the wire the code does not keep.
+- **Unknown fields are an error, not a shrug.** A silently ignored `params.size` on a Box is the
+  worst outcome available: the tool reports success, the box is the wrong size, and nobody finds
+  out. Naming the parameters that *do* apply turns a dead end into a one-line fix. The same rule
+  runs on component fields and modifier fields, checked against the registries' own field
+  schemas.
+- **Numeric strings are coerced; `"3 metres"` is not.** Models emit `"3"` for number fields
+  regularly, and rejecting it costs a round trip to fix a value that was never ambiguous. The
+  coercion is exact or nothing.
+
+`list_capabilities` reads the component, modifier and primitive registries at call time rather
+than restating them in a prompt. This is the §3 registry payoff again: a component added
+tomorrow is discoverable by the assistant with no edit to the tool layer, and a baked-in list
+would be wrong the first time anyone added one.
+
+Entity arguments accept an id **or** an exact name, because a model that has just read
+`"Crate 1"` in a scene listing will pass `"Crate 1"` back. An ambiguous name is an error rather
+than a coin flip.
+
+### 11.4 The MCP server is transport-free, and the transport is Vite's
+
+`McpServer` is message-in, message-out — no sockets, no streams, no session state. Every request
+is answered from the scene as it is right now, so a client that reconnects mid-conversation
+loses nothing. What MCP standardises is the vocabulary, not the pipe, and wiring a pipe into the
+server would have meant one implementation per host and no way to test any of them.
+
+Which leaves the actual problem: the server lives in a browser tab, and nothing can dial into a
+browser tab. Vite's dev server already holds a WebSocket open to that page for hot reload, and
+it carries arbitrary custom events — so `tools/mcp-bridge.mjs` speaks that socket's wire format
+and relays stdio into it. No second server, no second port, no WebSocket dependency, about
+twenty-five lines of relay in `vite.config.ts`.
+
+The cost is that it is dev-only, which is the honest scope rather than a limitation to
+apologise for: this is how you drive the editor while building something, and an MCP endpoint is
+not something a deployed page should have. A `postMessage` transport covers the embedded case,
+off unless the URL says `?mcp=embed` and answering only the frame that embedded us.
+
+A tool that rejects its arguments comes back as a result with `isError` set, not a JSON-RPC
+error. The model is meant to read the message and try again; a protocol error would be handled
+by the client instead of reaching it.
+
+### 11.5 The API key problem, stated rather than hidden
+
+The editor is a static site with no backend, so an in-page assistant means the user's own key in
+their browser, sent straight to the API. The alternatives were a shared key in the bundle —
+public the moment anyone opens devtools — or no assistant at all. localStorage plus a panel that
+says so is the honest middle for a developer tool; the moment this ships to people who are not
+its authors, the key belongs behind a server, and that is a deployment change rather than an
+architectural one.
+
+### 11.6 What this does not change
+
+Scripts an assistant writes run in the same guard-rail sandbox as hand-written ones (§10.2).
+Scene JSON was already executable code and still is; a model authoring it neither worsens that
+nor fixes it. The real fix is the same one §10.2 names — a Worker or a sandboxed iframe — and it
+is still the same piece of work.

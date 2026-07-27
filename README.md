@@ -7,9 +7,12 @@ editor is one consumer of it.
 Press **Play** and the scene runs: the camera becomes the scene's own, scripts tick, the
 character walks and the zombies notice.
 
+Press **F2** and it takes instructions: the built-in assistant authors scenes through the same
+tool layer an external MCP client can drive it with.
+
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the design and §9 for what the 25 km × 25 km
-open-world target forces us to decide up front, and [docs/SCRIPTING.md](./docs/SCRIPTING.md) for
-the script API.
+open-world target forces us to decide up front, [docs/SCRIPTING.md](./docs/SCRIPTING.md) for
+the script API, and [docs/AI.md](./docs/AI.md) for the tools and MCP.
 
 ## Running it
 
@@ -25,6 +28,7 @@ npm run dev        # http://localhost:5173
 | `npm test` | Vitest — engine core, undo/redo, and the architecture boundary check |
 | `npm run typecheck` | `tsc --noEmit` |
 | `npm run check` | Typecheck + tests |
+| `npm run mcp` | Bridge an MCP client into the running editor (needs `npm run dev`) |
 
 ## Authoring
 
@@ -194,6 +198,43 @@ select whatever produced it.
 Add any of it from the toolbar's **Game ▾** menu: Player, Zombie, Villager, Animal, Camera,
 lights, Environment, or a Game Logic object carrying an example spawner script.
 
+## AI integration
+
+The editor can be driven by a model, and by *your* model. Both go through one tool layer
+(`engine/assistant`), so the schemas, the validation and the undo behaviour exist once.
+
+**Assistant panel** (**F2**) — ask for scene changes in plain language and Claude calls the
+tools: nineteen of them, covering primitives, prefabs, transforms, hierarchy, components,
+scripts and the modifier stack. It needs an Anthropic API key, entered in the panel and kept in
+`localStorage`; there is no backend to proxy through, so the key is yours and goes straight from
+the browser to the API. Fine for a developer tool, wrong for a shipped product.
+
+**MCP server** — the same tools, published over the Model Context Protocol, so Claude Code or
+Claude Desktop can build in the running editor:
+
+```bash
+npm run dev                                                # editor open in a browser
+claude mcp add scene-editor -- node tools/mcp-bridge.mjs
+```
+
+There is no second server and no extra port. The bridge speaks Vite's own HMR socket, which
+already runs between the dev server and the page — which also means the MCP channel is dev-only,
+on purpose.
+
+**Every edit lands on the undo stack.** The tools never touch the `Scene` directly; they go
+through a `SceneEditor` interface that the editor implements with commands, so one tool call is
+one Ctrl+Z however many steps it took. The same interface has a direct implementation with no
+undo, which is what a headless runtime and the tests use.
+
+**Arguments are validated before anything is written**, and a wrong one comes back as a sentence
+the model can act on — `Box has no parameter "size". It takes: width, height, depth, …` — rather
+than a silently mis-sized box. Component, modifier and primitive lists are read out of the same
+registries the Inspector builds from, so a component added tomorrow is discoverable with no edit
+to the tool layer.
+
+Full reference, including how to add a tool and what the sandbox does *not* protect, in
+[docs/AI.md](./docs/AI.md).
+
 ## Scene format
 
 Versioned, chunk-addressable JSON. A small scene is a single chunk and reads almost exactly
@@ -252,13 +293,13 @@ git checkout release/v0.2.0   # RenderHost + performance harness
 git checkout release/v0.3.0   # Editable meshes + modifier stack
 git checkout release/v0.4.0   # More primitives, bevel and utility modifiers
 git checkout release/v0.5.0   # Scripting, NPCs and scene-owned rendering
+git checkout release/v0.6.0   # 2D shapes, extrude/lathe, tessellation
 ```
 
-This version (v0.6.0) adds the 2D shapes, the Extrude/Lathe/Inset/Transform modifiers and the
-Wedge. It needed **no schema change**: new primitive parameters and new modifier types are both
-additive, unknown modifiers are skipped rather than throwing, and every parameter falls back to
-its default. A scene saved by the previous build opens untouched, and one saved by this build
-opens in the previous build with the new modifiers simply not applied.
+This version (v0.7.0) adds the assistant tool layer and the MCP server. It needed **no schema
+change and no engine changes** beyond a new directory: the tools are a consumer of the scene
+model, not an extension of it, and the one thing they needed from the editor — undo — was
+already an interface away. Scenes are unaffected in both directions.
 
 CI (`.github/workflows/ci.yml`) runs typecheck, tests and build on every push and pull
 request. It needs GitHub Actions enabled on the repository to do anything.
@@ -268,9 +309,10 @@ request. It needs GitHub Actions enabled on the repository to do anything.
 ```
 src/
   engine/    core — scene graph, mesh pipeline, components, render host, serialization,
-             loop, scripting, AI, gameplay, input. No React, no DOM. This is what the
-             runtime uses.
-  editor/    panels, gizmo, undo/redo, persistence, console. Editor only.
+             loop, scripting, AI, gameplay, input, and the assistant tool layer + MCP
+             server. No React, no DOM. This is what the runtime uses.
+  editor/    panels, gizmo, undo/redo, persistence, console, assistant panel. Editor only.
+tools/       mcp-bridge.mjs — stdio ↔ dev server, for external MCP clients.
 ```
 
 `src/engine/boundary.test.ts` enforces that split.

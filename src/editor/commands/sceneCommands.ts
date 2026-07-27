@@ -1,5 +1,6 @@
 import type { Scene } from '@engine/scene/Scene';
 import { generateEntityId } from '@engine/scene/Scene';
+import { readPath, writePath } from '@engine/scene/paths';
 import { uniqueName } from '@engine/scene/primitives';
 import type { Component, Entity, EntityId, Transform } from '@engine/scene/types';
 import { cloneTransform } from '@engine/scene/types';
@@ -512,24 +513,9 @@ export class GroupEntitiesCommand implements Command {
 
 // ------------------------------------------------------------------ helpers
 
-/** Reads "params.width" style paths used by the Inspector field schemas. */
-export function readPath(target: Record<string, unknown>, path: string): unknown {
-  let current: unknown = target;
-  for (const key of path.split('.')) {
-    if (typeof current !== 'object' || current === null) return undefined;
-    current = (current as Record<string, unknown>)[key];
-  }
-  return current;
-}
-
-export function writePath(target: Record<string, unknown>, path: string, value: unknown): void {
-  const keys = path.split('.');
-  const last = keys.pop()!;
-  let current: Record<string, unknown> = target;
-  for (const key of keys) {
-    const next = current[key];
-    if (typeof next !== 'object' || next === null) current[key] = {};
-    current = current[key] as Record<string, unknown>;
-  }
-  current[last] = value;
-}
+/**
+ * Re-exported so the Inspector's import site does not move. The implementation lives in the
+ * engine because the assistant tools address component fields by path too, and the engine may
+ * not import the editor (ARCHITECTURE.md §2).
+ */
+export { readPath, writePath };

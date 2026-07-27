@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { createStarterScene } from '@engine/scene/prefabs';
 import { EditorProvider, useEditor } from './EditorContext';
+import { AssistantPanel } from './panels/AssistantPanel';
 import { Console } from './panels/Console';
 import { Hierarchy } from './panels/Hierarchy';
 import { Inspector } from './panels/Inspector';
@@ -13,7 +14,7 @@ import { AUTOSAVE_KEY, loadScene } from './state/persistence';
 import './styles/theme.css';
 
 function EditorShell() {
-  const { engine, storage } = useEditor();
+  const { engine, storage, setSpawnPoint } = useEditor();
   const [viewport, setViewport] = useState<ViewportController | null>(null);
   useShortcuts(viewport);
 
@@ -39,6 +40,10 @@ function EditorShell() {
     [viewport],
   );
 
+  // The assistant and any attached MCP client place objects the same way the Add menu does:
+  // where the camera is looking, not at the world origin.
+  useEffect(() => setSpawnPoint(spawnPoint), [setSpawnPoint, spawnPoint]);
+
   return (
     <div className="editor">
       <Toolbar spawnPoint={spawnPoint} />
@@ -48,6 +53,7 @@ function EditorShell() {
           <Viewport onReady={setViewport} />
           <PerfHud viewport={viewport} />
           <Console />
+          <AssistantPanel />
         </div>
         <Inspector />
       </div>

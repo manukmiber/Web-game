@@ -6,6 +6,7 @@
  */
 export * from './scene/types';
 export * from './scene/Scene';
+export * from './scene/paths';
 export * from './scene/primitives';
 export * from './scene/prefabs';
 export * from './components';
@@ -33,3 +34,4 @@ export * from './scripting/ScriptApi';
 export * from './scripting/ScriptSystem';
 export * from './ai/steering';
 export * from './ai/NpcSystem';
+export * from './assistant';
