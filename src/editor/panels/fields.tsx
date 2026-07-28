@@ -107,6 +107,32 @@ export function Vec3Field({ value, mixed, step, onChange }: Vec3FieldProps) {
   );
 }
 
+interface Vec2FieldProps {
+  value: [number, number];
+  step?: number;
+  /** Axis captions. Default X/Y; a texture tiling row wants U/V and a rect wants W/H. */
+  labels?: readonly [string, string];
+  onChange(axis: 0 | 1, value: number): void;
+}
+
+/** Two-number row. Same shape as `Vec3Field`, minus the axis the value does not have. */
+export function Vec2Field({ value, step, labels = ['X', 'Y'], onChange }: Vec2FieldProps) {
+  return (
+    <div className="vec2">
+      {([0, 1] as const).map((index) => (
+        <div className={`vec3-axis ${index === 0 ? 'x' : 'y'}`} key={index}>
+          <span>{labels[index]}</span>
+          <NumberField
+            value={value[index] ?? 0}
+            step={step}
+            onChange={(next) => onChange(index, next)}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="field">

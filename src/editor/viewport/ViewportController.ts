@@ -167,6 +167,22 @@ export class ViewportController {
     return this.host.shadowBudget();
   }
 
+  /**
+   * The order systems will tick in, as resolved by the schedule.
+   *
+   * Worth surfacing rather than trusting: the order is now computed from stages and declared
+   * dependencies (see `ecs/Schedule`), and a computed order that cannot be inspected is harder to
+   * reason about than the hand-written list it replaced. "Why does my system see last frame's
+   * position" is answered by reading this.
+   */
+  systemSchedule(): { name: string; stage: string; modes: string }[] {
+    return this.engine.systemOrder().map((system) => ({
+      name: system.name,
+      stage: system.stage ?? 'simulate',
+      modes: system.runsIn.join('/'),
+    }));
+  }
+
   /** Convenience passthrough — plenty of editor code only wants the bridge. */
   get bridge(): RenderBridge {
     return this.host.bridge;

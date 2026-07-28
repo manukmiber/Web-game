@@ -5,6 +5,7 @@
  * into a Worker without a single import changing — see ARCHITECTURE.md §9.5.
  */
 export * from './math';
+export * from './dimension';
 export * from './shapes';
 export * from './collision';
 export * from './raycast';

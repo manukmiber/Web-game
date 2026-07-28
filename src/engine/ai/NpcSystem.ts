@@ -1,6 +1,7 @@
 import type { CharacterControllerComponent } from '../components/CharacterController';
 import { hostileFactions, type NpcAgentComponent } from '../components/NpcAgent';
-import type { Engine, EngineMode, System } from '../loop/Engine';
+import type { QueryDescriptor } from '../ecs/Query';
+import type { Engine, EngineMode, System, SystemStage } from '../loop/Engine';
 import type { Entity, EntityId, Vec3 } from '../scene/types';
 import {
   distanceXZ,
@@ -37,6 +38,10 @@ interface Actor {
   position: Vec3;
 }
 
+/** Agents, and the characters they treat as targets. Module constants so nothing rebuilds them. */
+const AGENTS: QueryDescriptor = { all: ['NpcAgent'] };
+const PLAIN_CHARACTERS: QueryDescriptor = { all: ['CharacterController'], none: ['NpcAgent'] };
+
 /**
  * Drives NpcAgent entities: a small state machine per agent over the pure steering helpers.
  *
@@ -51,6 +56,9 @@ interface Actor {
 export class NpcSystem implements System {
   readonly name = 'NpcSystem';
   readonly runsIn: readonly EngineMode[] = ['play'];
+  /** Last, reacting to a world that has finished moving. */
+  readonly stage: SystemStage = 'resolve';
+  readonly after = ['CharacterSystem'];
 
   private runtimes = new Map<EntityId, AgentRuntime>();
 
@@ -72,28 +80,28 @@ export class NpcSystem implements System {
   }
 
   update(dt: number, engine: Engine): void {
-    const { scene, game } = engine;
+    const { game, ecs } = engine;
 
     const agents: { entity: Entity; agent: NpcAgentComponent }[] = [];
     const actors: Actor[] = [];
 
-    for (const entity of scene.all()) {
-      const agent = entity.components.find(
-        (c): c is NpcAgentComponent => c.type === 'NpcAgent',
-      );
+    // Two queries instead of one walk of the scene. An agent is also an actor; a character that
+    // is not an agent is an actor too, which is what `none` expresses — the player is a target
+    // for the agents but is not steered by them.
+    for (const entity of ecs.entities(AGENTS)) {
+      const agent = entity.components.find((c): c is NpcAgentComponent => c.type === 'NpcAgent')!;
+      agents.push({ entity, agent });
+      actors.push({ id: entity.id, faction: agent.faction, position: entity.transform.position });
+    }
+    for (const entity of ecs.entities(PLAIN_CHARACTERS)) {
       const character = entity.components.find(
         (c): c is CharacterControllerComponent => c.type === 'CharacterController',
-      );
-      if (agent) {
-        agents.push({ entity, agent });
-        actors.push({ id: entity.id, faction: agent.faction, position: entity.transform.position });
-      } else if (character) {
-        actors.push({
-          id: entity.id,
-          faction: character.faction,
-          position: entity.transform.position,
-        });
-      }
+      )!;
+      actors.push({
+        id: entity.id,
+        faction: character.faction,
+        position: entity.transform.position,
+      });
     }
 
     // Agents deleted (by a script, or by an undo landing mid-play) leave their runtime behind.

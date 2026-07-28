@@ -14,7 +14,15 @@ import {
 
 export interface SceneEvents {
   entityAdded: { entity: Entity };
-  entityRemoved: { id: EntityId; parentId: EntityId | null };
+  /**
+   * `id` is the root of what was removed; `removedIds` is the whole subtree, deepest last.
+   *
+   * The subtree is reported rather than left to be re-derived because by the time a listener
+   * runs, the children are already gone from the scene — anything keeping a per-entity table
+   * (the render bridge, the component index) would have to scan its own keys to find out which
+   * ones no longer resolve, which is O(scene) on every delete.
+   */
+  entityRemoved: { id: EntityId; parentId: EntityId | null; removedIds: EntityId[] };
   entityRenamed: { id: EntityId; name: string };
   entityReparented: { id: EntityId; parentId: EntityId | null; previousParentId: EntityId | null };
   transformChanged: { id: EntityId };
@@ -164,7 +172,11 @@ export class Scene {
       this.entities.delete(e.id);
       this.childIds.delete(e.id);
     }
-    this.events.emit('entityRemoved', { id, parentId: entity.parentId });
+    this.events.emit('entityRemoved', {
+      id,
+      parentId: entity.parentId,
+      removedIds: removed.map((e) => e.id),
+    });
     return removed;
   }
 

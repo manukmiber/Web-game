@@ -983,6 +983,28 @@ code {
   gap: 4px;
 }
 
+.vec2 {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+}
+
+/* A caption inside a component body, splitting a long field list into readable groups. */
+.field-group {
+  margin: 5px 0 1px;
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 2px;
+}
+
+.field-group:first-child {
+  margin-top: 0;
+}
+
 .vec3-axis {
   display: flex;
   align-items: center;

@@ -21,19 +21,25 @@ export interface GameplaySystems {
  * Lives here rather than in `Engine` so the loop stays ignorant of gameplay — the editor and
  * the runtime both call this, and a headless simulation can install a different set.
  *
- * **Order is the design.**
+ * **Order is the design, and the systems declare it rather than this function imposing it.**
  *
- * 1. **Hardware** first, so a physical button that arrived between two frames is
+ * Each system carries a `stage` (and the NpcSystem an explicit `after`), and `ecs/Schedule` sorts
+ * them — so the order below is the order they *end up* in, not the order they are pushed in, and
+ * adding a sixth system cannot silently reorder the other five:
+ *
+ * 1. **Hardware** (`input`) first, so a physical button that arrived between two frames is
  *    indistinguishable from a key pressed in the same frame — anything later would give the rig
  *    a systematic one-frame handicap against the keyboard.
- * 2. **Physics** next. It steps the world with the velocities scripts set last frame and emits
- *    this frame's contacts, which is what lets the ScriptSystem below deliver
+ * 2. **Physics** (`simulate`) next. It steps the world with the velocities scripts set last frame
+ *    and emits this frame's contacts, which is what lets the ScriptSystem below deliver
  *    `onCollisionEnter` in the frame the collision happened rather than the one after. It is
  *    also why `fixedUpdate` can be driven off the step count the solver just reported.
- * 3. **Scripts**, so a decision a script makes is visible to everything else in the same frame.
- * 4. **The character**, so agents chase where the player *is*, not where they were a frame ago
- *    — a one-frame lag that is invisible at 60 fps and very visible at 20.
- * 5. **NPCs** last, reacting to a world that has finished moving.
+ * 3. **Scripts** (`script`), so a decision a script makes is visible to everything else in the
+ *    same frame.
+ * 4. **The character** (`resolve`), so agents chase where the player *is*, not where they were a
+ *    frame ago — a one-frame lag that is invisible at 60 fps and very visible at 20.
+ * 5. **NPCs** last, `after: ['CharacterSystem']` — the one constraint the stages cannot express,
+ *    because both belong in `resolve`.
  */
 export function installGameplaySystems(engine: Engine): GameplaySystems {
   const hardware = new HardwareSystem();

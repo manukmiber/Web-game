@@ -1,7 +1,7 @@
 import type { HardwareInputComponent } from '../components/HardwareInput';
 import type { HardwareOutputComponent } from '../components/HardwareOutput';
 import { Emitter } from '../core/Emitter';
-import type { Engine, EngineMode, System } from '../loop/Engine';
+import type { Engine, EngineMode, System, SystemStage } from '../loop/Engine';
 import type { EntityId } from '../scene/types';
 import {
   normalizeInput,
@@ -42,6 +42,8 @@ export interface HardwareSystemEvents {
 export class HardwareSystem implements System {
   readonly name = 'HardwareSystem';
   readonly runsIn: readonly EngineMode[] = ['play'];
+  /** Devices become this frame's snapshot here, so nothing may read a channel earlier. */
+  readonly stage: SystemStage = 'input';
   readonly events = new Emitter<HardwareSystemEvents>();
 
   private readonly inputs = new Map<EntityId, Compiled<InputBinding>>();

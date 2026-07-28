@@ -1,5 +1,5 @@
 import type { FieldSchema } from '@engine/components/registry';
-import { Field, NumberField, Vec3Field } from './fields';
+import { Field, NumberField, Vec2Field, Vec3Field } from './fields';
 
 /**
  * Renders one field from a registry field schema.
@@ -52,6 +52,30 @@ export function ComponentField({
         </Field>
       );
     }
+    case 'vec2': {
+      // The stored value may be longer than two — a Rect collider's size is a Vec3 whose third
+      // component belongs to the extrusion depth — so the tail is carried through untouched
+      // rather than truncated. Editing a 2D shape must not discard its 3D size.
+      const source = Array.isArray(value) ? value : [];
+      const pair: [number, number] = [Number(source[0]) || 0, Number(source[1]) || 0];
+      return (
+        <Field label={schema.label}>
+          <Vec2Field
+            value={pair}
+            step={schema.step}
+            labels={schema.labels}
+            onChange={(axis, next) => {
+              const updated = [...source];
+              while (updated.length < 2) updated.push(0);
+              updated[axis] = next;
+              onChange(updated);
+            }}
+          />
+        </Field>
+      );
+    }
+    case 'group':
+      return <div className="field-group">{schema.label}</div>;
     case 'boolean':
       return (
         <Field label={schema.label}>

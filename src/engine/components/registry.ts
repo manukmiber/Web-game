@@ -8,6 +8,22 @@ import type { Component } from '../scene/types';
 export type FieldSchema =
   | { kind: 'number'; key: string; label: string; min?: number; max?: number; step?: number; integer?: boolean }
   | { kind: 'vec3'; key: string; label: string; step?: number }
+  /**
+   * Two of the three components of a vector, with custom axis captions.
+   *
+   * The value on disk stays a `Vec3` — a `Rect` collider's size is the same field a `Box`'s is,
+   * and a 2D shape switched back to 3D must not have lost its third number. The widget edits two
+   * of them and leaves the rest alone.
+   */
+  | { kind: 'vec2'; key: string; label: string; step?: number; labels?: readonly [string, string] }
+  /**
+   * A caption, not a value.
+   *
+   * A PBR material has thirty fields and a flat list of thirty rows is unusable. Grouping is
+   * expressed in the schema rather than by splitting the component, because the grouping is a
+   * property of how the fields *read*, and the Inspector is the only thing that should know it.
+   */
+  | { kind: 'group'; key: string; label: string }
   | { kind: 'boolean'; key: string; label: string }
   | { kind: 'string'; key: string; label: string }
   /** Multi-line text — binding lists, and anything else where a one-line input hides the value. */

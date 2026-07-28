@@ -14,7 +14,9 @@ Press **F9** and it takes a controller: an Arduino on the end of a USB cable bec
 steering axis, and the player's health dims an LED on the desk.
 
 Add a **Collider** and things fall: gravity, contacts, friction, triggers and raycasts, from a
-solver that ships in the engine rather than in a dependency.
+solver that ships in the engine rather than in a dependency — and set `Physics.mode` to **2D** and
+the same solver becomes a side-scroller, because 2D here is a constraint on one engine rather than a
+second one.
 
 Add a **Scatter Layer** and a hundred thousand trees are one row in the Hierarchy and one draw
 call — because a 25 km world cannot afford them as anything else.
@@ -24,7 +26,9 @@ open-world target forces us to decide up front, [docs/SCRIPTING.md](./docs/SCRIP
 the script API, [docs/AI.md](./docs/AI.md) for the tools and MCP,
 [docs/HARDWARE.md](./docs/HARDWARE.md) for external hardware,
 [docs/SCATTER.md](./docs/SCATTER.md) for mass instancing,
-[docs/PHYSICS.md](./docs/PHYSICS.md) for gravity and collision,
+[docs/PHYSICS.md](./docs/PHYSICS.md) for gravity, collision and 2D,
+[docs/ECS.md](./docs/ECS.md) for queries and system scheduling,
+[docs/PBR.md](./docs/PBR.md) for materials and environment lighting,
 [docs/LIGHTING.md](./docs/LIGHTING.md) for the light model, and
 [docs/GRAPHICS.md](./docs/GRAPHICS.md) for the render pipeline and quality settings.
 
@@ -154,8 +158,10 @@ Rename / Duplicate / Group / Delete.
 
 **Inspector** — Position, Rotation (Euler degrees) and Scale, two-way synced with the gizmo:
 drag in the viewport and the numbers follow, type a number and the object moves. Per-primitive
-geometry parameters (dimensions, segment counts). Material with base colour, rendering mode
-(Opaque / Transparent / Cutout), alpha, metallic and roughness. Multi-selection edits apply to
+geometry parameters (dimensions, segment counts). A full PBR **Material**: base colour, rendering
+mode (Opaque / Transparent / Cutout), alpha, metallic and roughness; seven texture slots with
+tiling and offset; emission; and the clearcoat, sheen, transmission and specular lobes for car
+paint, cloth and glass — see [docs/PBR.md](./docs/PBR.md). Multi-selection edits apply to
 everything selected, with fields that disagree shown as mixed.
 
 **Undo/redo** — every operation, via the command pattern. A gizmo drag or a burst of typing
@@ -184,7 +190,7 @@ and is told nothing.
 | --- | --- |
 | **Camera** | fov, clip planes, and which one Play mode looks through. First primary camera wins |
 | **Light** | Directional, Point or Spot, with colour, intensity, range, cone and shadow controls |
-| **Environment** | Gradient sky or flat colour, ambient light, linear or exponential fog |
+| **Environment** | Gradient sky or flat colour, ambient light, linear or exponential fog, and the environment map the PBR materials reflect |
 
 Lights and cameras aim along their entity's **-Z**, the same way a Three.js camera does — so a
 camera parented behind a character needs no rotation of its own to look where the character
@@ -294,9 +300,11 @@ brush deliberately does not do yet.
 ## Play mode
 
 **Play** snapshots the scene, renders through the scene's own camera, and runs five systems:
-hardware, physics, scripts, the character controller, and the NPC agents — in that order, for
-reasons spelled out in `engine/gameplay/systems.ts`. **Stop** (or `Esc`) restores the snapshot
-exactly — positions, spawned entities, health, velocities, script state, all of it.
+hardware, physics, scripts, the character controller, and the NPC agents — in that order, which
+since v0.7.6 each system *declares* rather than inheriting from the order it was installed in
+(`engine/ecs/Schedule.ts`, and the Performance panel lists the result). **Stop** (or `Esc`)
+restores the snapshot exactly — positions, spawned entities, health, velocities, script state, all
+of it.
 
 | Key | Action |
 | --- | --- |
@@ -308,9 +316,15 @@ exactly — positions, spawned entities, health, velocities, script state, all o
 | `Esc` | Stop and restore |
 | `F9` | Hardware panel — live channel values, while playing |
 
-**Physics** — a `Collider` gives an entity a shape the solver sees (box, sphere, capsule or an
-infinite plane) and a `RigidBody` makes it move. Gravity, contacts with friction and restitution,
-triggers, layers, sleeping, raycasts and overlap queries. A scene-wide `Physics` component holds
+In an **XY 2D** scene there is no forward and no yaw, so the controls collapse to one axis:
+`←`/`→` and `A`/`D` both walk, W and S do nothing, `Space` still jumps, and the character faces
+whichever way it is going. An **XZ 2D** scene keeps the 3D controls exactly — its plane is the
+ground plane they already worked in.
+
+**Physics** — a `Collider` gives an entity a shape the solver sees (box, sphere, capsule, an
+infinite plane, or the 2D circle and rect) and a `RigidBody` makes it move. Gravity, contacts with
+friction and restitution, triggers, layers, sleeping, raycasts and overlap queries — in two
+dimensions or three, from one solver. A scene-wide `Physics` component holds
 gravity and the fixed timestep, and a scene without one simulates with Earth defaults so gravity
 works the moment you add a body. Linear only — contacts never spin anything, which is a choice
 argued out in [docs/PHYSICS.md](./docs/PHYSICS.md).
@@ -453,13 +467,14 @@ untouched, so a scene saved by a newer build never loses data in an older one.
 
 ## What's next
 
-Gameplay: collision and gravity landed in v0.7.5, and the gaps left around them are narrower —
-NPC agents still steer by distance rather than by the solver, so they walk through each other and
-through walls unless you give them colliders; angular dynamics, joints and continuous collision
-are all deliberately absent (see [docs/PHYSICS.md](./docs/PHYSICS.md)). Then line-of-sight instead
-of plain distance for NPC senses, navigation around obstacles, and moving scripts and the solver
-into a Worker — which for scripts is the same change as making the sandbox a real one, and for
-physics is the reason `engine/physics` imports neither Three.js nor the DOM.
+Gameplay: NPC agents still steer by distance rather than by the solver, so they walk through each
+other and through walls unless you give them colliders; angular dynamics, joints and continuous
+collision are all deliberately absent, in 2D as much as in 3D (see
+[docs/PHYSICS.md](./docs/PHYSICS.md)). Then line-of-sight instead of plain distance for NPC senses,
+navigation around obstacles, and moving scripts and the solver into a Worker — which for scripts is
+the same change as making the sandbox a real one, for physics is the reason `engine/physics` imports
+neither Three.js nor the DOM, and for both is now unblocked by the schedule, since you cannot decide
+what may run concurrently until the dependencies between systems are written down.
 
 Modelling: edit mode (vertex/edge/face selection, loop cut, and extrude/inset on a *selection*
 rather than on every face), editable Bézier paths so a profile can be drawn rather than picked
@@ -468,7 +483,12 @@ robust CSG and is deliberately not attempted yet.
 
 Engine: adaptive quality driven by the HUD's numbers, then LOD and chunk streaming. Instancing
 landed with the scatter brush; what is still missing around it is per-chunk frustum culling, LOD
-chains per prototype, and a stroke-based paint mode that needs a terrain to project onto.
+chains per prototype, and a stroke-based paint mode that needs a terrain to project onto. The ECS
+layer indexes and schedules but does not pack — archetype storage is the next thing to measure
+before it is the next thing to build ([docs/ECS.md](./docs/ECS.md) says why in more detail).
+
+Materials: an asset browser, so the seven texture slots can be filled by clicking rather than by
+editing a scene file. Everything under them is in place; the browser is the missing half.
 
 Hardware: the Gamepad API as a third device kind — the same channel model, a different pipe —
 and a serial-to-WebSocket bridge for browsers without Web Serial.
@@ -489,6 +509,7 @@ git checkout release/v0.7.1   # External hardware over Web Serial and WebSocket
 git checkout release/v0.7.2   # Scatter brush and instancing
 git checkout release/v0.7.3   # Render pipeline rework and graphics settings
 git checkout release/v0.7.4   # Dock layout, status bar and every panel moved
+git checkout release/v0.7.5   # Physics, multi-script objects, better lights
 ```
 
 v0.7.0 added the assistant tool layer and the MCP server. It needed **no schema change and no
@@ -711,15 +732,151 @@ and stacks jittered forever; motion locks held against gravity but not against p
 correction, which is the less useful half of a lock; and a ray cast straight down at a box came back
 with the far face's normal, pointing down through the geometry it had just hit.
 
+### v0.7.6 — an ECS, one solver for two dimensions, and real PBR
+
+Three subsystems, and the theme they share is that each one refuses a second implementation of
+something the engine already had. **No schema change:** a scene saved by v0.7.5 opens unchanged, and
+every new field is additive and defaulted by its reader, so a v0.7.6 scene opened in an older build
+loses nothing it understood.
+
+**An Entity Component System.** The data model was already entity-plus-components; what was missing
+was both halves of the *system* side. `engine/ecs` adds a component index maintained off the Scene's
+existing events, `all`/`any`/`none` queries resolved against it, and a scheduler that computes the
+order systems tick in from constraints they declare.
+
+Every system used to open with `for (const entity of scene.all())` and a `components.find` — which
+is O(entities × components) per system per frame, so five systems over a 10 000-entity scene walk the
+same ten thousand entities five times to reach the eleven that have a collider. All five now declare
+a query instead, results are cached against a revision that only moves when the index's *shape*
+changes (a slider drag emits `componentsChanged` sixty times a second and must not invalidate
+anything), and the iteration is driven by the smallest term in the query.
+
+It is a type index, not an archetype table, and that is a decision rather than a shortcut.
+Components here are also the serialisation format, the Inspector's model and the undo system's unit
+of work, and unknown types round-trip verbatim so a newer scene survives an older build — none of
+which has a shape to pack into parallel arrays. The lookup is the factor-of-a-thousand and costs 200
+lines; the packing is a constant factor and costs the data model. The query API is precisely the
+seam that would let the packing happen later without touching a system.
+
+The scheduler is the part that fixes a real fragility. The frame's order was the order
+`installGameplaySystems` pushed things, documented by a numbered comment — and that comment was the
+only thing holding it together, because hardware has to be pumped before scripts read it, the solver
+has to step before scripts hear about contacts, and agents have to run after the player moved.
+Insert one system in the wrong place and all of it breaks silently, looking like a one-frame input
+lag rather than a scheduling bug. Systems now carry a `stage` (`input`, `simulate`, `script`,
+`resolve`, `present`) and optional `after`/`before`; a dependency on an absent system is ignored
+rather than fatal, so `after: ['PhysicsSystem']` does not make physics a requirement of a headless
+setup; and a contradiction is **reported** on the engine and shown in the console rather than
+resolved arbitrarily, because throwing inside a frame would turn a mis-ordered system into a blank
+viewport. With no constraints the sort is stable and reproduces the insertion order exactly, which
+is what made adopting it a refactor. The Performance panel lists the resolved order beside the
+per-system cost breakdown — a computed order that cannot be inspected is worse than a hand-written
+one.
+
+**A unified 2D/3D physics engine.** `Physics.mode = '2D'` makes the whole simulation
+two-dimensional. There is no second solver, no second collider hierarchy and no second raycast API.
+
+Shipping a parallel 2D engine is the obvious move and it is what Unity did; it left that project
+with two collider hierarchies, two sets of layer settings, two raycast APIs and a permanent question
+about which one a component belongs to. But nothing in this solver is dimensional — circles are
+spheres, rectangles are boxes, and sequential impulses do not care how many axes they run over. So
+2D is four rules in one new file: bodies are held on the simulation plane, the depth axis is locked
+in velocity *and* in positional correction, gravity is projected into the plane, and contact normals
+and query directions are projected and renormalised. Every one is the identity in 3D, so scenes that
+do not use it pay nothing, and `collision.ts` gained not a line.
+
+The payoff is that every feature reaches both dimensions at once. Triggers, layers, sleeping,
+restitution, the character controller, the script API and `explode` have no 2D variant to write
+because none of them knows which mode it is in. Two new collider shapes — `Circle` and `Rect` — are
+not new primitives either: they resolve to a capsule and a box extruded along the depth axis, so
+their cross-section in the plane is exactly a circle and exactly a rectangle. Extruded rather than
+flat on purpose, because a 2D layer inside a 3D scene has bodies that are only approximately
+coplanar and the Z a sprite happened to be authored at should stop mattering.
+
+Two planes, and the second one is nearly free: `XY` is the side-scroller, where default gravity
+still falls down; `XZ` is the top-down game, where gravity points along the axis that is not
+simulated and the projection makes the world weightless with nothing to configure. The character
+controller adapts to the first — an XY scene has no forward, so `←`/`→` and `A`/`D` both walk, W and
+S do nothing, and yaw snaps to the direction of travel — and needs nothing for the second, whose
+plane *is* the ground plane the 3D controls already worked in.
+
+The subtlety the design pays for is the last rule. An extruded prism can produce a contact normal
+that leans out of the plane — a circle resting on a rect's corner — and resolving along it pushes the
+body off the plane, where the snap drags it straight back, once per step, forever: a body that
+visibly buzzes while resting. Renormalising after the projection is not cosmetic either, since a
+shortened normal under-resolves by the same factor and the body sinks a little further every step.
+
+**A PBR material system.** The `Material` component grows from eight fields to thirty: seven texture
+slots (base colour, normal, roughness, metalness, occlusion, emissive, displacement) with tiling and
+offset, emission with its own intensity, and the four extension lobes — clearcoat for car paint,
+sheen for cloth, transmission and IOR for glass, and a specular dial for the dielectrics that are
+not 4% reflective.
+
+The lobes are opt-in and the engine notices: a material with all four at their defaults is built as
+a `MeshStandardMaterial`, and touching any of them upgrades it to `MeshPhysicalMaterial`, which
+compiles all four into every fragment and — for transmission — makes the renderer keep a copy of the
+framebuffer to refract through. A scene of painted crates pays none of that, and there is no shader
+for an artist to remember to pick.
+
+And the piece without which the rest is a lie: **environment lighting**. `metalness = 1` means the
+base colour is the *reflection* and there is no diffuse term, so a metal with nothing to reflect
+renders black however many lights are aimed at it — analytic lights only give a metal its highlight.
+`Environment.ibl` prefilters the scene's own sky gradient into a PMREM environment map and assigns
+it to the scene, so reflections match the background because they are generated from it rather than
+from an HDR someone has to keep in step. It is on by default, because a new scene should show a
+believable metal rather than a debugging exercise. The prefiltering is the load-bearing part: a rough
+metal has to reflect a blurred environment, and one convolution per roughness level is what makes
+`roughness` behave across its whole range instead of only at 0.
+
+The interesting engineering is underneath, in two problems with the same shape. `AssetStore` marks
+every texture sRGB because it cannot know what a texture is for, which is right for base colour and
+wrong for normals, roughness, metalness and occlusion — and `repeat`/`offset` live on the texture
+rather than the material in Three, so two materials tiling one asset differently cannot share a
+texture object. Both are solved by each material owning a lightweight *view* of every asset it
+references: a clone that shares the decoded image (Three refcounts sources, so the pixels upload
+once) and carries its own colour space and uv transform.
+
+Four bugs, three of them latent in code written before this release:
+
+- **Releasing a material could blank a texture everywhere else it was used.** `disposeMaterial`
+  disposed `material.map` — which was the `AssetStore`'s own texture, shared with every other
+  material referencing that asset. It was dead code, never called, which is the only reason nobody
+  had hit it; wiring up disposal properly meant fixing it first, and owning views rather than
+  borrowing textures is what makes releasing a material a local operation at all.
+- **A texture that finished decoding was never picked up.** Decoding is asynchronous and materials
+  are built once and cached, so a material built while its image was in flight stayed untextured for
+  the rest of the session — the texture appeared only if something happened to change the material's
+  cache key afterwards, which reads as "textures work sometimes". `AssetStore.textureLoaded` now
+  re-resolves the slots of any live material naming that asset.
+- **An occlusion map would have rendered the mesh black.** Three samples `aoMap` through `uv1`, the
+  glTF convention for a baked pass with its own atlas, and the engine's primitives only generate one
+  UV set. The bridge now aliases `uv` under the second name — the same buffer, so no extra memory
+  and no extra upload.
+- **`entityRemoved` only named the root of what it removed.** Anything keeping a per-entity table had
+  to scan its own keys for ids that no longer resolved, which is O(scene) on every delete. The event
+  carries the whole subtree now; the render bridge had worked around it by walking its own Three.js
+  tree, and the new component index would have quietly gone on reporting colliders for deleted
+  children.
+
+The material cache key also changed shape, from a delimiter-joined string to JSON of a normalised
+component. With eight fields the joined form was readable; with thirty, one field inserted in the
+wrong position silently shifts every value after it, which is the class of bug where materials come
+out wearing another material's roughness.
+
+Seventy-four new tests, and one of them is the reason the corner case above is documented rather
+than discovered later.
+
 ## Layout
 
 ```
 src/
-  engine/    core — scene graph, mesh pipeline, components, render host, serialization,
-             loop, physics (solver, shapes, queries), scripting, AI, gameplay, input,
-             hardware (protocol, bus, bindings), perf (frame stats + scene census),
-             scatter (packed instances + brush) and the assistant tool layer + MCP
-             server. No React, no DOM. This is what the runtime uses.
+  engine/    core — scene graph, mesh pipeline, components, ecs (component index,
+             queries, system schedule), render host (PBR materials + environment
+             probe), serialization, loop, physics (one solver, 2D or 3D, shapes,
+             queries), scripting, AI, gameplay, input, hardware (protocol, bus,
+             bindings), perf (frame stats + scene census), scatter (packed instances +
+             brush) and the assistant tool layer + MCP server. No React, no DOM.
+             This is what the runtime uses.
   editor/    dock layout and panels, gizmo, undo/redo, persistence, console, assistant,
              and the hardware transports (Web Serial, WebSocket). Editor only.
 tools/       mcp-bridge.mjs — stdio ↔ dev server, for external MCP clients.

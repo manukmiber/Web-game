@@ -16,6 +16,13 @@ import type { BodyType } from '../components/RigidBody';
 import type { EntityId, Vec3 } from '../scene/types';
 import { collide, tangentBasis, type Contact } from './collision';
 import {
+  DEFAULT_DIMENSIONALITY,
+  flatten,
+  flattenNormal,
+  onPlane,
+  type Dimensionality,
+} from './dimension';
+import {
   add,
   clamp,
   dot,
@@ -146,6 +153,37 @@ export class PhysicsWorld {
   private grid = new Map<string, PhysicsBody[]>();
   /** Bodies too large to bucket usefully — planes, mostly — tested against everything. */
   private unbounded: PhysicsBody[] = [];
+  /**
+   * 3D, or 2D on a named plane.
+   *
+   * A property of the world rather than of a step, because the queries need it too: a raycast in
+   * a 2D scene has to be flattened into the plane whether or not a step is in progress, and a
+   * setting that only existed inside `step` would leave `raycast` quietly three-dimensional.
+   */
+  private dimensionality: Dimensionality = DEFAULT_DIMENSIONALITY;
+
+  // -------------------------------------------------------------- dimension
+
+  /** Switches the world between 3D and a 2D plane. Existing bodies are moved onto it. */
+  setDimensionality(next: Dimensionality): void {
+    const changed =
+      this.dimensionality.mode !== next.mode ||
+      this.dimensionality.plane !== next.plane ||
+      this.dimensionality.depth !== next.depth;
+    this.dimensionality = { ...next };
+    if (!changed) return;
+    // Bodies registered before the switch are wherever they were authored, which in 2D is off
+    // the plane as often as not. Moving them here rather than waiting for the first step is what
+    // keeps a query made in the same frame as the switch from missing them.
+    for (const body of this.bodies.values()) {
+      this.moveTo(body, body.origin);
+      body.velocity = flatten(body.velocity, this.dimensionality);
+    }
+  }
+
+  getDimensionality(): Dimensionality {
+    return { ...this.dimensionality };
+  }
 
   // ------------------------------------------------------------------ bodies
 
@@ -169,6 +207,9 @@ export class PhysicsWorld {
       existing.shapeOffset = shapeOffset;
       existing.bounds = shapeBounds(descriptor.shape);
       if (!dynamic) existing.sleeping = false;
+      // Re-described from the scene, which does not know about the simulation plane. In 3D this
+      // is the identity; in 2D it is what stops an Inspector edit lifting a body off the plane.
+      this.moveTo(existing, existing.origin);
       return existing;
     }
 
@@ -185,6 +226,7 @@ export class PhysicsWorld {
       shapeOffset,
     };
     this.bodies.set(descriptor.id, body);
+    this.moveTo(body, body.origin);
     return body;
   }
 
@@ -221,6 +263,9 @@ export class PhysicsWorld {
   }
 
   clear(): void {
+    // The dimensionality survives: it describes the *world*, and the system re-applies it from
+    // the scene's Physics component on the next frame anyway. Resetting it here would make the
+    // first query after a Stop three-dimensional in a 2D scene.
     this.bodies.clear();
     this.touching.clear();
     this.grid.clear();
@@ -238,7 +283,7 @@ export class PhysicsWorld {
   setVelocity(id: EntityId, velocity: Vec3): void {
     const body = this.bodies.get(id);
     if (!body || !isFiniteVec(velocity)) return;
-    body.velocity = [...velocity];
+    body.velocity = flatten([...velocity], this.dimensionality);
     this.wake(body);
   }
 
@@ -246,7 +291,8 @@ export class PhysicsWorld {
   applyImpulse(id: EntityId, impulse: Vec3): void {
     const body = this.bodies.get(id);
     if (!body || body.invMass === 0 || !isFiniteVec(impulse)) return;
-    body.velocity = add(body.velocity, scale(impulse, body.invMass));
+    // An explosion in a 2D scene should throw things sideways and up, not towards the camera.
+    body.velocity = add(body.velocity, scale(flatten(impulse, this.dimensionality), body.invMass));
     this.wake(body);
   }
 
@@ -295,7 +341,10 @@ export class PhysicsWorld {
       body.groundId = null;
 
       if (body.bodyType === 'Dynamic') {
-        body.velocity = add(body.velocity, scale(settings.gravity, body.gravityScale * dt));
+        // Gravity is projected into the plane, so an XY scene with the default [0, -9.81, 0]
+        // still falls down and an XZ (top-down) one is weightless without anyone editing it.
+        const gravity = flatten(settings.gravity, this.dimensionality);
+        body.velocity = add(body.velocity, scale(gravity, body.gravityScale * dt));
 
         // Damping as an exponential decay rather than a per-frame multiply: the latter makes
         // drag depend on the step size, which is exactly the frame-rate dependence the fixed
@@ -314,6 +363,9 @@ export class PhysicsWorld {
       if (body.locks[0]) body.velocity[0] = 0;
       if (body.locks[1]) body.velocity[1] = 0;
       if (body.locks[2]) body.velocity[2] = 0;
+      // Enforced here as well as through the body's locks, so a body added straight to the world
+      // (a test, a script) obeys the mode without having had the depth lock set for it.
+      body.velocity = flatten(body.velocity, this.dimensionality);
 
       if (!isFiniteVec(body.velocity)) body.velocity = [0, 0, 0];
       if (length(body.velocity) < EPSILON) continue;
@@ -405,8 +457,25 @@ export class PhysicsWorld {
       // Both sides must accept the other. See `layerMatches` for why this is symmetric.
       if (!accepts(a, b) || !accepts(b, a)) continue;
 
-      const contact = collide(a.shape, b.shape);
-      if (!contact) continue;
+      const raw = collide(a.shape, b.shape);
+      if (!raw) continue;
+
+      /**
+       * The narrowphase knows nothing about the mode, so a 2D contact can come back with a
+       * normal that leans out of the plane — a circle resting on the corner of an extruded rect.
+       * Resolving along it would push the body off the plane, where the snap in `moveTo` drags
+       * it straight back, once per step, forever: a body that visibly buzzes while resting.
+       * Projected and renormalised, the impulse acts entirely in the plane. A normal that is
+       * *purely* along the depth axis has no in-plane component at all and is dropped — in 2D,
+       * two prisms overlapping only in depth are not touching.
+       */
+      const normal = flattenNormal(raw.normal, this.dimensionality);
+      if (!normal) continue;
+      const contact: Contact = {
+        normal,
+        depth: raw.depth,
+        point: onPlane(raw.point, this.dimensionality),
+      };
 
       const relative = sub(b.velocity, a.velocity);
       contacts.push({
@@ -629,14 +698,18 @@ export class PhysicsWorld {
     maxDistance = Infinity,
     options: QueryOptions = {},
   ): RayHit | null {
-    const unit = normalizeOrNull(direction);
+    // Flattened before normalising, so a ray fired slightly out of the plane — a script that
+    // computed a direction from two positions, one of which had not been snapped yet — still
+    // measures a 2D distance rather than a 3D one.
+    const unit = normalizeOrNull(flatten(direction, this.dimensionality));
     if (!unit) return null;
+    const from = onPlane(origin, this.dimensionality);
     const limit = Number.isFinite(maxDistance) ? maxDistance : 1e6;
 
     let best: RayHit | null = null;
     for (const body of this.bodies.values()) {
       if (!passesQuery(body, options)) continue;
-      const hit = raycastShape(body.shape, origin, unit, limit);
+      const hit = raycastShape(body.shape, from, unit, limit);
       if (!hit) continue;
       if (best && hit.distance >= best.distance) continue;
       best = { entityId: body.id, distance: hit.distance, point: hit.point, normal: hit.normal };
@@ -651,14 +724,15 @@ export class PhysicsWorld {
     maxDistance = Infinity,
     options: QueryOptions = {},
   ): RayHit[] {
-    const unit = normalizeOrNull(direction);
+    const unit = normalizeOrNull(flatten(direction, this.dimensionality));
     if (!unit) return [];
+    const from = onPlane(origin, this.dimensionality);
     const limit = Number.isFinite(maxDistance) ? maxDistance : 1e6;
 
     const hits: RayHit[] = [];
     for (const body of this.bodies.values()) {
       if (!passesQuery(body, options)) continue;
-      const hit = raycastShape(body.shape, origin, unit, limit);
+      const hit = raycastShape(body.shape, from, unit, limit);
       if (hit) {
         hits.push({
           entityId: body.id,
@@ -673,7 +747,14 @@ export class PhysicsWorld {
 
   /** Bodies overlapping a sphere — an explosion's blast radius, an aggro check. */
   overlapSphere(center: Vec3, radius: number, options: QueryOptions = {}): EntityId[] {
-    return this.overlapShape({ kind: 'sphere', center, radius: Math.max(EPSILON, radius) }, options);
+    return this.overlapShape(
+      {
+        kind: 'sphere',
+        center: onPlane(center, this.dimensionality),
+        radius: Math.max(EPSILON, radius),
+      },
+      options,
+    );
   }
 
   /** Bodies overlapping any shape. Triggers are included here — overlap is the whole question. */
@@ -706,11 +787,19 @@ export class PhysicsWorld {
 
   // ---------------------------------------------------------------- internal
 
-  /** Moves a body's origin and carries its shape and bounds with it. */
+  /**
+   * Moves a body's origin and carries its shape and bounds with it.
+   *
+   * Every position change in the world funnels through here — integration, positional
+   * correction, teleports, and re-describing from the scene — which is what makes it the one
+   * place the simulation plane has to be enforced. In 3D `onPlane` is the identity and this is
+   * the same function it always was.
+   */
   private moveTo(body: PhysicsBody, origin: Vec3): void {
     if (!isFiniteVec(origin)) return;
-    const delta = sub(origin, body.origin);
-    body.origin = [...origin];
+    const target = onPlane(origin, this.dimensionality);
+    const delta = sub(target, body.origin);
+    body.origin = [...target];
     body.shape = translateShape(body.shape, delta);
     body.bounds = shapeBounds(body.shape);
   }

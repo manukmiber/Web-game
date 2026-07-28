@@ -494,6 +494,23 @@ export class ScriptPhysics {
   }
 
   /**
+   * `'3D'` or `'2D'`.
+   *
+   * Exposed so a behaviour that is meaningful in only one of them can say so, but note how
+   * little script code needs it: velocities, impulses and query directions are projected into
+   * the plane by the world itself, so a script that shoves a body sideways works unchanged in
+   * both. See `physics/dimension`.
+   */
+  get mode(): '2D' | '3D' {
+    return this.engine.physics.getDimensionality().mode;
+  }
+
+  /** Which plane a 2D scene simulates in — `'XY'` for a side-scroller, `'XZ'` for top-down. */
+  get plane(): 'XY' | 'XZ' {
+    return this.engine.physics.getDimensionality().plane;
+  }
+
+  /**
    * Nearest thing along a ray.
    *
    * `options.ignore` is almost always the caster: a ray fired from inside a character's own

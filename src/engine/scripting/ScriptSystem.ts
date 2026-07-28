@@ -1,7 +1,8 @@
 import { DEFAULT_PHYSICS_SETTINGS } from '../components/Physics';
 import { scriptIdOf, type ScriptComponent, type ScriptPropValue } from '../components/Script';
 import { Emitter } from '../core/Emitter';
-import type { Engine, EngineMode, System } from '../loop/Engine';
+import type { QueryDescriptor } from '../ecs/Query';
+import type { Engine, EngineMode, System, SystemStage } from '../loop/Engine';
 import type { PhysicsSystem } from '../physics/PhysicsSystem';
 import type { ContactEvent } from '../physics/PhysicsWorld';
 import type { EntityId } from '../scene/types';
@@ -102,9 +103,13 @@ const MAX_MESSAGE_DEPTH = 8;
  * same way it would anywhere else on the main thread. Only moving scripts to a Worker fixes
  * that, and the note in `sandbox.ts` explains why that is the same change as real isolation.
  */
+const SCRIPTED: QueryDescriptor = { all: ['Script'] };
+
 export class ScriptSystem implements System {
   readonly name = 'ScriptSystem';
   readonly runsIn: readonly EngineMode[] = ['play'];
+  /** After the solver stepped, so `onCollisionEnter` lands in the frame it happened in. */
+  readonly stage: SystemStage = 'script';
   readonly events = new Emitter<ScriptSystemEvents>();
 
   private instances = new Map<string, Instance>();
@@ -302,7 +307,7 @@ export class ScriptSystem implements System {
     const live = new Set<string>();
     let structureChanged = false;
 
-    for (const entity of engine.scene.all()) {
+    for (const entity of engine.ecs.entities(SCRIPTED)) {
       const scripts = entity.components.filter((c): c is ScriptComponent => c.type === 'Script');
       for (const [index, script] of scripts.entries()) {
         const key = `${entity.id}:${scriptIdOf(script, entity.id, index)}`;

@@ -48,6 +48,7 @@ export function PerformancePanel({ viewport }: Props) {
   const [report, setReport] = useState<FrameReport | null>(null);
   const [stress, setStress] = useState<StressStats | null>(null);
   const [scatter, setScatter] = useState({ instances: 0, drawCalls: 0 });
+  const [schedule, setSchedule] = useState<{ name: string; stage: string; modes: string }[]>([]);
   const lastPreset = useRef<string>('');
 
   // Poll rather than subscribe: the stats live inside the render loop, outside React.
@@ -57,6 +58,7 @@ export function PerformancePanel({ viewport }: Props) {
       setReport(viewport.frameReport());
       setStress(viewport.stressStats());
       setScatter(viewport.scatterStats());
+      setSchedule(viewport.systemSchedule());
     }, REFRESH_MS);
     return () => clearInterval(timer);
   }, [viewport]);
@@ -226,6 +228,30 @@ export function PerformancePanel({ viewport }: Props) {
             <p className="note">
               Median per system, worst first. Systems only tick in Play mode, so this is empty
               until you press Play.
+            </p>
+          </Group>
+        )}
+
+        {/*
+          The frame breakdown above is sorted by cost; this is sorted by *time*, which answers a
+          different question. Since v0.7.6 the order is computed from each system's stage and its
+          declared dependencies rather than from the order someone called `addSystem`, and a
+          computed order needs to be readable or it is worse than a hand-written one.
+        */}
+        {schedule.length > 0 && (
+          <Group title="Schedule">
+            {schedule.map((system, index) => (
+              <div className="control-row section-row" key={system.name}>
+                <label>
+                  {index + 1}. {system.name.replace(/System$/, '')}
+                </label>
+                <span className="control-value" title={`Ticks in ${system.modes} mode`}>
+                  {system.stage}
+                </span>
+              </div>
+            ))}
+            <p className="note">
+              Tick order, resolved from each system&rsquo;s stage and its declared dependencies.
             </p>
           </Group>
         )}

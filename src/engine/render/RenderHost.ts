@@ -21,6 +21,7 @@ import {
 import { PostProcess } from './PostProcess';
 import { RenderBridge } from './RenderBridge';
 import { SkyDome, applyFog } from './environment';
+import { EnvironmentProbe } from './ibl';
 
 export const SHADING_MODES = ['shaded', 'wireframe', 'shadedWireframe'] as const;
 export type ShadingMode = (typeof SHADING_MODES)[number];
@@ -92,6 +93,14 @@ export class RenderHost {
   private defaultLights = new THREE.Group();
   private ambient = new THREE.AmbientLight(0xffffff, 0);
   private sky: SkyDome | null = null;
+  /**
+   * Prefiltered sky, for the PBR materials to reflect.
+   *
+   * Owned by the host rather than by the bridge because generating it needs the renderer, and
+   * because it is one per view: two viewports of the same scene each want their own, the same way
+   * they each want their own render targets.
+   */
+  private probe = new EnvironmentProbe();
   private clearColor: number;
   private activeCameraEntity: EntityId | null = null;
   private environmentDirty = false;
@@ -367,6 +376,8 @@ export class RenderHost {
       this.scene.fog = null;
       this.renderer.setClearColor(this.clearColor);
       this.disposeSky();
+      this.scene.environment = null;
+      this.probe.dispose();
       return;
     }
 
@@ -388,6 +399,17 @@ export class RenderHost {
       this.disposeSky();
       this.renderer.setClearColor(new THREE.Color(environment.backgroundColor));
     }
+
+    /**
+     * The environment map, resolved from the same colours the sky is drawn with.
+     *
+     * Assigned to `scene.environment` rather than to each material: Three falls back to the
+     * scene's environment for any material that has none of its own, so one assignment reaches
+     * every surface — including ones the bridge has not built yet. `environmentIntensity` is
+     * left at 1 because the gradient shader already applies `iblIntensity`, and applying it in
+     * both places would square it.
+     */
+    this.scene.environment = this.probe.resolve(this.renderer, environment);
   }
 
   private disposeSky(): void {
@@ -639,6 +661,8 @@ export class RenderHost {
     this.wireframeMaterial?.dispose();
     this.wireframeMaterial = null;
     this.disposeSky();
+    this.probe.dispose();
+    this.scene.environment = null;
     this.post.dispose();
     this.bridge.dispose();
     this.renderer.dispose();

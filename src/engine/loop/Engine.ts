@@ -1,16 +1,21 @@
 import { Emitter } from '../core/Emitter';
 import { Scene } from '../scene/Scene';
 import { AssetStore } from '../assets/AssetStore';
+import { EcsWorld } from '../ecs/EcsWorld';
+import { scheduleSystems, type SystemStage } from '../ecs/Schedule';
 import { GameState } from '../gameplay/GameState';
 import { HardwareBus } from '../hardware/HardwareBus';
 import { InputState } from '../input/InputState';
 import { FrameStats } from '../perf/FrameStats';
 import { PhysicsWorld } from '../physics/PhysicsWorld';
-import { bindAssetStore } from '../render/material';
+import { bindAssetStore, refreshMaterialTextures } from '../render/material';
 import type { AssetRecord, Entity, WorldSettings } from '../scene/types';
 import '../components';
 
 export type EngineMode = 'edit' | 'play';
+
+// Re-exported so a system can declare its stage without reaching into the ECS layer for a type.
+export type { SystemStage };
 
 interface SceneSnapshot {
   name: string;
@@ -42,6 +47,17 @@ export interface System {
   readonly name: string;
   /** Which modes this system ticks in. A RenderSystem runs in both; a ScriptSystem only in play. */
   readonly runsIn: readonly EngineMode[];
+  /**
+   * Where in the frame this runs. Defaults to `simulate`.
+   *
+   * Declared on the system rather than decided by the order someone called `addSystem`, so
+   * inserting a system cannot silently reorder the ones already there. See `ecs/Schedule`.
+   */
+  readonly stage?: SystemStage;
+  /** Systems that must tick before this one, by name. Unknown names are ignored. */
+  readonly after?: readonly string[];
+  /** Systems that must tick after this one, by name. */
+  readonly before?: readonly string[];
   /** dt in seconds. */
   update(dt: number, engine: Engine): void;
   /**
@@ -59,6 +75,8 @@ interface EngineEvents {
   modeChanged: { mode: EngineMode };
   /** Emitted every frame after systems tick — the viewport renders off this. */
   afterUpdate: { dt: number };
+  /** Ordering constraints the scheduler could not satisfy. The console surfaces these. */
+  scheduleConflicts: { conflicts: string[] };
 }
 
 /** Guards against a huge dt after a tab has been backgrounded. */
@@ -105,19 +123,42 @@ export class Engine {
    * clean seam turns into a service locator.
    */
   readonly physics = new PhysicsWorld();
+  /**
+   * The ECS view of the scene: the component index and the queries built on it.
+   *
+   * Owned here for the same reason `physics` is — several systems need it and none of them owns
+   * it. It is a projection of `scene`, so it never has to be kept in step by hand: it subscribes
+   * to the same events everything else does.
+   */
+  readonly ecs: EcsWorld;
 
   private systems: System[] = [];
+  /** `systems` sorted by the schedule. Recomputed only when the list changes. */
+  private ordered: System[] = [];
+  private scheduleDirty = false;
   private mode: EngineMode = 'edit';
   private running = false;
   private lastTime = 0;
   private frameHandle: number | null = null;
   /** Scene snapshot taken on entering play, restored on exit. §6 */
   private playSnapshot: SceneSnapshot | null = null;
+  private unsubscribes: (() => void)[] = [];
 
   constructor(scene = new Scene(), assets = new AssetStore()) {
     this.scene = scene;
     this.assets = assets;
+    this.ecs = new EcsWorld(scene);
     bindAssetStore(assets);
+    /**
+     * Textures decode asynchronously; materials are built once and cached.
+     *
+     * Without this, a material built while its image was still in flight stayed untextured for
+     * the rest of the session — the texture appeared only if something happened to change the
+     * material's cache key afterwards, which reads as "textures work sometimes".
+     */
+    this.unsubscribes.push(
+      assets.events.on('textureLoaded', ({ id }) => refreshMaterialTextures(id)),
+    );
   }
 
   getMode(): EngineMode {
@@ -126,6 +167,7 @@ export class Engine {
 
   addSystem(system: System): void {
     this.systems.push(system);
+    this.scheduleDirty = true;
   }
 
   removeSystem(name: string): void {
@@ -133,6 +175,27 @@ export class Engine {
     if (index === -1) return;
     this.systems[index]!.dispose?.();
     this.systems.splice(index, 1);
+    this.scheduleDirty = true;
+  }
+
+  /**
+   * The order systems will tick in, resolved from their stages and dependencies.
+   *
+   * Exposed because a computed order that cannot be inspected is worse than a hand-written one:
+   * the Performance panel lists the systems in the order they ran, and "why is my system before
+   * physics" has to be answerable.
+   */
+  systemOrder(): readonly System[] {
+    this.reschedule();
+    return this.ordered;
+  }
+
+  private reschedule(): void {
+    if (!this.scheduleDirty && this.ordered.length === this.systems.length) return;
+    this.scheduleDirty = false;
+    const { order, conflicts } = scheduleSystems(this.systems);
+    this.ordered = order;
+    if (conflicts.length > 0) this.events.emit('scheduleConflicts', { conflicts });
   }
 
   /**
@@ -171,7 +234,8 @@ export class Engine {
     // Timed individually rather than as a block. "The frame costs 14 ms" is a fact you can do
     // nothing with; "11 of the 14 are in the PhysicsSystem" tells you what to fix, and it is
     // the difference between the performance panel being a readout and being an instrument.
-    for (const system of this.systems) {
+    this.reschedule();
+    for (const system of this.ordered) {
       if (!system.runsIn.includes(this.mode)) continue;
       this.stats.beginSection(system.name);
       system.update(dt, this);
@@ -224,6 +288,10 @@ export class Engine {
     this.stop();
     for (const system of this.systems) system.dispose?.();
     this.systems = [];
+    this.ordered = [];
+    for (const off of this.unsubscribes) off();
+    this.unsubscribes = [];
+    this.ecs.dispose();
     this.assets.disposeAll();
     this.hardware.dispose();
     this.events.clear();

@@ -11,6 +11,12 @@
 import type { ColliderComponent } from '../components/Collider';
 import type { Vec3 } from '../scene/types';
 import {
+  DEFAULT_DIMENSIONALITY,
+  depthAxis,
+  planeAxes,
+  type Dimensionality,
+} from './dimension';
+import {
   add,
   clamp,
   cross,
@@ -45,6 +51,16 @@ export interface Aabb {
 const PLANE_BOUNDS = 1e6;
 
 /**
+ * Depth of a 2D prism when its collider does not say, in metres.
+ *
+ * Deep enough that a body a little off the plane still collides — sprites get authored at
+ * whatever Z the modeller was looking at — and shallow enough that the broadphase still buckets
+ * it: at a 4 m cell, 10 m of depth is three cells, not the thousands an "effectively infinite"
+ * prism would span.
+ */
+const DEFAULT_PRISM_DEPTH = 10;
+
+/**
  * Places a collider in the world.
  *
  * Scale is applied differently per shape, and each choice is forced by the shape's own
@@ -52,10 +68,54 @@ const PLANE_BOUNDS = 1e6;
  * three scale components, while a sphere and a capsule radius have one number between them and
  * must collapse the scale to a single factor (see `maxScale` for why the largest wins).
  */
-export function resolveShape(collider: ColliderComponent, transform: RigidTransform): WorldShape {
+export function resolveShape(
+  collider: ColliderComponent,
+  transform: RigidTransform,
+  dimensionality: Dimensionality = DEFAULT_DIMENSIONALITY,
+): WorldShape {
   const center = transformPoint(transform, collider.center ?? [0, 0, 0]);
 
   switch (collider.shape) {
+    /**
+     * The two 2D shapes, resolved as prisms rather than as a new pair of primitives.
+     *
+     * A `Circle` becomes a capsule whose segment runs along the depth axis, and a `Rect` becomes
+     * a box whose depth half-extent is `depth / 2`. Their cross-section in the simulation plane
+     * is exactly a circle and exactly a rectangle, so the narrowphase gives the right 2D answer
+     * with no 2D code in it — and because they are extruded rather than flat, a 2D gameplay
+     * layer still works inside a 3D scene where bodies are not perfectly coplanar. That is the
+     * whole trick, and it is why `collision.ts` did not gain a line for this release.
+     */
+    case 'Circle': {
+      const factor = maxScale(transform.scale);
+      const radius = Math.max(EPSILON, collider.radius * factor);
+      const half = Math.max(EPSILON, (collider.depth ?? DEFAULT_PRISM_DEPTH) / 2);
+      const axis: Vec3 = [0, 0, 0];
+      // Extruded along the *world* depth axis, deliberately unrotated: tilting the extrusion
+      // would take the prism out of the plane it exists to fill.
+      axis[depthAxis(dimensionality.plane)] = half;
+      return { kind: 'capsule', a: sub(center, axis), b: add(center, axis), radius };
+    }
+
+    case 'Rect': {
+      const size = collider.size ?? [1, 1, 1];
+      const [u, v] = planeAxes(dimensionality.plane);
+      const depth = depthAxis(dimensionality.plane);
+      const halfExtents: Vec3 = [EPSILON, EPSILON, EPSILON];
+      // The rect is authored as size X/Y regardless of which plane it lands in — a 2D scene
+      // switched from XY to XZ keeps the shapes it had rather than collapsing them.
+      halfExtents[u] = Math.max(
+        EPSILON,
+        (Math.abs(size[0]) * Math.abs(transform.scale[u]!)) / 2,
+      );
+      halfExtents[v] = Math.max(
+        EPSILON,
+        (Math.abs(size[1]) * Math.abs(transform.scale[v]!)) / 2,
+      );
+      halfExtents[depth] = Math.max(EPSILON, (collider.depth ?? DEFAULT_PRISM_DEPTH) / 2);
+      return { kind: 'box', center, rotation: transform.rotation, halfExtents };
+    }
+
     case 'Sphere':
       return {
         kind: 'sphere',

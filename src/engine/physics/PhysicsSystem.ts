@@ -15,9 +15,15 @@ import {
 } from '../components/Physics';
 import type { RigidBodyComponent } from '../components/RigidBody';
 import { Emitter } from '../core/Emitter';
-import type { Engine, EngineMode, System } from '../loop/Engine';
+import type { QueryDescriptor } from '../ecs/Query';
+import type { Engine, EngineMode, System, SystemStage } from '../loop/Engine';
 import type { Scene } from '../scene/Scene';
 import type { Entity, EntityId, Vec3 } from '../scene/types';
+import {
+  DEFAULT_DIMENSIONALITY,
+  withDepthLock,
+  type Dimensionality,
+} from './dimension';
 import {
   composeTransforms,
   identityTransform,
@@ -58,9 +64,20 @@ export interface PhysicsDiagnostics {
 /** Beyond this the accumulator is emptied rather than caught up. See `maxSubsteps`. */
 const MAX_ACCUMULATED_SECONDS = 0.25;
 
+/**
+ * The bodies to describe: anything with a collider.
+ *
+ * A `RigidBody` without a `Collider` is not a body — it has no volume to collide with — so the
+ * collider is the term that decides, and the rigid body is read off the entity when it is there.
+ * Declared as a constant so the query cache in `EcsWorld` sees the same key every frame.
+ */
+const BODIES: QueryDescriptor = { all: ['Collider'] };
+
 export class PhysicsSystem implements System {
   readonly name = 'PhysicsSystem';
   readonly runsIn: readonly EngineMode[] = ['play'];
+  /** The authoritative world step. Scripts and the character run after it, by declaration. */
+  readonly stage: SystemStage = 'simulate';
   readonly events = new Emitter<PhysicsSystemEvents>();
 
   /**
@@ -74,11 +91,18 @@ export class PhysicsSystem implements System {
   private diagnostics: PhysicsDiagnostics = emptyDiagnostics();
   /** Settings resolved from the scene's `Physics` component, refreshed each frame. */
   private settings: PhysicsComponent = DEFAULT_PHYSICS_SETTINGS;
+  /** 3D, or the 2D plane the scene asked for. Refreshed with `settings`. */
+  private dimensionality: Dimensionality = DEFAULT_DIMENSIONALITY;
 
   update(dt: number, engine: Engine): void {
     this.world = engine.physics;
-    this.settings = findPhysics(engine.scene) ?? DEFAULT_PHYSICS_SETTINGS;
-    this.syncBodies(engine.scene);
+    this.settings =
+      engine.ecs.firstComponent<PhysicsComponent>('Physics') ?? DEFAULT_PHYSICS_SETTINGS;
+    // Applied before the bodies are described, so the shapes are resolved against the same plane
+    // the world is about to hold them on.
+    this.dimensionality = dimensionalityOf(this.settings);
+    this.world.setDimensionality(this.dimensionality);
+    this.syncBodies(engine);
 
     const step = clampStep(this.settings.fixedTimestep);
     const maxSubsteps = Math.max(1, Math.round(this.settings.maxSubsteps));
@@ -172,6 +196,11 @@ export class PhysicsSystem implements System {
     return { ...this.diagnostics };
   }
 
+  /** The mode the last frame simulated in. Read by the Statistics panel and by scripts. */
+  getDimensionality(): Dimensionality {
+    return { ...this.dimensionality };
+  }
+
   // ---------------------------------------------------------------- internal
 
   /**
@@ -186,14 +215,14 @@ export class PhysicsSystem implements System {
    * The one thing not overwritten is a dynamic body's position: that is the solver's, and
    * copying the scene's back over it every frame would pin every falling object in mid-air.
    */
-  private syncBodies(scene: Scene): void {
+  private syncBodies(engine: Engine): void {
+    const { scene } = engine;
     const alive = new Set<EntityId>();
 
-    for (const entity of scene.all()) {
+    for (const entity of engine.ecs.entities(BODIES)) {
       const collider = entity.components.find(
         (c): c is ColliderComponent => c.type === 'Collider',
-      );
-      if (!collider) continue;
+      )!;
 
       const body = entity.components.find(
         (c): c is RigidBodyComponent => c.type === 'RigidBody',
@@ -209,7 +238,9 @@ export class PhysicsSystem implements System {
         entity,
         existing && existing.invMass > 0 ? existing.origin : undefined,
       );
-      this.world.upsert(describeBody(entity.id, collider, body ?? null, transform));
+      this.world.upsert(
+        describeBody(entity.id, collider, body ?? null, transform, this.dimensionality),
+      );
     }
 
     this.world.prune(alive);
@@ -284,19 +315,23 @@ function describeBody(
   collider: ColliderComponent,
   body: RigidBodyComponent | null,
   transform: RigidTransform,
+  dimensionality: Dimensionality,
 ): BodyDescriptor {
   return {
     id,
     // No RigidBody means the world, not a thing in it. See ColliderComponent.
     bodyType: body?.bodyType ?? 'Static',
-    shape: resolveShape(collider, transform),
+    shape: resolveShape(collider, transform, dimensionality),
     origin: [...transform.position],
     rotation: [...transform.rotation],
     mass: Math.max(0.0001, body?.mass ?? 1),
     gravityScale: body?.gravityScale ?? 1,
     linearDamping: Math.max(0, body?.linearDamping ?? 0),
     maxSpeed: Math.max(0, body?.maxSpeed ?? 0),
-    locks: [body?.lockX ?? false, body?.lockY ?? false, body?.lockZ ?? false],
+    locks: withDepthLock(
+      [body?.lockX ?? false, body?.lockY ?? false, body?.lockZ ?? false],
+      dimensionality,
+    ),
     restitution: clamp01(collider.restitution ?? 0),
     friction: Math.max(0, collider.friction ?? 0.5),
     isTrigger: collider.isTrigger ?? false,
@@ -306,13 +341,28 @@ function describeBody(
   };
 }
 
-/** The first `Physics` component in scene order wins, exactly as `Environment` does. */
+/**
+ * The first `Physics` component in scene order wins, exactly as `Environment` does.
+ *
+ * Kept as a Scene-level scan for callers that have a scene and no engine — the script API's
+ * `physics.gravity` is one. Systems go through `engine.ecs.firstComponent('Physics')`, which
+ * answers the same question off the component index.
+ */
 export function findPhysics(scene: Scene): PhysicsComponent | null {
   for (const entity of scene.all()) {
     const component = entity.components.find((c): c is PhysicsComponent => c.type === 'Physics');
     if (component) return component;
   }
   return null;
+}
+
+/** The dimensionality a `Physics` component describes, defaults filled in. */
+export function dimensionalityOf(settings: PhysicsComponent): Dimensionality {
+  return {
+    mode: settings.mode === '2D' ? '2D' : '3D',
+    plane: settings.plane === 'XZ' ? 'XZ' : 'XY',
+    depth: Number.isFinite(settings.planeDepth) ? settings.planeDepth : 0,
+  };
 }
 
 function clampStep(value: number): number {

@@ -1,5 +1,11 @@
+import {
+  PHYSICS_MODES,
+  SIMULATION_PLANES,
+  type PhysicsMode,
+  type SimulationPlane,
+} from '../physics/dimension';
 import type { Component, Vec3 } from '../scene/types';
-import { registerComponent } from './registry';
+import { registerComponent, type FieldSchema } from './registry';
 
 /** Earth, to two decimals. The default because a scene should fall the way people expect. */
 export const EARTH_GRAVITY: Vec3 = [0, -9.81, 0];
@@ -15,6 +21,17 @@ export const EARTH_GRAVITY: Vec3 = [0, -9.81, 0];
  */
 export interface PhysicsComponent extends Component {
   type: 'Physics';
+  /**
+   * `3D` or `2D`. One solver runs both — see `physics/dimension` for the whole argument.
+   *
+   * Scene data rather than a build flag, so a 2D minigame inside a 3D project is a scene with a
+   * different Physics component and not a different engine.
+   */
+  mode: PhysicsMode;
+  /** Which world plane a 2D scene simulates in. Ignored in 3D. */
+  plane: SimulationPlane;
+  /** Where that plane sits along the axis it does not simulate. Ignored in 3D. */
+  planeDepth: number;
   /** Acceleration in metres per second squared. Moon is about -1.62; a platformer wants -20. */
   gravity: Vec3;
   /**
@@ -60,6 +77,9 @@ export interface PhysicsComponent extends Component {
 export function createPhysics(overrides: Partial<PhysicsComponent> = {}): PhysicsComponent {
   return {
     type: 'Physics',
+    mode: '3D',
+    plane: 'XY',
+    planeDepth: 0,
     fixedTimestep: 1 / 60,
     maxSubsteps: 4,
     solverIterations: 6,
@@ -79,8 +99,17 @@ registerComponent<PhysicsComponent>({
   type: 'Physics',
   label: 'Physics',
   create: createPhysics,
-  fields() {
-    return [
+  fields(component) {
+    const fields: FieldSchema[] = [
+      { kind: 'enum', key: 'mode', label: 'Mode', options: PHYSICS_MODES },
+    ];
+    if (component.mode === '2D') {
+      fields.push(
+        { kind: 'enum', key: 'plane', label: 'Plane', options: SIMULATION_PLANES },
+        { kind: 'number', key: 'planeDepth', label: 'Plane At', step: 0.1 },
+      );
+    }
+    fields.push(
       { kind: 'vec3', key: 'gravity', label: 'Gravity', step: 0.1 },
       {
         kind: 'number',
@@ -117,6 +146,7 @@ registerComponent<PhysicsComponent>({
       },
       { kind: 'number', key: 'sleepVelocity', label: 'Sleep Below', min: 0, step: 0.01 },
       { kind: 'number', key: 'sleepDelay', label: 'Sleep After', min: 0, step: 0.1 },
-    ];
+    );
+    return fields;
   },
 });

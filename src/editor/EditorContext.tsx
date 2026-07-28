@@ -180,6 +180,19 @@ export function EditorProvider({ children }: { children: ReactNode }) {
         store.clearSelection();
       }),
       engine.events.on('modeChanged', ({ mode }) => store.setPlaying(mode === 'play')),
+      // A system ordering constraint the scheduler could not satisfy. It runs the frame anyway
+      // in a defensible order, so without this the only symptom is a system that reads
+      // last frame's world — which looks like input lag, not like a scheduling bug.
+      engine.events.on('scheduleConflicts', ({ conflicts }) => {
+        for (const text of conflicts) {
+          useEditorStore.getState().pushConsole({
+            level: 'warn',
+            source: 'Schedule',
+            text,
+            entityId: null,
+          });
+        }
+      }),
       // The simulated board's outbound queue has to be drained whether or not anyone is
       // looking, or a play session with the Hardware tab in the background accumulates every
       // line the engine ever wrote to it.

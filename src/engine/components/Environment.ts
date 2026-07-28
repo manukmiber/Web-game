@@ -34,6 +34,20 @@ export interface EnvironmentComponent extends Component {
   fogNear: number;
   fogFar: number;
   fogDensity: number;
+  /**
+   * Prefilter the sky into an environment map and light the scene with it.
+   *
+   * Not a nicety: `metalness = 1` means "the base colour is the reflection", so a metal with no
+   * environment to reflect renders black however many lights are pointed at it. This is what
+   * makes the PBR sliders behave the way an artist expects, and it is on by default for exactly
+   * that reason — a new scene should show a believable metal, not a debugging exercise.
+   *
+   * Costs a handful of small render passes whenever the sky colours change, and nothing per
+   * frame. Turn it off for a stylised look, or on a scene whose lighting is entirely analytic.
+   */
+  ibl: boolean;
+  /** Multiplier on the environment's contribution. 0 is the same as turning `ibl` off. */
+  iblIntensity: number;
 }
 
 export function createEnvironment(
@@ -53,6 +67,8 @@ export function createEnvironment(
     fogNear: 20,
     fogFar: 300,
     fogDensity: 0.01,
+    ibl: true,
+    iblIntensity: 1,
     ...overrides,
   };
 }
@@ -90,6 +106,20 @@ registerComponent<EnvironmentComponent>({
         { kind: 'color', key: 'fogColor', label: 'Fog Color' },
         { kind: 'number', key: 'fogDensity', label: 'Density', min: 0, max: 1, step: 0.001 },
       );
+    }
+    fields.push(
+      { kind: 'group', key: '@ibl', label: 'Environment Lighting' },
+      { kind: 'boolean', key: 'ibl', label: 'From Sky' },
+    );
+    if (component.ibl) {
+      fields.push({
+        kind: 'number',
+        key: 'iblIntensity',
+        label: 'Intensity',
+        min: 0,
+        max: 4,
+        step: 0.05,
+      });
     }
     return fields;
   },

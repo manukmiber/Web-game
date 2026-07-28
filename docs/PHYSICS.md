@@ -1,7 +1,7 @@
 # Physics
 
-Gravity, collision and rigid bodies, new in **v0.7.5**. Three components do all of it, and the
-smallest useful scene needs two of them.
+Gravity, collision and rigid bodies, new in **v0.7.5**; **2D** since v0.7.6. Three components do
+all of it, and the smallest useful scene needs two of them.
 
 ```
 Ground   → Collider (Plane)
@@ -27,6 +27,8 @@ thousand bodies affordable.
 | `Sphere` | `radius` | Balls, projectiles, blast volumes |
 | `Capsule` | `radius`, `height` (caps included) | Characters, barrels, logs |
 | `Plane` | none — it is infinite | The ground |
+| `Circle` | `radius`, `depth` | 2D — balls, coins, characters |
+| `Rect` | `size` (W×H), `depth` | 2D — platforms, walls, blocks |
 
 Plus `center` (a local offset), `isTrigger`, `restitution` (bounciness, 0..1), `friction`, and the
 two layer fields below.
@@ -68,6 +70,9 @@ configure the world. Add it from **Game ▾ → Physics** when you want to chang
 | `positionCorrection` | 0.4 | Fraction of remaining overlap pushed out per step |
 | `allowedPenetration` | 0.005 m | Overlap left alone, so resting bodies do not chatter |
 | `sleepVelocity` / `sleepDelay` | 0.06 m/s, 0.6 s | When a still body stops being simulated |
+| `mode` | `3D` | `2D` constrains the whole simulation to a plane — see below |
+| `plane` | `XY` | Which plane a 2D scene lives in |
+| `planeDepth` | 0 | Where that plane sits along the axis it does not simulate |
 
 ## Why a fixed timestep
 
@@ -84,6 +89,91 @@ step count and flags when it throttled.
 
 This is also why scripts have both `update` and `fixedUpdate`: see
 [SCRIPTING.md](./SCRIPTING.md#update-or-fixedupdate).
+
+## 2D
+
+Set `Physics.mode` to `2D` and the scene becomes two-dimensional. There is no second solver, no
+second collider hierarchy and no second raycast API — 2D is a **constraint on the 3D world**.
+
+```
+Physics  → mode: 2D, plane: XY
+Ground   → Collider (Rect, 20 × 1)
+Player   → Collider (Circle) + CharacterController
+```
+
+### Why not a separate 2D engine
+
+That is the obvious way to ship 2D, and it is what Unity did. It left that project with two
+collider hierarchies, two sets of layer settings, two raycast APIs and a permanent question about
+which one a given component belongs to.
+
+Everything a 2D game needs from a solver is already here. Circles are spheres, rectangles are
+boxes, and sequential impulses do not care how many axes they run over. So the whole feature is
+four rules, applied in one file (`physics/dimension.ts`) and consumed in about a dozen places:
+
+1. Bodies are **held on the plane** — the depth coordinate is snapped, not integrated.
+2. The depth axis is **locked**, in velocity and in positional correction alike.
+3. Gravity is **projected into the plane**.
+4. Contact normals and query directions are **projected and renormalised**.
+
+Nothing else in the simulation changes. `collision.ts` did not gain a line for this release.
+
+The payoff is that every feature reaches both dimensions at once. Triggers, layers, sleeping,
+restitution, sensors, the character controller, the script API, `explode` — none of them has a 2D
+variant to write, because none of them knows which mode it is running in.
+
+### The two planes
+
+| `plane` | Depth axis | Gravity | What it is |
+| --- | --- | --- | --- |
+| `XY` | Z | acts in-plane | A side-scroller. Default gravity still falls down. |
+| `XZ` | Y | projected away | A top-down game. Weightless with no configuration. |
+
+The `XZ` case is worth dwelling on: default gravity points along the axis a top-down world does not
+simulate, so the projection makes it zero. A top-down scene is weightless without anyone editing
+the gravity vector, which is what a top-down game wants.
+
+### `Circle` and `Rect`
+
+The two shapes meant for 2D, and they are not a second collider type. A `Circle` resolves to a
+capsule extruded along the depth axis; a `Rect` resolves to a box whose depth half-extent is
+`depth / 2`. Their cross-section *in the plane* is exactly a circle and exactly a rectangle, so the
+narrowphase gives the right 2D answer with no 2D code in it.
+
+They are extruded rather than flat for a practical reason: a 2D gameplay layer inside a 3D scene has
+bodies that are only approximately coplanar, and `depth` (10 m by default) means the Z a sprite
+happened to be authored at stops mattering. In a 2D scene, depth is not gameplay.
+
+A `Rect` reads its size from `size` X and Y whichever plane it lands in, so switching a scene from
+`XY` to `XZ` keeps the shapes it had rather than collapsing them.
+
+### The character in 2D
+
+An `XY` scene has no yaw and no forward — pressing W would ask the character to walk into the
+camera — so the controls collapse to one signed axis. `←`/`→` and `A`/`D` both walk; W and S do
+nothing; `Space` still jumps; and the character's yaw snaps to whichever way it is going, so a model
+with a front faces it.
+
+An `XZ` scene needs none of that. Its plane *is* the ground plane the 3D controls already work in,
+so turning and walking behave exactly as in 3D and only gravity goes away.
+
+### From a script
+
+Nothing to learn. Velocities, impulses and query directions are projected by the world itself, so a
+behaviour that shoves a body sideways or raycasts for a wall works unchanged in both modes.
+`physics.mode` and `physics.plane` are there for the rare behaviour that is only meaningful in one.
+
+### The corner case worth knowing about
+
+An extruded prism can hand back a contact normal that leans out of the plane — a circle resting on
+the corner of a rect is the clearest case. Resolving along it would push the body off the plane,
+where the snap drags it straight back, once per step, forever: a body that visibly buzzes while
+resting. Projecting and renormalising the normal is what avoids it, and renormalising is not
+optional — a shortened normal under-resolves the contact by the same factor, so the body sinks a
+little further every step.
+
+A normal that is *entirely* along the depth axis is dropped. In a world where depth is not gameplay,
+two prisms overlapping only in depth are not touching.
 
 ## Layers
 
@@ -142,6 +232,11 @@ the ledge — which is most of them — get nothing, and the controls feel unres
 strict.
 
 ## What this solver does not do
+
+**No 2D-specific solver features.** 2D here is 3D with an axis removed, which means it inherits
+every limitation below — including the absence of angular dynamics, which is felt more in 2D than in
+3D: a 2D game is exactly where tumbling crates are cheap and expected. It also means no 2D-only
+niceties: no one-way platforms, no ledge grabs, no slope-aware ground friction.
 
 **No angular velocity.** Contacts never spin a body. That is a real limitation and it is chosen
 rather than missed: rotational response needs an inertia tensor per shape, angular impulses at

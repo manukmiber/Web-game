@@ -1,5 +1,3 @@
-import * as THREE from 'three';
-
 interface CacheEntry<T> {
   resource: T;
   refCount: number;
@@ -17,7 +15,18 @@ interface CacheEntry<T> {
 export class ResourceCache<T extends { dispose(): void }> {
   private entries = new Map<string, CacheEntry<T>>();
 
-  constructor(private readonly factory: (key: string) => T) {}
+  /**
+   * `teardown` overrides the plain `dispose()` for resources that own more than themselves.
+   *
+   * A PBR material holds a texture view per map slot — its own object, with its own tiling and
+   * colour space — and `material.dispose()` does not touch them. Passing the teardown in here
+   * rather than making every caller remember it is what keeps the leak impossible: the cache is
+   * the only thing that knows when the last reference went away.
+   */
+  constructor(
+    private readonly factory: (key: string) => T,
+    private readonly teardown: (resource: T) => void = (resource) => resource.dispose(),
+  ) {}
 
   acquire(key: string): T {
     let entry = this.entries.get(key);
@@ -34,9 +43,14 @@ export class ResourceCache<T extends { dispose(): void }> {
     if (!entry) return;
     entry.refCount -= 1;
     if (entry.refCount <= 0) {
-      entry.resource.dispose();
+      this.teardown(entry.resource);
       this.entries.delete(key);
     }
+  }
+
+  /** Every live resource with its key. Used to refresh materials when a texture finishes decoding. */
+  forEach(visit: (resource: T, key: string) => void): void {
+    for (const [key, entry] of this.entries) visit(entry.resource, key);
   }
 
   get size(): number {
@@ -44,13 +58,7 @@ export class ResourceCache<T extends { dispose(): void }> {
   }
 
   disposeAll(): void {
-    for (const entry of this.entries.values()) entry.resource.dispose();
+    for (const entry of this.entries.values()) this.teardown(entry.resource);
     this.entries.clear();
   }
-}
-
-export function disposeMaterial(material: THREE.Material): void {
-  const withMap = material as THREE.Material & { map?: THREE.Texture | null };
-  withMap.map?.dispose();
-  material.dispose();
 }

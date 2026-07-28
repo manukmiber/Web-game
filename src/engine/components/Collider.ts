@@ -1,8 +1,21 @@
 import type { Component, Vec3 } from '../scene/types';
 import { registerComponent, type FieldSchema } from './registry';
 
-export const COLLIDER_SHAPES = ['Box', 'Sphere', 'Capsule', 'Plane'] as const;
+export const COLLIDER_SHAPES = ['Box', 'Sphere', 'Capsule', 'Plane', 'Circle', 'Rect'] as const;
 export type ColliderShape = (typeof COLLIDER_SHAPES)[number];
+
+/**
+ * The two shapes meant for a 2D scene.
+ *
+ * They are not a second collider type — `Circle` and `Rect` resolve to the same capsule and box
+ * the 3D shapes do, extruded along the simulation plane's depth axis. See `physics/dimension`
+ * for why 2D is a constraint on one solver rather than a solver of its own.
+ */
+export const SHAPES_2D: readonly ColliderShape[] = ['Circle', 'Rect'];
+
+export function is2DShape(shape: ColliderShape): boolean {
+  return SHAPES_2D.includes(shape);
+}
 
 /**
  * The volume an entity occupies as far as the solver is concerned.
@@ -27,6 +40,14 @@ export interface ColliderComponent extends Component {
   radius: number;
   /** Capsule total height, caps included — so a 2 m capsule of radius 0.5 has a 1 m barrel. */
   height: number;
+  /**
+   * Extrusion depth of a `Circle` or `Rect`, along the axis a 2D world does not simulate.
+   *
+   * A 2D shape has to have *some* depth or nothing would ever touch it in a world whose bodies
+   * are only approximately coplanar. Ten metres of it means the Z a sprite happened to be
+   * authored at stops mattering, which is the point: in a 2D scene, depth is not gameplay.
+   */
+  depth: number;
   /** Offset from the entity's origin, in local space. */
   center: Vec3;
   /**
@@ -58,6 +79,7 @@ export function createCollider(overrides: Partial<ColliderComponent> = {}): Coll
     shape: 'Box',
     radius: 0.5,
     height: 2,
+    depth: 10,
     isTrigger: false,
     restitution: 0,
     friction: 0.5,
@@ -97,11 +119,20 @@ registerComponent<ColliderComponent>({
     if (component.shape === 'Box') {
       fields.push({ kind: 'vec3', key: 'size', label: 'Size', step: 0.1 });
     }
-    if (component.shape === 'Sphere' || component.shape === 'Capsule') {
+    if (component.shape === 'Rect') {
+      // Only the first two components of `size` are read; the third is the plane's depth axis
+      // and is governed by `depth` instead, so showing all three would invite editing a number
+      // that does nothing.
+      fields.push({ kind: 'vec2', key: 'size', label: 'Size', step: 0.1, labels: ['W', 'H'] });
+    }
+    if (component.shape === 'Sphere' || component.shape === 'Capsule' || component.shape === 'Circle') {
       fields.push({ kind: 'number', key: 'radius', label: 'Radius', min: 0.001, step: 0.05 });
     }
     if (component.shape === 'Capsule') {
       fields.push({ kind: 'number', key: 'height', label: 'Height', min: 0.002, step: 0.1 });
+    }
+    if (is2DShape(component.shape)) {
+      fields.push({ kind: 'number', key: 'depth', label: 'Extrude Depth', min: 0.01, step: 0.5 });
     }
     // A Plane is infinite and faces local +Y, so it has no size and no centre worth showing —
     // the entity's transform is the whole of its definition.

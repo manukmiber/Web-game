@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import type { SystemStage } from '../ecs/Schedule';
+import { createCollider } from '../components/Collider';
 import { createPrimitiveEntity } from '../scene/primitives';
 import { Engine, type EngineMode, type System } from './Engine';
 
@@ -9,6 +11,8 @@ class Recorder implements System {
   constructor(
     readonly name: string,
     readonly runsIn: readonly EngineMode[],
+    readonly stage?: SystemStage,
+    readonly after?: readonly string[],
   ) {}
 
   update(): void {
@@ -17,6 +21,22 @@ class Recorder implements System {
 
   reset(): void {
     this.resets += 1;
+  }
+}
+
+/** Records the order it ran in rather than a count. */
+class Sequenced implements System {
+  constructor(
+    readonly name: string,
+    readonly log: string[],
+    readonly stage?: SystemStage,
+    readonly after?: readonly string[],
+  ) {}
+
+  readonly runsIn: readonly EngineMode[] = ['edit', 'play'];
+
+  update(): void {
+    this.log.push(this.name);
   }
 }
 
@@ -138,5 +158,72 @@ describe('Engine', () => {
     engine.tick(0.016);
 
     expect(events).toBe(0);
+  });
+});
+
+describe('system scheduling', () => {
+  it('ticks systems in stage order, not the order they were added', () => {
+    const engine = new Engine();
+    const log: string[] = [];
+    engine.addSystem(new Sequenced('present', log, 'present'));
+    engine.addSystem(new Sequenced('input', log, 'input'));
+    engine.addSystem(new Sequenced('simulate', log, 'simulate'));
+
+    engine.tick(0.016);
+
+    expect(log).toEqual(['input', 'simulate', 'present']);
+  });
+
+  it('honours a declared dependency between systems in the same stage', () => {
+    const engine = new Engine();
+    const log: string[] = [];
+    engine.addSystem(new Sequenced('npcs', log, 'resolve', ['characters']));
+    engine.addSystem(new Sequenced('characters', log, 'resolve'));
+
+    engine.tick(0.016);
+
+    expect(log).toEqual(['characters', 'npcs']);
+  });
+
+  it('re-sorts when a system is added or removed mid-session', () => {
+    const engine = new Engine();
+    const log: string[] = [];
+    engine.addSystem(new Sequenced('simulate', log, 'simulate'));
+    engine.tick(0.016);
+
+    engine.addSystem(new Sequenced('input', log, 'input'));
+    log.length = 0;
+    engine.tick(0.016);
+    expect(log).toEqual(['input', 'simulate']);
+
+    engine.removeSystem('input');
+    log.length = 0;
+    engine.tick(0.016);
+    expect(log).toEqual(['simulate']);
+  });
+
+  it('exposes the resolved order, and reports contradictions', () => {
+    const engine = new Engine();
+    const conflicts: string[][] = [];
+    engine.events.on('scheduleConflicts', (event) => conflicts.push(event.conflicts));
+    engine.addSystem(new Recorder('a', ['edit'], 'simulate', ['b']));
+    engine.addSystem(new Recorder('b', ['edit'], 'simulate', ['a']));
+
+    // Reported rather than thrown: a mis-ordered system must not become a blank viewport.
+    expect(engine.systemOrder().map((s) => s.name).sort()).toEqual(['a', 'b']);
+    expect(conflicts[0]?.[0]).toContain('cycle');
+  });
+});
+
+describe('the ECS view', () => {
+  it('indexes the scene the engine was given', () => {
+    const engine = new Engine();
+    const entity = createPrimitiveEntity('Box', { name: 'Crate' });
+    engine.scene.add(entity);
+    expect(engine.ecs.any('Collider')).toBe(false);
+
+    engine.scene.addComponent(entity.id, createCollider());
+
+    expect(engine.ecs.with('Collider').map((e) => e.name)).toEqual(['Crate']);
   });
 });

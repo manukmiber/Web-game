@@ -21,7 +21,7 @@ import {
   selectShadowCasters,
   type ShadowCandidate,
 } from './lighting';
-import { materialCache, materialKey } from './material';
+import { materialCache, materialKey, needsSecondUv } from './material';
 
 const DEG2RAD = Math.PI / 180;
 
@@ -302,6 +302,7 @@ export class RenderBridge {
       // Same key: acquire bumped the refcount, so give it straight back.
       geometryCache.release(nextGeometryKey);
     }
+    if (material && needsSecondUv(material)) ensureSecondUv(geometry);
     if (node.materialKey !== nextMaterialKey) {
       const nextMaterial = materialCache.acquire(nextMaterialKey);
       if (node.materialKey) materialCache.release(node.materialKey);
@@ -679,6 +680,25 @@ function applyLightColor(target: THREE.Color, hex: string, component: LightCompo
 const TEMPERATURE_TINT = new THREE.Color();
 
 /** The aim point of a light that has one. Point lights don't. */
+/**
+ * Gives a geometry the second UV set an occlusion map is sampled with.
+ *
+ * Three reads `aoMap` through `uv1`, not `uv` — the glTF convention, where a baked lightmap or
+ * occlusion pass has its own atlas layout. Our primitives only ever generate one set, so without
+ * this an occlusion map samples an attribute that does not exist and the mesh renders black.
+ *
+ * The second set *aliases* the first rather than copying it: `setAttribute` stores the same
+ * BufferAttribute under a second name, so there is no extra memory and no extra upload. Mutating
+ * shared cached geometry is safe precisely because it is idempotent — adding the alias twice is
+ * adding it once.
+ */
+function ensureSecondUv(geometry: THREE.BufferGeometry): void {
+  if (geometry.getAttribute('uv1')) return;
+  const uv = geometry.getAttribute('uv');
+  if (!uv) return;
+  geometry.setAttribute('uv1', uv);
+}
+
 function targetOf(light: THREE.Light): THREE.Object3D | null {
   if (light instanceof THREE.DirectionalLight || light instanceof THREE.SpotLight) {
     return light.target;

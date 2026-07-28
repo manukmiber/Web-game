@@ -1,6 +1,8 @@
 import type { CharacterControllerComponent } from '../components/CharacterController';
-import type { Engine, EngineMode, System } from '../loop/Engine';
+import type { QueryDescriptor } from '../ecs/Query';
+import type { Engine, EngineMode, System, SystemStage } from '../loop/Engine';
 import { DEG2RAD, wrapAngle } from '../ai/steering';
+import { flatten, onPlane, type Dimensionality } from '../physics/dimension';
 import { add, inverseTransformPoint, length, scale, sub } from '../physics/math';
 import { worldTransformOf } from '../physics/PhysicsSystem';
 import type { PhysicsWorld } from '../physics/PhysicsWorld';
@@ -15,6 +17,8 @@ const GROUND_PROBE_SKIN = 0.08;
 
 /** Downhill snap distance. Beyond this the character is genuinely airborne, not on a slope. */
 const GROUND_SNAP_DISTANCE = 0.4;
+
+const CHARACTERS: QueryDescriptor = { all: ['CharacterController'] };
 
 interface CharacterState {
   verticalVelocity: number;
@@ -53,6 +57,8 @@ interface CharacterState {
 export class CharacterSystem implements System {
   readonly name = 'CharacterSystem';
   readonly runsIn: readonly EngineMode[] = ['play'];
+  /** After scripts, so a script that launched the character this frame is already accounted for. */
+  readonly stage: SystemStage = 'resolve';
 
   private states = new Map<EntityId, CharacterState>();
 
@@ -82,14 +88,16 @@ export class CharacterSystem implements System {
   }
 
   update(dt: number, engine: Engine): void {
-    const { scene, input, game, physics } = engine;
+    const { input, game, physics } = engine;
     const live = new Set<EntityId>();
+    // Read off the world rather than the scene: the PhysicsSystem has already resolved it from
+    // the Physics component this frame, and it runs before this one by declared order.
+    const dimensionality = physics.getDimensionality();
 
-    for (const entity of scene.all()) {
+    for (const entity of engine.ecs.entities(CHARACTERS)) {
       const controller = entity.components.find(
         (c): c is CharacterControllerComponent => c.type === 'CharacterController',
-      );
-      if (!controller) continue;
+      )!;
 
       live.add(entity.id);
       game.register(entity.id, controller.faction, controller.maxHealth);
@@ -119,16 +127,42 @@ export class CharacterSystem implements System {
       // it and the sign had to be written down.
       const strafe = input.axis('KeyA', 'KeyD') + input.getAxis('strafe');
 
-      if (turn !== 0) {
+      /**
+       * A side-scroller has no yaw and no forward.
+       *
+       * In an XY 2D scene the third axis is gone, so "turn to face and walk forward" cannot be
+       * expressed — pressing W would ask the character to walk into the camera. The controls
+       * collapse to one signed axis: `←`/`→` and `A`/`D` both walk left and right, W and S do
+       * nothing, and the character's yaw snaps to whichever way it is going so a model with a
+       * front faces it. An XZ (top-down) 2D scene is the opposite case and needs no special
+       * handling at all: its plane *is* the ground plane the 3D controls already work in, and
+       * only gravity has to go.
+       */
+      const sideScroller = dimensionality.mode === '2D' && dimensionality.plane === 'XY';
+
+      if (turn !== 0 && !sideScroller) {
         // Analog turn is proportional; the keys still turn at full rate because they read ±1.
         const rate = Math.max(-1, Math.min(1, turn));
         rotation[1] = wrapAngle(rotation[1] + rate * controller.turnSpeed * dt);
       }
 
-      const [dx, dz] = horizontalStep(controller, rotation[1], forward, strafe, input, dt);
+      let dx: number;
+      let dz: number;
+      if (sideScroller) {
+        // `turn` is positive to the right; `strafe` is positive to the *left* (see the note on
+        // its sign above), so the two are subtracted to get one right-positive axis.
+        const lateral = Math.max(-1, Math.min(1, turn - strafe));
+        dx = lateral * speedOf(controller, input) * dt;
+        dz = 0;
+        // -90° yaw points local -Z along +X, which is the convention the camera rig assumes.
+        if (lateral > 0) rotation[1] = -90;
+        else if (lateral < 0) rotation[1] = 90;
+      } else {
+        [dx, dz] = horizontalStep(controller, rotation[1], forward, strafe, input, dt);
+      }
       const dy = this.verticalStep(controller, state, input, dt);
 
-      this.move(engine, entity, controller, state, [dx, dy, dz], physics);
+      this.move(engine, entity, controller, state, [dx, dy, dz], physics, dimensionality);
     }
 
     // A character deleted mid-play must not leave its fall speed behind; ids are unique, so
@@ -185,10 +219,14 @@ export class CharacterSystem implements System {
     state: CharacterState,
     delta: Vec3,
     physics: PhysicsWorld,
+    dimensionality: Dimensionality,
   ): void {
     const world = worldTransformOf(engine.scene, entity);
     const wasGrounded = state.grounded;
-    let position = add(world.position, delta);
+    // In 3D both calls are the identity. In 2D they are what keeps a kinematic character on the
+    // plane: the solver's own bodies are held there by `PhysicsWorld.moveTo`, and a character
+    // that moves itself has to do the same or it walks out of the world it collides with.
+    let position = onPlane(add(world.position, flatten(delta, dimensionality)), dimensionality);
 
     const radius = Math.max(0.02, controller.radius);
     const halfBarrel = Math.max(0, controller.height / 2 - radius);
@@ -209,9 +247,11 @@ export class CharacterSystem implements System {
           if (contact.depth <= 0) continue;
           // The contact normal points from the character towards what it hit, so the escape
           // direction — and the surface normal as the character experiences it — is its
-          // negation.
-          const escape = scale(contact.normal, -1);
-          position = add(position, scale(escape, contact.depth));
+          // negation. Flattened in 2D for the same reason the solver flattens its own: an
+          // extruded prism can hand back a normal that leans out of the plane.
+          const escape = normalizedFlat(scale(contact.normal, -1), dimensionality);
+          if (!escape) continue;
+          position = onPlane(add(position, scale(escape, contact.depth)), dimensionality);
           resolved = true;
 
           if (escape[1] >= minGroundY) {
@@ -258,6 +298,11 @@ export class CharacterSystem implements System {
       state.groundNormal = [0, 1, 0];
     }
 
+    // The ground-height floor above writes Y unconditionally, which in an XZ (top-down) 2D scene
+    // is the depth axis — so the plane is re-imposed once at the end rather than trusted to
+    // survive every clamp on the way here.
+    position = onPlane(position, dimensionality);
+
     if (length(sub(position, world.position)) <= 1e-7) return;
 
     const parent = entity.parentId ? engine.scene.get(entity.parentId) : undefined;
@@ -269,6 +314,27 @@ export class CharacterSystem implements System {
     entity.transform.position[2] = local[2]!;
     engine.scene.markTransformDirty(entity.id);
   }
+}
+
+/**
+ * Unit escape direction with the depth component removed, or null if there is nothing left.
+ *
+ * A contact entirely along the depth axis is not a 2D contact — see `flattenNormal`, which the
+ * solver uses for exactly the same reason on its own contacts.
+ */
+function normalizedFlat(direction: Vec3, dimensionality: Dimensionality): Vec3 | null {
+  if (dimensionality.mode !== '2D') return direction;
+  const flat = flatten(direction, dimensionality);
+  // Zeroing the depth axis shortens the vector, so the depenetration distance would come out
+  // short if it were not renormalised — the character would sink a little further every step.
+  const len = Math.hypot(flat[0], flat[1], flat[2]);
+  if (len < 1e-6) return null;
+  return [flat[0] / len, flat[1] / len, flat[2] / len];
+}
+
+/** Metres per second the controller is asking for, sprint included. */
+function speedOf(controller: CharacterControllerComponent, input: Engine['input']): number {
+  return controller.moveSpeed * (input.isDown('ShiftLeft') ? controller.sprintMultiplier : 1);
 }
 
 /** The character's collision volume at a candidate position. */
@@ -317,6 +383,6 @@ function horizontalStep(
     dz /= magnitude;
   }
 
-  const speed = controller.moveSpeed * (input.isDown('ShiftLeft') ? controller.sprintMultiplier : 1);
+  const speed = speedOf(controller, input);
   return [dx * speed * dt, dz * speed * dt];
 }

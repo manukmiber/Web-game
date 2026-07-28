@@ -1139,3 +1139,158 @@ Three bugs in this release's own code, all in the solver, all of the kind only a
 They are listed because they are the argument for the test suite being integration-level in
 `gameplay/physicsScripting.test.ts`: each is about two parts agreeing, and no unit test of either
 half can see it.
+
+### 15.9 2D is a constraint, not a second engine
+
+`Physics.mode = '2D'` makes the whole simulation two-dimensional. There is no second solver, no
+second collider hierarchy and no second query API.
+
+The alternative is the well-trodden one: ship a parallel 2D engine beside the 3D one. Unity did
+exactly that and it left the project with two collider hierarchies, two sets of layer settings, two
+raycast APIs and a permanent question about which one a component belongs to. Every feature since
+has had to be built twice or admitted to be 3D-only.
+
+The observation that makes the other choice available is that nothing in this solver is
+dimensional. Circles are spheres, rectangles are boxes, and sequential impulses do not care how many
+axes they run over. So 2D is expressed as four rules, all in `physics/dimension.ts`:
+
+1. Bodies are held on the simulation plane — the depth coordinate is snapped, not integrated.
+2. The depth axis is locked, in velocity *and* in positional correction.
+3. Gravity is projected into the plane.
+4. Contact normals and query directions are projected into the plane and renormalised.
+
+Every one of those is the identity in 3D, which is what keeps the cost of the feature at zero for
+scenes that do not use it. `collision.ts` gained nothing.
+
+Two things follow that are worth stating as design consequences rather than as facts. First, every
+feature reaches both dimensions at once: triggers, layers, sleeping, restitution, the character
+controller, the script API and `explode` have no 2D variant to write because none of them knows
+which mode it is in. Second, the plane is a property of the *world*, not of a step — a raycast in a
+2D scene has to be flattened whether or not a step is in progress, so it lives on `PhysicsWorld`
+rather than in `StepSettings`.
+
+The one subtlety the design pays for is rule 4. An extruded prism — which is what a `Circle` or
+`Rect` collider resolves to — can produce a contact normal that leans out of the plane, and
+resolving along it pushes the body off the plane where rule 1 drags it straight back, once per step,
+forever. Renormalising after the projection is not cosmetic either: a shortened normal
+under-resolves the contact by the same factor and the body sinks a little further every step.
+
+## 16. The ECS layer
+
+The data model has been entity-plus-components since Phase 1 (§3). What was missing until v0.7.6 was
+both halves of the *system* side: a way to find entities by what they carry, and a way for systems
+to declare when they run.
+
+### 16.1 An index, not an archetype table
+
+Every system used to open with `for (const entity of scene.all())` and a `components.find`, which is
+O(entities × components) per system per frame. Five systems over a 10 000-entity scene walk the same
+ten thousand entities five times to reach the eleven with a collider.
+
+`ecs/ComponentIndex` maintains a type-to-entities map off the Scene's existing events, and
+`ecs/Query` resolves `all`/`any`/`none` against it, driving the iteration from the smallest `all`
+term. `EcsWorld` caches results against a revision counter that only moves when the index's *shape*
+changes — a field edit does not invalidate a query, which matters because dragging a slider emits
+`componentsChanged` sixty times a second.
+
+What this deliberately is **not** is an archetype ECS with components packed into parallel typed
+arrays. That buys cache locality on top of the lookup, and it costs the data model: components here
+are also the serialisation format (§3), the Inspector's model (the field schemas), and the undo
+system's unit of work — and unknown component types, which round-trip verbatim so a scene from a
+newer build survives an older one, have no shape to pack into at all. The lookup is the
+factor-of-a-thousand and costs 200 lines; the packing is a constant factor and costs the model. The
+query API is the seam that would let the packing happen later without touching a single system.
+
+### 16.2 Order is declared, not emergent
+
+Systems used to run in the order `installGameplaySystems` pushed them, documented by a numbered
+comment. That comment was load-bearing: hardware has to be pumped before scripts read it, the solver
+has to step before scripts hear about contacts, agents have to run after the player moved. Inserting
+one system in the wrong place breaks all of it silently, and the symptom looks like input lag rather
+than like a scheduling bug.
+
+`ecs/Schedule` sorts systems by a declared `stage` — `input`, `simulate`, `script`, `resolve`,
+`present`, each a boundary something actually depends on — plus explicit `after`/`before` for the
+constraints stages cannot express (the NPC system and the character system both belong in `resolve`,
+and one still has to go first).
+
+Three properties a hand-ordered list cannot give:
+
+- A system added by a test or a headless setup lands in the right place without knowing the list.
+- A dependency on an absent system is ignored rather than fatal, so `after: ['PhysicsSystem']` does
+  not make physics a hard requirement.
+- A contradiction is **reported**, not resolved arbitrarily: `Engine` emits `scheduleConflicts` and
+  the editor console shows it. Throwing from inside a frame would turn a mis-ordered system into a
+  blank viewport, so the frame runs in the order the systems were added and the problem is visible.
+
+With no constraints the sort is stable and reproduces the insertion order exactly, which is what
+made adopting it a refactor rather than a behavioural change.
+
+This is also the prerequisite for §9.5. You cannot decide what may run concurrently in a Worker
+until the dependencies between systems are written down somewhere other than a comment.
+
+## 17. The PBR material system
+
+### 17.1 Metal/rough, and the one degree of freedom it removes
+
+The `Material` component uses the metal/rough parameterisation — glTF's, Unity's, Unreal's, Godot's.
+The older specular/gloss form lets an artist author a physically impossible surface without noticing
+(a dielectric with a coloured specular, a metal with a bright diffuse), and those surfaces look
+wrong the moment they are lit differently from how they were authored. Metal/rough has one fewer
+degree of freedom and the missing one is exactly the impossible one.
+
+The consequence that shapes the rest of this section: **`metalness = 1` means the base colour is the
+reflection and there is no diffuse term**, so a metal with nothing to reflect renders black however
+many lights are aimed at it. Analytic lights give a metal its highlight; the environment is the rest
+of it. A PBR material system without image-based lighting is a set of sliders that do not behave.
+
+### 17.2 The environment comes from the sky the scene already has
+
+`Environment.ibl` prefilters the sky dome's own three-colour gradient into a PMREM environment map
+and assigns it to `scene.environment`. On by default.
+
+Generated from the sky rather than loaded as an HDR, for the same reason the sky is a shader rather
+than a texture (§9.6): generating an image means a canvas, a canvas means the DOM, and §9.5 forbids
+it. It also means reflections and background cannot drift apart, because they are the same three
+colours.
+
+The prefiltering is the load-bearing part. A rough metal has to reflect a *blurred* environment, and
+one convolution per roughness level is what makes `roughness` behave across its whole range rather
+than only at 0. Regenerated only when the colours change — it is a handful of render passes, and per
+frame they would show in the frame graph.
+
+Note the gradient shader used for the probe is a second, simpler copy of the sky's, and the
+difference is the point: the dome ends with the tone-mapping and colour-space chunks because it is
+drawn to the screen (§13.2), and the probe must *not*, because a prefiltered environment has to stay
+in linear radiance or every reflection is tone mapped twice.
+
+### 17.3 Two programs, chosen from the data
+
+`MeshPhysicalMaterial` extends the standard one with clearcoat, sheen and transmission, all of which
+compile into every fragment whether or not they are used — and transmission additionally makes the
+renderer keep a copy of the framebuffer to refract through. So the choice is made per material from
+the values themselves (`usesPhysicalFeatures`): all four extension lobes at their defaults gets the
+standard program, touching any of them gets the physical one. A scene of painted crates pays
+nothing, and there is no shader for an artist to remember to pick.
+
+### 17.4 Every map slot is a private view of the asset
+
+Two problems with one shape. `AssetStore` marks every texture sRGB because it has no idea what a
+texture will be used for, which is right for base colour and wrong for normals, roughness, metalness
+and occlusion — decoding a normal map as sRGB bends every normal towards the surface, a bug that
+looks like an authoring problem. And in Three, `repeat`/`offset` live on the texture rather than the
+material, so two materials tiling one asset differently cannot share a texture object.
+
+Both are solved by each material owning a `Texture.clone()` per slot: the clone shares the decoded
+`Source` (Three refcounts sources, so the pixels upload once however many materials reference them)
+and carries its own colour space and uv transform.
+
+This is what makes disposal a local operation. The previous `disposeMaterial` disposed
+`material.map` — the *store's* texture, shared with every other material using that asset — so
+releasing one material blanked the texture everywhere it appeared. Owning views rather than
+borrowing textures is the fix, and the refcounted cache's `teardown` hook is where it is enforced,
+because the cache is the only thing that knows when the last reference went away.
+
+One more consequence: textures decode asynchronously and materials are cached, so
+`AssetStore.textureLoaded` now re-resolves the slots of any live material naming that asset.
+Without it a material built while its image was in flight stayed untextured for the session.
