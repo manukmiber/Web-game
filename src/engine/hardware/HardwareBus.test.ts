@@ -184,4 +184,19 @@ describe('HardwareBus', () => {
     expect(seen).toContain('info: calibrating');
     expect(seen).toContain('error: stick stuck');
   });
+
+  it('bubbles every raw line, in both directions, for a serial monitor', async () => {
+    const bus = new HardwareBus();
+    const { device: uno, link } = await device('uno');
+    const seen: string[] = [];
+    bus.events.on('line', ({ deviceId, direction, text }) => seen.push(`${deviceId} ${direction} ${text}`));
+    bus.add(uno);
+
+    link.receive('A0=512\n');
+    bus.pump();
+    uno.write('D13', 255);
+
+    expect(seen).toContain('uno in A0=512');
+    expect(seen).toContain('uno out D13=255\n');
+  });
 });

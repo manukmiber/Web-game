@@ -333,6 +333,15 @@ class Engine {
 }
 ```
 
+`dt` itself is computed by `loop/Clock`, not inline in `start()` — it used to be one clamped
+subtraction there, and three more things wanted the same timestamp: a `pause()`/`resume()` that
+re-anchors on resume so the paused interval never lands in a system's `dt` as one spike, a
+`timeScale` for slow motion, and a `smoothDelta` reading for a consumer (a camera, mainly) that
+would rather see jitter filtered than raw physics-accurate time. `tick(dt)` itself stays a plain
+function of dt in, which is what keeps `Engine.test.ts` able to drive frames by hand with no
+`requestAnimationFrame` in sight — `Clock` is the thing that turns real timestamps into that dt,
+and it is tested the same way, by feeding it timestamps and reading back what it decided.
+
 Entering Play mode is: snapshot the scene → flip `mode` → the gameplay systems start ticking →
 render through the scene's own camera entity instead of the editor camera. Exiting restores the
 snapshot. **No engine rewrite, no second renderer, no second scene graph.**

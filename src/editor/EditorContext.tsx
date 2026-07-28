@@ -9,7 +9,7 @@ import { CommandSceneEditor } from './assistant/CommandSceneEditor';
 import { connectMcpBridge, type McpBridgeState } from './assistant/mcpBridge';
 import type { Command } from './commands/Command';
 import { CommandHistory } from './commands/Command';
-import { SimulatedRig } from './hardware/simulated';
+import { DEFAULT_BOARD_PROFILE, SimulatedRig, type BoardProfile } from './hardware/simulated';
 import { LocalStorageAdapter, type ScenePersistence } from './state/persistence';
 import { SaveGameStorage } from './state/saveGamePersistence';
 import { useEditorStore } from './state/editorStore';
@@ -42,14 +42,14 @@ export interface EditorContextValue {
    * outbound queue, and the *next* "+ Simulated" adding a second one beside it.
    */
   simulatedRig(): SimulatedRig | null;
-  addSimulatedRig(id: string): Promise<SimulatedRig>;
+  addSimulatedRig(id: string, profile?: BoardProfile): Promise<SimulatedRig>;
   removeSimulatedRig(): void;
 }
 
 const EditorContext = createContext<EditorContextValue | null>(null);
 
 /** Reported to MCP clients in `initialize`, so a client can tell which build it is driving. */
-const EDITOR_VERSION = '0.7.5';
+const EDITOR_VERSION = '0.7.9';
 
 export function EditorProvider({ children }: { children: ReactNode }) {
   // Refs rather than state: these are created once and must survive every re-render, and
@@ -91,9 +91,9 @@ export function EditorProvider({ children }: { children: ReactNode }) {
       mcp: new McpServer({ name: 'web-3d-scene-editor', version: EDITOR_VERSION, context: toolContext }),
       mcpState: () => mcpStateRef.current,
       simulatedRig: () => rigRef.current,
-      addSimulatedRig: async (id) => {
+      addSimulatedRig: async (id, profile = DEFAULT_BOARD_PROFILE) => {
         if (rigRef.current) return rigRef.current;
-        const rig = new SimulatedRig(id);
+        const rig = new SimulatedRig(id, profile);
         rigRef.current = rig;
         engine.hardware.add(rig.device);
         await rig.start();

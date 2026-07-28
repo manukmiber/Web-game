@@ -2,6 +2,7 @@ import { Emitter } from '../core/Emitter';
 import { Scene } from '../scene/Scene';
 import { AssetStore } from '../assets/AssetStore';
 import { AudioEngine } from '../audio/AudioEngine';
+import { Clock } from './Clock';
 import { EcsWorld } from '../ecs/EcsWorld';
 import { scheduleSystems, type SystemStage } from '../ecs/Schedule';
 import { GameState } from '../gameplay/GameState';
@@ -85,9 +86,6 @@ interface EngineEvents {
   scheduleConflicts: { conflicts: string[] };
 }
 
-/** Guards against a huge dt after a tab has been backgrounded. */
-const MAX_FRAME_DELTA = 0.1;
-
 /**
  * The engine loop, shared by the editor and (Phase 3) the game runtime.
  *
@@ -151,7 +149,7 @@ export class Engine {
   private scheduleDirty = false;
   private mode: EngineMode = 'edit';
   private running = false;
-  private lastTime = 0;
+  private readonly clock = new Clock();
   private frameHandle: number | null = null;
   /** Scene snapshot taken on entering play, restored on exit. §6 */
   private playSnapshot: SceneSnapshot | null = null;
@@ -221,12 +219,10 @@ export class Engine {
   start(): void {
     if (this.running) return;
     this.running = true;
-    this.lastTime = performance.now();
+    this.clock.reset(performance.now());
     const frame = (now: number) => {
       if (!this.running) return;
-      const dt = Math.min((now - this.lastTime) / 1000, MAX_FRAME_DELTA);
-      this.lastTime = now;
-      this.tick(dt);
+      this.tick(this.clock.tick(now));
       this.frameHandle = requestAnimationFrame(frame);
     };
     this.frameHandle = requestAnimationFrame(frame);
@@ -236,6 +232,37 @@ export class Engine {
     this.running = false;
     if (this.frameHandle !== null) cancelAnimationFrame(this.frameHandle);
     this.frameHandle = null;
+  }
+
+  /**
+   * Freezes the frame clock without stopping the loop — `tick` keeps being called with dt 0,
+   * so rendering and the hardware pump stay live while gameplay time stands still. Distinct
+   * from `stop`, which also cancels the `requestAnimationFrame` chain.
+   */
+  pause(): void {
+    this.clock.pause();
+  }
+
+  resume(): void {
+    this.clock.resume(performance.now());
+  }
+
+  get paused(): boolean {
+    return this.clock.isPaused;
+  }
+
+  /** Scales every non-paused dt — 0.5 for slow motion, 2 for fast-forward. 1 is real time. */
+  setTimeScale(scale: number): void {
+    this.clock.timeScale = scale;
+  }
+
+  getTimeScale(): number {
+    return this.clock.timeScale;
+  }
+
+  /** The last frame's dt with jitter smoothed out — see `Clock` — for consumers like a camera that would rather not see it raw. */
+  get smoothDelta(): number {
+    return this.clock.smoothDelta;
   }
 
   tick(dt: number): void {
