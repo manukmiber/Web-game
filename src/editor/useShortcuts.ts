@@ -35,6 +35,10 @@ export function useShortcuts(viewport: ViewportController | null): void {
         } else if (event.key === 'F8') {
           event.preventDefault();
           store.setPerf({ hudVisible: !store.perf.hudVisible });
+        } else if (event.key === 'F7') {
+          // Quality is exactly the thing you want to change while watching the frame time move.
+          event.preventDefault();
+          store.setGraphicsVisible(!store.graphicsVisible);
         } else if (event.key === 'F9') {
           // Watching a channel while the character moves is exactly when you need it.
           event.preventDefault();
@@ -120,6 +124,10 @@ export function useShortcuts(viewport: ViewportController | null): void {
         case 'F2':
           event.preventDefault();
           store.setAssistantVisible(!store.assistantVisible);
+          break;
+        case 'F7':
+          event.preventDefault();
+          store.setGraphicsVisible(!store.graphicsVisible);
           break;
         case 'F8':
           event.preventDefault();

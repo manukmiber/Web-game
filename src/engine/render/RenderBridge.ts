@@ -374,6 +374,10 @@ export class RenderBridge {
         shadow.map = null;
       }
       shadow.bias = component.shadowBias;
+      // Defaulted rather than read straight through: scenes saved before this field existed
+      // deserialize without it, and an undefined normal bias is a NaN shadow matrix — which
+      // renders as every shadow in the scene disappearing at once.
+      shadow.normalBias = component.shadowNormalBias ?? 0.02;
       if (shadow.camera instanceof THREE.OrthographicCamera) {
         const extent = Math.max(1, component.shadowRange);
         shadow.camera.left = -extent;
@@ -452,6 +456,11 @@ export class RenderBridge {
       const mesh = new THREE.InstancedMesh(geometry, material, bucket.length);
       mesh.name = `${entity.name} · ${source.entity.name}`;
       mesh.visible = key.visible;
+      // Recorded for the same reason ordinary meshes record it: the host's shading pass rewrites
+      // `visible` across the whole tree and has no other way to tell a batch hidden on purpose
+      // from one it hid itself. Without it, hiding a scatter layer and then leaving wireframe
+      // brought the whole forest back.
+      mesh.userData.entityVisible = key.visible;
       mesh.castShadow = key.castShadow;
       mesh.receiveShadow = key.receiveShadow;
       // A click on any instance selects the layer. Selecting one tree out of a packed buffer

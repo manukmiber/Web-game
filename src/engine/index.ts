@@ -15,6 +15,8 @@ export * from './mesh/generators';
 export * from './mesh/modifiers';
 export * from './serialization/schema';
 export * from './serialization/serialize';
+export * from './render/GraphicsSettings';
+export * from './render/PostProcess';
 export * from './render/RenderBridge';
 export * from './render/RenderHost';
 export * from './render/environment';

@@ -38,6 +38,20 @@ export class SkyDome {
           gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
         }
       `,
+      /**
+       * The two includes at the end are not optional decoration.
+       *
+       * `Color.set('#3f6fb5')` converts the authored sRGB value into the linear working space,
+       * so a shader that writes it out untouched hands the framebuffer linear numbers that the
+       * display then reads as sRGB — the sky came out visibly dark and desaturated, and the
+       * further a colour was from grey the more wrong it looked. Three's built-in materials end
+       * with these same two chunks; a ShaderMaterial has to ask for them.
+       *
+       * Both resolve per render target: drawing to the canvas they tone map and encode, drawing
+       * into the antialiasing buffer they compile away to nothing, because the resolve pass does
+       * it once for the whole image instead. That is what keeps the sky matching the geometry
+       * beside it whether or not antialiasing is on.
+       */
       fragmentShader: `
         uniform vec3 topColor;
         uniform vec3 horizonColor;
@@ -51,6 +65,8 @@ export class SkyDome {
             ? mix(horizonColor, topColor, pow(clamp(h, 0.0, 1.0), 0.55))
             : mix(horizonColor, groundColor, pow(clamp(-h, 0.0, 1.0), 0.35));
           gl_FragColor = vec4(colour, 1.0);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
         }
       `,
     });

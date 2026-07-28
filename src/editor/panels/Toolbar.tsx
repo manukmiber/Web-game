@@ -43,6 +43,8 @@ export function Toolbar({ spawnPoint }: Props) {
   const playing = useEditorStore((s) => s.playing);
   const shading = useEditorStore((s) => s.shading);
   const setShading = useEditorStore((s) => s.setShading);
+  const graphicsVisible = useEditorStore((s) => s.graphicsVisible);
+  const setGraphicsVisible = useEditorStore((s) => s.setGraphicsVisible);
   const statusMessage = useEditorStore((s) => s.statusMessage);
   const setTool = useEditorStore((s) => s.setTool);
   const setSpace = useEditorStore((s) => s.setSpace);
@@ -235,6 +237,13 @@ export function Toolbar({ spawnPoint }: Props) {
           <option value="shadedWireframe">Shaded + Wireframe</option>
           <option value="wireframe">Wireframe</option>
         </select>
+        <button
+          className={graphicsVisible ? 'active' : ''}
+          onClick={() => setGraphicsVisible(!graphicsVisible)}
+          title="Graphics settings — antialiasing, shadows, tone mapping, resolution (F7)"
+        >
+          Graphics
+        </button>
       </div>
 
       <div className="toolbar-divider" />

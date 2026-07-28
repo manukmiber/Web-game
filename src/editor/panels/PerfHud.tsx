@@ -1,6 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FrameReport } from '@engine/perf/FrameStats';
 import { CITY_PRESET, FOREST_PRESET, type StressStats } from '@engine/perf/StressScene';
+import {
+  ANTIALIAS_LABELS,
+  ANTIALIAS_MODES,
+  SHADOW_QUALITIES,
+  shadowMapSizeFor,
+  type AntialiasMode,
+  type ShadowQuality,
+} from '@engine/render/GraphicsSettings';
 import { useEditorStore } from '../state/editorStore';
 import type { ViewportController } from '../viewport/ViewportController';
 
@@ -24,6 +32,9 @@ interface Props {
 export function PerfHud({ viewport }: Props) {
   const perf = useEditorStore((s) => s.perf);
   const setPerf = useEditorStore((s) => s.setPerf);
+  const graphics = useEditorStore((s) => s.graphics);
+  const setGraphics = useEditorStore((s) => s.setGraphics);
+  const setGraphicsVisible = useEditorStore((s) => s.setGraphicsVisible);
   const [report, setReport] = useState<FrameReport | null>(null);
   const [stress, setStress] = useState<StressStats | null>(null);
   const [scatter, setScatter] = useState({ instances: 0, drawCalls: 0 });
@@ -66,19 +77,6 @@ export function PerfHud({ viewport }: Props) {
     perf.instanced,
     perf.renderDistance,
   ]);
-
-  // Renderer-side levers.
-  useEffect(() => {
-    viewport?.host.setResolutionScale(perf.resolutionScale);
-  }, [viewport, perf.resolutionScale]);
-
-  useEffect(() => {
-    viewport?.host.setShadowsEnabled(perf.shadowsEnabled);
-  }, [viewport, perf.shadowsEnabled]);
-
-  useEffect(() => {
-    viewport?.host.setShadowMapSize(perf.shadowMapSize);
-  }, [viewport, perf.shadowMapSize]);
 
   /**
    * Switching preset loads that preset's whole parameter set, not just its geometry style.
@@ -228,37 +226,49 @@ export function PerfHud({ viewport }: Props) {
         )}
       </div>
 
+      {/*
+        The two levers that move the frame time most, kept beside the readout so a measurement
+        and the change that caused it are in the same glance. Everything else lives in the
+        Graphics panel — these write the same settings, so the two never disagree.
+      */}
       <div className="perf-section">Quality levers</div>
       <div className="perf-controls">
         <Slider
           label="Resolution"
-          value={perf.resolutionScale}
+          value={graphics.resolutionScale}
           min={0.25}
           max={1}
           step={0.05}
           format={(v) => `${Math.round(v * 100)}%`}
-          onChange={(resolutionScale) => setPerf({ resolutionScale })}
+          onChange={(resolutionScale) => setGraphics({ resolutionScale })}
         />
         <Row label="Shadows">
-          <input
-            type="checkbox"
-            checked={perf.shadowsEnabled}
-            onChange={(e) => setPerf({ shadowsEnabled: e.currentTarget.checked })}
-          />
+          <select
+            value={graphics.shadowQuality}
+            onChange={(e) =>
+              setGraphics({ shadowQuality: e.currentTarget.value as ShadowQuality })
+            }
+          >
+            {SHADOW_QUALITIES.map((quality) => (
+              <option key={quality} value={quality}>
+                {quality === 'off' ? 'Off' : `${quality} — ${shadowMapSizeFor(quality)}`}
+              </option>
+            ))}
+          </select>
         </Row>
-        {perf.shadowsEnabled && (
-          <Row label="Shadow map">
-            <select
-              value={perf.shadowMapSize}
-              onChange={(e) => setPerf({ shadowMapSize: Number(e.currentTarget.value) })}
-            >
-              <option value={512}>512</option>
-              <option value={1024}>1024</option>
-              <option value={2048}>2048</option>
-              <option value={4096}>4096</option>
-            </select>
-          </Row>
-        )}
+        <Row label="Antialiasing">
+          <select
+            value={graphics.antialias}
+            onChange={(e) => setGraphics({ antialias: e.currentTarget.value as AntialiasMode })}
+          >
+            {ANTIALIAS_MODES.map((mode) => (
+              <option key={mode} value={mode}>
+                {ANTIALIAS_LABELS[mode]}
+              </option>
+            ))}
+          </select>
+        </Row>
+        <button onClick={() => setGraphicsVisible(true)}>All graphics settings (F7)</button>
       </div>
     </div>
   );

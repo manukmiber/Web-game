@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { findPrimaryCamera } from '@engine/components/Camera';
 import type { Engine } from '@engine/loop/Engine';
+import type { GraphicsSettings } from '@engine/render/GraphicsSettings';
 import type { RenderBridge } from '@engine/render/RenderBridge';
 import { RenderHost } from '@engine/render/RenderHost';
 import {
@@ -61,9 +62,12 @@ export class ViewportController {
     this.canvas = document.createElement('canvas');
     container.appendChild(this.canvas);
 
+    const graphics = editorState().graphics;
     this.host = new RenderHost(engine.scene, {
       canvas: this.canvas,
-      pixelRatio: Math.min(devicePixelRatio, 2),
+      pixelRatio: pixelRatioFor(graphics.pixelRatioCap),
+      graphics,
+      assets: engine.assets,
       stats: engine.stats,
     });
     this.host.overlay = this.overlay;
@@ -203,6 +207,7 @@ export class ViewportController {
           this.outline.update(state.selection);
         }
         if (state.shading !== previous.shading) this.host.setShadingMode(state.shading);
+        if (state.graphics !== previous.graphics) this.applyGraphics(state.graphics);
         if (state.tool !== previous.tool) this.gizmo.setTool(state.tool);
         if (state.space !== previous.space) this.gizmo.setSpace(state.space);
         if (
@@ -231,6 +236,16 @@ export class ViewportController {
       initial.rotateSnap,
       initial.scaleSnap,
     );
+  }
+
+  /**
+   * The pixel-ratio cap is applied here rather than in the RenderHost because `devicePixelRatio`
+   * is a `window` property, and the host is written to be constructible from a worker
+   * (ARCHITECTURE.md §9.5). Everything else in the settings goes straight through.
+   */
+  private applyGraphics(settings: GraphicsSettings): void {
+    this.host.setPixelRatio(pixelRatioFor(settings.pixelRatioCap));
+    this.host.applyGraphics(settings);
   }
 
   // -------------------------------------------------------------- interaction
@@ -461,4 +476,13 @@ export class ViewportController {
 
 function round(value: number): number {
   return Number(value.toFixed(3));
+}
+
+/**
+ * A 3× phone screen renders nine times the pixels of a 1× one for a difference almost nobody
+ * can see, so the cap is the first thing to reach for on mobile — and unlike resolution scale
+ * it costs nothing in sharpness until it actually bites.
+ */
+function pixelRatioFor(cap: number): number {
+  return Math.min(window.devicePixelRatio || 1, cap);
 }

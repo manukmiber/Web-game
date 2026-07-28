@@ -1,17 +1,20 @@
 import { create } from 'zustand';
 import type { EntityId } from '@engine/scene/types';
 import type { StressPreset } from '@engine/perf/StressScene';
+import { normalizeGraphics, type GraphicsSettings } from '@engine/render/GraphicsSettings';
 import type { ShadingMode } from '@engine/render/RenderHost';
+import { loadGraphicsSettings, saveGraphicsSettings } from './graphicsSettings';
 
 export type TransformTool = 'select' | 'move' | 'rotate' | 'scale';
 export type TransformSpace = 'local' | 'world';
 
 /**
- * Manual quality and stress-test levers for the measurement harness.
+ * Stress-test levers for the measurement harness.
  *
- * These are driven by hand from the PerfHud so a budget can be measured on real devices.
- * Stage 2's adaptive quality will drive the same RenderHost setters automatically; what
- * changes then is who decides, not how it is applied.
+ * These are driven by hand from the PerfHud so a budget can be measured on real devices. The
+ * quality levers that used to sit beside them now live in `graphics` instead: having a
+ * resolution scale here *and* a graphics setting for the same thing meant two sources of truth
+ * for one renderer value, and whichever was touched last won.
  */
 export interface PerfSettings {
   hudVisible: boolean;
@@ -21,9 +24,6 @@ export interface PerfSettings {
   uniqueMeshes: number;
   instanced: boolean;
   renderDistance: number;
-  resolutionScale: number;
-  shadowsEnabled: boolean;
-  shadowMapSize: number;
 }
 
 export const DEFAULT_PERF: PerfSettings = {
@@ -33,9 +33,6 @@ export const DEFAULT_PERF: PerfSettings = {
   uniqueMeshes: 6,
   instanced: true,
   renderDistance: 400,
-  resolutionScale: 1,
-  shadowsEnabled: true,
-  shadowMapSize: 2048,
 };
 
 export interface ConsoleMessage {
@@ -83,6 +80,9 @@ interface EditorState {
   canRedo: boolean;
   statusMessage: string | null;
   perf: PerfSettings;
+  /** Renderer quality. Persisted per browser, not per scene — see `graphicsSettings.ts`. */
+  graphics: GraphicsSettings;
+  graphicsVisible: boolean;
   consoleMessages: ConsoleMessage[];
   consoleVisible: boolean;
   assistantVisible: boolean;
@@ -103,6 +103,9 @@ interface EditorState {
   setHistoryState(canUndo: boolean, canRedo: boolean): void;
   setStatusMessage(message: string | null): void;
   setPerf(patch: Partial<PerfSettings>): void;
+  setGraphics(patch: Partial<GraphicsSettings>): void;
+  resetGraphics(): void;
+  setGraphicsVisible(visible: boolean): void;
   pushConsole(message: Omit<ConsoleMessage, 'id'>): void;
   clearConsole(): void;
   setConsoleVisible(visible: boolean): void;
@@ -140,6 +143,8 @@ export const useEditorStore = create<EditorState>((set) => ({
   canRedo: false,
   statusMessage: null,
   perf: { ...DEFAULT_PERF },
+  graphics: loadGraphicsSettings(),
+  graphicsVisible: false,
   consoleMessages: [],
   consoleVisible: false,
   assistantVisible: false,
@@ -165,6 +170,24 @@ export const useEditorStore = create<EditorState>((set) => ({
   setHistoryState: (canUndo, canRedo) => set({ canUndo, canRedo }),
   setStatusMessage: (statusMessage) => set({ statusMessage }),
   setPerf: (patch) => set((state) => ({ perf: { ...state.perf, ...patch } })),
+  /**
+   * Normalized on write rather than on read, so the value in the store is always the value the
+   * renderer is actually using — a panel that echoes back an out-of-range number the renderer
+   * quietly clamped is worse than no readout at all.
+   */
+  setGraphics: (patch) =>
+    set((state) => {
+      const graphics = normalizeGraphics({ ...state.graphics, ...patch });
+      saveGraphicsSettings(graphics);
+      return { graphics };
+    }),
+  resetGraphics: () =>
+    set(() => {
+      const graphics = normalizeGraphics(null);
+      saveGraphicsSettings(graphics);
+      return { graphics };
+    }),
+  setGraphicsVisible: (graphicsVisible) => set({ graphicsVisible }),
   pushConsole: (message) =>
     set((state) => {
       consoleCounter += 1;

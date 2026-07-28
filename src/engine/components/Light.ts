@@ -28,6 +28,18 @@ export interface LightComponent extends Component {
   /** Rounded up to a power of two by the renderer; anything else wastes VRAM. */
   shadowMapSize: number;
   shadowBias: number;
+  /**
+   * Shadow lookup offset along the surface normal, in world units.
+   *
+   * The companion to `shadowBias`, and the one that actually fixes shadow acne on curved
+   * surfaces. Depth bias alone can only trade acne for peter-panning — push it far enough to
+   * clean up a sphere and contact shadows detach from whatever is casting them. Offsetting
+   * along the normal instead scales the correction with how obliquely the light hits, which is
+   * exactly where the error comes from.
+   *
+   * Optional in the type because scenes saved before v0.7.3 do not carry it; readers default it.
+   */
+  shadowNormalBias?: number;
 }
 
 export function createLight(overrides: Partial<LightComponent> = {}): LightComponent {
@@ -43,6 +55,7 @@ export function createLight(overrides: Partial<LightComponent> = {}): LightCompo
     shadowRange: 30,
     shadowMapSize: 2048,
     shadowBias: -0.0005,
+    shadowNormalBias: 0.02,
     ...overrides,
   };
 }
@@ -84,6 +97,14 @@ registerComponent<LightComponent>({
           integer: true,
         },
         { kind: 'number', key: 'shadowBias', label: 'Shadow Bias', step: 0.0001 },
+        {
+          kind: 'number',
+          key: 'shadowNormalBias',
+          label: 'Normal Bias',
+          min: 0,
+          max: 1,
+          step: 0.005,
+        },
       );
     }
     return fields;

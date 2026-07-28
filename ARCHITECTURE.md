@@ -286,6 +286,9 @@ the same scene data drive an editor viewport and a headless-ish runtime canvas i
 Geometry and materials are **cached and shared** by their parameter hash, so 500 default cubes
 allocate one `BoxGeometry`. Disposal is refcounted to avoid GPU leaks on delete/undo churn.
 
+What the bridge produces is drawn by `RenderHost`, which owns the frame itself — including the
+antialiasing, tone mapping and colour-space pipeline described in §13.
+
 ---
 
 ## 5. Undo/redo
@@ -567,7 +570,8 @@ Three consequences fell out of that:
   view matrix, quietly distorting the projection of any camera under a scaled parent.
 - **The sky is a shader on an inverted sphere**, not `scene.background`. A gradient background
   would have to be generated, generating one means a canvas, and the engine may not touch the
-  DOM (§9.5). Same reasoning as the procedural grid in §9.6.
+  DOM (§9.5). Same reasoning as the procedural grid in §9.6. Being a custom shader is also what
+  made it the one thing in the scene that could get its colour space wrong — see §13.2.
 
 ### 10.2 Scripting: what the sandbox is and is not
 
@@ -821,3 +825,70 @@ And the security position is the one §10.2 already states, extended: a scene fi
 code, and with a device attached it is executable code with a wire to a pin. Web Serial's
 per-port, per-origin, click-gated permission is the real boundary; the engine does not pretend to
 add one.
+
+---
+
+## 13. The render pipeline and quality settings
+
+Added in v0.7.3. See [docs/GRAPHICS.md](./docs/GRAPHICS.md) for the operational detail; this
+section is the three decisions behind it.
+
+### 13.1 Quality settings are engine data, not editor state
+
+`GraphicsSettings` lives in `engine/render` beside the `RenderHost`, for the reason §2 gives for
+the host itself: the editor and the runtime must produce the *same image*, and they can only do
+that if everything the image depends on is described in one place both can read. The editor's
+Graphics panel holds no state of its own — it is a view onto that object, and a shipped game will
+read the same shape out of a config file or a player-facing options menu.
+
+`RenderHost.applyGraphics()` takes the whole object rather than exposing a setter per knob,
+because several of the knobs interact: the shadow map size means nothing without a filter, and the
+tone mapping curve is what decides whether the offscreen buffer needs to be half-float. A single
+apply keeps those decisions in one readable place instead of spread across setters that have to
+guess at each other's state. It is cheap to call with an unchanged object, so callers push rather
+than diff.
+
+One field escapes the engine: the pixel-ratio cap is *applied* by whoever owns the canvas, because
+`devicePixelRatio` is a `window` property and §9.5 says the host must stay constructible from a
+worker. The value still lives in the settings; only the multiplication happens outside.
+
+Settings persist per browser and never enter a scene file. How sharp your shadows are is a
+property of the machine you are sitting at; what colour the sky is belongs to the scene, and is
+already a component (§10.1). Putting antialiasing in the scene would mean opening a colleague's
+scene on a laptop and having it try to run at their 8× MSAA.
+
+### 13.2 Antialiasing forces an offscreen buffer, and that decides where tone mapping goes
+
+The WebGL context's `antialias` flag is fixed at context creation. A settings menu built on it can
+only say *restart to apply* — and a restart drops every geometry, texture and compiled shader the
+editor has uploaded. So the context is created with `antialias: false` permanently and MSAA is
+done in a multisampled **render target**, which makes the sample count an ordinary runtime value
+and hands us the intermediate image FXAA needs anyway.
+
+That single change has a consequence worth stating plainly, because it is not obvious and it is
+where the bugs would otherwise be: **Three applies `toneMapping` and the output colour-space
+encode only when drawing to the canvas.** `WebGLPrograms` forces `NoToneMapping` and the linear
+working space for every render-target draw. That is correct — an intermediate buffer should stay
+linear HDR — but it means the moment the scene goes through a render target, the last pass owns
+tone mapping and encoding. `PostProcess`'s resolve pass does, and it does it by including Three's
+own shader chunk rather than reimplementing the curves, so the direct path and the resolve path
+cannot drift apart.
+
+The same rule is why every custom `ShaderMaterial` in the codebase ends with
+`#include <tonemapping_fragment>` and `#include <colorspace_fragment>`. Those resolve *per render
+target*: drawing to the canvas they tone map and encode, drawing into the resolve buffer they
+compile away to nothing. A hardcoded gamma curve would be right in exactly one of the two paths.
+The sky dome (§10.1) and the procedural grid (§9.6) were both missing them and rendered visibly
+dark until v0.7.3 — the two places in the project that do not use a built-in material were the two
+places the bug could exist.
+
+### 13.3 The rig is not the lights
+
+The graphics settings drive the **placeholder lighting rig** and nothing else. A scene carrying
+its own `Light` components sets range, map size, bias and normal bias per light, through the
+Inspector, as component data — because in a scene with several casters, "how far do shadows reach"
+is a property of each light and not of the renderer. The rig hides itself the moment a scene has a
+Light of its own, exactly as §10.1 describes, and the settings go with it.
+
+The global switches — whether the shadow pass runs at all, and which filter it uses — stay in the
+settings, because those are properties of the machine.

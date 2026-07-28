@@ -620,6 +620,25 @@ input[type='color'] {
   line-height: 1.4;
 }
 
+/*
+ * The graphics panel borrows the perf HUD's chrome wholesale — same header, sections, rows and
+ * notes — and only moves. Two panels that do the same kind of job should not look like two
+ * different products, and duplicating the rules is how they drift apart.
+ */
+.graphics-panel {
+  right: auto;
+  left: 10px;
+  width: 314px;
+}
+
+.graphics-panel .perf-row {
+  grid-template-columns: 78px 1fr auto;
+}
+
+.graphics-panel .perf-controls > button {
+  width: 100%;
+}
+
 /* The HUD overlays the canvas, so the viewport needs a positioned wrapper. */
 .viewport-host {
   position: relative;

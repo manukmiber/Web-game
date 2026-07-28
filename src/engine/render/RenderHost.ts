@@ -1,9 +1,24 @@
 import * as THREE from 'three';
+import type { AssetStore } from '../assets/AssetStore';
 import type { CameraComponent } from '../components/Camera';
 import type { EnvironmentComponent } from '../components/Environment';
 import type { FrameStats } from '../perf/FrameStats';
 import type { Scene } from '../scene/Scene';
 import type { EntityId } from '../scene/types';
+import {
+  DEFAULT_GRAPHICS,
+  needsPostProcessing,
+  normalizeGraphics,
+  samplesFor,
+  shadowMapSizeFor,
+  shadowMapTypeFor,
+  toneMappingFor,
+  usesFxaa,
+  VSM_SHADOW_BLUR_SAMPLES,
+  VSM_SHADOW_RADIUS,
+  type GraphicsSettings,
+} from './GraphicsSettings';
+import { PostProcess } from './PostProcess';
 import { RenderBridge } from './RenderBridge';
 import { SkyDome, applyFog } from './environment';
 
@@ -19,11 +34,13 @@ export interface RenderHostOptions {
   canvas: HTMLCanvasElement | OffscreenCanvas;
   /** Device pixel ratio, passed in rather than read off a global. */
   pixelRatio?: number;
-  antialias?: boolean;
   clearColor?: number;
   /** False once scenes carry their own Light components. */
   defaultLighting?: boolean;
-  shadows?: boolean;
+  /** Quality settings. Everything the image depends on lives in here — see GraphicsSettings. */
+  graphics?: Partial<GraphicsSettings>;
+  /** Needed only so texture filtering can follow the graphics settings. */
+  assets?: AssetStore;
   /** The engine's FrameStats, so submit time lands in the same window as the frame time. */
   stats?: FrameStats;
 }
@@ -80,28 +97,40 @@ export class RenderHost {
   private environmentDirty = false;
   private unsubscribes: (() => void)[] = [];
 
+  /** Antialiasing, tone mapping and the sRGB encode when the direct path can't do them. */
+  private post = new PostProcess();
+  private graphics: GraphicsSettings = { ...DEFAULT_GRAPHICS };
+  private assets: AssetStore | null;
+
   constructor(engineScene: Scene, options: RenderHostOptions) {
     const {
       canvas,
       pixelRatio = 1,
-      antialias = true,
       clearColor = 0x2b2b2b,
       defaultLighting = true,
-      shadows = true,
+      graphics,
+      assets = null,
       stats = null,
     } = options;
 
     this.stats = stats;
     this.engineScene = engineScene;
     this.clearColor = clearColor;
+    this.assets = assets;
 
     this.basePixelRatio = pixelRatio;
 
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias, alpha: false });
+    /**
+     * `antialias: false` is not "no antialiasing".
+     *
+     * The context flag is immutable once the context exists, so building the setting on it
+     * would mean a page reload — and a dropped GL context — every time someone changes it.
+     * MSAA is done in an offscreen multisampled buffer instead (see PostProcess), which is
+     * where FXAA and tone mapping need the image to be anyway.
+     */
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false });
     this.renderer.setPixelRatio(pixelRatio);
     this.renderer.setClearColor(clearColor);
-    this.renderer.shadowMap.enabled = shadows;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     // Overlay and extra passes draw over the main pass, so clearing is done explicitly once
     // per frame in render() rather than implicitly by each render call.
     this.renderer.autoClear = false;
@@ -139,6 +168,93 @@ export class RenderHost {
       events.on('sceneReplaced', invalidate),
     );
     this.syncEnvironment();
+    this.applyGraphics(normalizeGraphics(graphics));
+  }
+
+  // --------------------------------------------------------------- graphics
+
+  getGraphics(): GraphicsSettings {
+    return { ...this.graphics };
+  }
+
+  /**
+   * Applies a whole settings object at once.
+   *
+   * One entry point rather than a setter per knob, because several of them interact: the shadow
+   * map size means nothing without a shadow filter, and the tone mapping curve decides whether
+   * the offscreen buffer needs to be half-float. A single apply keeps those decisions in one
+   * readable place instead of spread across setters that have to guess at each other's state.
+   *
+   * Cheap to call with an unchanged object — every branch below is guarded — so callers can
+   * simply push the current settings on any change rather than diffing first.
+   */
+  applyGraphics(settings: Partial<GraphicsSettings>): void {
+    const next = normalizeGraphics({ ...this.graphics, ...settings });
+    const previous = this.graphics;
+    this.graphics = next;
+
+    const shadowsEnabled = next.shadowQuality !== 'off';
+    const shadowType = shadowMapTypeFor(next.shadowFilter);
+    if (
+      this.renderer.shadowMap.enabled !== shadowsEnabled ||
+      this.renderer.shadowMap.type !== shadowType
+    ) {
+      this.renderer.shadowMap.enabled = shadowsEnabled;
+      this.renderer.shadowMap.type = shadowType;
+      // Shadow support is compiled into every lit material, so changing either of these means
+      // the programs currently on the GPU are for the wrong configuration.
+      this.invalidateMaterials();
+      this.renderer.shadowMap.needsUpdate = true;
+    }
+    this.applyDefaultShadowSettings();
+
+    // Tone mapping and exposure are program parameters Three tracks itself, so materials
+    // recompile on their own — unlike shadows above.
+    this.renderer.toneMapping = toneMappingFor(next.toneMapping);
+    this.renderer.toneMappingExposure = next.exposure;
+
+    this.post.configure({
+      samples: samplesFor(next.antialias),
+      fxaa: usesFxaa(next.antialias),
+      toneMapping: next.toneMapping,
+    });
+
+    if (next.resolutionScale !== this.resolutionScale) {
+      this.resolutionScale = next.resolutionScale;
+      this.applyPixelRatio();
+    }
+
+    // Clamped against the driver rather than the settings range: asking for 16× on a GPU that
+    // caps at 4 is silently ignored by WebGL, and the panel would go on claiming 16×.
+    this.assets?.setAnisotropy(
+      Math.min(next.anisotropy, this.renderer.capabilities.getMaxAnisotropy()),
+    );
+
+    // Samples from before a quality change describe a different renderer; keeping them would
+    // blend the two regimes together and make every lever look weaker than it is.
+    if (
+      previous.antialias !== next.antialias ||
+      previous.shadowQuality !== next.shadowQuality ||
+      previous.shadowFilter !== next.shadowFilter ||
+      previous.resolutionScale !== next.resolutionScale
+    ) {
+      this.stats?.reset();
+    }
+  }
+
+  /** True when the frame is routed through the offscreen antialiasing buffer. */
+  usesPostProcessing(): boolean {
+    return needsPostProcessing(this.graphics.antialias);
+  }
+
+  private invalidateMaterials(): void {
+    this.scene.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.material) return;
+      for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+        material.needsUpdate = true;
+      }
+    });
   }
 
   // ------------------------------------------------------------ scene camera
@@ -296,13 +412,9 @@ export class RenderHost {
    * quality reaches for this one first.
    */
   setResolutionScale(scale: number): void {
-    const next = Math.max(0.25, Math.min(1, scale));
-    if (next === this.resolutionScale) return;
-    this.resolutionScale = next;
-    this.applyPixelRatio();
-    // The old regime's samples describe a different renderer; keeping them would smear the
-    // before and after together and make the lever look weaker than it is.
-    this.stats?.reset();
+    // Routed through the settings rather than written directly, so the value the panel shows
+    // and the value the renderer is using cannot disagree.
+    this.applyGraphics({ resolutionScale: scale });
   }
 
   getResolutionScale(): number {
@@ -320,9 +432,10 @@ export class RenderHost {
   /**
    * Draws one frame.
    *
-   * The submit timer brackets every pass including the overlay, because from a budget point
-   * of view the editor's gizmo and grid cost real milliseconds, and excluding them would make
-   * the editor look faster than the runtime it is supposed to predict.
+   * The submit timer brackets every pass including the overlay and the resolve chain, because
+   * from a budget point of view the editor's gizmo and grid cost real milliseconds and so does
+   * antialiasing — excluding either would make the editor look faster than the runtime it is
+   * supposed to predict.
    */
   render(): void {
     this.renderer.info.reset();
@@ -333,10 +446,21 @@ export class RenderHost {
     const camera = this.activeCamera;
     this.sky?.update(camera);
 
-    this.renderer.clear();
+    // Restored before binding a target, so `setRenderTarget(null)` at the end of the resolve
+    // chain comes back to a full-size viewport rather than to whatever the last extra pass left.
     this.renderer.setViewport(0, 0, this.width, this.height);
+
+    const target = this.post.sceneRenderTarget(this.renderer);
+    this.renderer.setRenderTarget(target);
+    this.renderer.clear();
     this.renderer.render(this.scene, camera);
+    // Same depth buffer as the world pass, which is what lets the grid be occluded by geometry
+    // while the selection outline draws over it.
     if (this.overlay) this.renderer.render(this.overlay, camera);
+
+    // Resolves multisampling, tone maps and encodes, and leaves the canvas bound — so extra
+    // passes below draw over the finished image whether or not antialiasing is on.
+    this.post.present(this.renderer);
     this.onAfterRender?.(this);
     // Extra passes are free to move the viewport; restore it so the next frame starts clean.
     this.renderer.setViewport(0, 0, this.width, this.height);
@@ -350,7 +474,8 @@ export class RenderHost {
    * Placeholder rig until scenes carry Light components.
    *
    * The shadow frustum is deliberately small. A single shadow camera stretched over a large
-   * world has no usable resolution anywhere; cascades arrive with the streaming work.
+   * world has no usable resolution anywhere; cascades arrive with the streaming work. Its size
+   * and resolution come from the graphics settings, applied by `applyDefaultShadowSettings`.
    */
   private buildDefaultLighting(): void {
     // Ambient is not part of the rig: it is owned by the Environment component (or its
@@ -360,20 +485,53 @@ export class RenderHost {
     const key = new THREE.DirectionalLight(0xffffff, 1.6);
     key.position.set(12, 20, 8);
     key.castShadow = true;
-    key.shadow.mapSize.set(2048, 2048);
-    const extent = 30;
-    key.shadow.camera.left = -extent;
-    key.shadow.camera.right = extent;
-    key.shadow.camera.top = extent;
-    key.shadow.camera.bottom = -extent;
-    key.shadow.camera.far = 120;
     key.shadow.bias = -0.0005;
+    // Offsets the shadow lookup along the surface normal, which is what removes the acne on
+    // curved and steeply-lit surfaces that depth bias alone can only trade for peter-panning.
+    key.shadow.normalBias = 0.02;
     this.defaultLights.add(key);
     this.keyLight = key;
 
     const fill = new THREE.DirectionalLight(0x8fb3ff, 0.3);
     fill.position.set(-10, 8, -12);
     this.defaultLights.add(fill);
+  }
+
+  /** Pushes the shadow settings onto the placeholder sun. Scene lights carry their own. */
+  private applyDefaultShadowSettings(): void {
+    const key = this.keyLight;
+    if (!key) return;
+
+    const enabled = this.graphics.shadowQuality !== 'off';
+    key.castShadow = enabled;
+    if (!enabled) return;
+
+    const size = shadowMapSizeFor(this.graphics.shadowQuality);
+    if (key.shadow.mapSize.width !== size) {
+      key.shadow.mapSize.set(size, size);
+      // Three allocates a shadow map once; dropping it is what forces the new size.
+      key.shadow.map?.dispose();
+      key.shadow.map = null;
+    }
+
+    // Only VSM has a blur to configure; for the other filters the radius is inert, so it is set
+    // to zero rather than left at a stale value from the last time soft shadows were on.
+    const soft = this.graphics.shadowFilter === 'soft';
+    key.shadow.radius = soft ? VSM_SHADOW_RADIUS : 0;
+    key.shadow.blurSamples = soft ? VSM_SHADOW_BLUR_SAMPLES : 0;
+
+    const extent = this.graphics.shadowDistance;
+    const camera = key.shadow.camera;
+    if (camera.right !== extent) {
+      camera.left = -extent;
+      camera.right = extent;
+      camera.top = extent;
+      camera.bottom = -extent;
+      // Far has to reach the ground from wherever the rig's sun sits, and the shadow distance
+      // is the only hint of world scale available here.
+      camera.far = Math.max(120, extent * 6);
+      camera.updateProjectionMatrix();
+    }
   }
 
   /**
@@ -444,30 +602,6 @@ export class RenderHost {
     });
   }
 
-  /** Shadow quality tier, driven by adaptive quality in Stage 2. */
-  setShadowsEnabled(enabled: boolean): void {
-    if (this.renderer.shadowMap.enabled === enabled) return;
-    this.renderer.shadowMap.enabled = enabled;
-    this.stats?.reset();
-    if (this.keyLight) this.keyLight.castShadow = enabled;
-    // Materials compiled against the old shadow state have to be rebuilt.
-    this.scene.traverse((object) => {
-      const mesh = object as THREE.Mesh;
-      if (!mesh.material) return;
-      for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
-        material.needsUpdate = true;
-      }
-    });
-  }
-
-  setShadowMapSize(size: number): void {
-    if (!this.keyLight) return;
-    this.keyLight.shadow.mapSize.set(size, size);
-    // Dropping the existing map forces Three to allocate one at the new size.
-    this.keyLight.shadow.map?.dispose();
-    this.keyLight.shadow.map = null;
-  }
-
   dispose(): void {
     for (const unsubscribe of this.unsubscribes) unsubscribe();
     this.unsubscribes = [];
@@ -475,6 +609,7 @@ export class RenderHost {
     this.wireframeMaterial?.dispose();
     this.wireframeMaterial = null;
     this.disposeSky();
+    this.post.dispose();
     this.bridge.dispose();
     this.renderer.dispose();
     this.onAfterRender = null;

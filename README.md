@@ -19,8 +19,9 @@ call — because a 25 km world cannot afford them as anything else.
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the design and §9 for what the 25 km × 25 km
 open-world target forces us to decide up front, [docs/SCRIPTING.md](./docs/SCRIPTING.md) for
 the script API, [docs/AI.md](./docs/AI.md) for the tools and MCP,
-[docs/HARDWARE.md](./docs/HARDWARE.md) for external hardware, and
-[docs/SCATTER.md](./docs/SCATTER.md) for mass instancing.
+[docs/HARDWARE.md](./docs/HARDWARE.md) for external hardware,
+[docs/SCATTER.md](./docs/SCATTER.md) for mass instancing, and
+[docs/GRAPHICS.md](./docs/GRAPHICS.md) for the render pipeline and quality settings.
 
 ## Running it
 
@@ -167,6 +168,35 @@ Both render nothing on their own, so the viewport draws a handle for each one; t
 what you click to select it. They disappear in Play mode along with the grid, the gizmo and the
 selection outline. The built-in lighting rig stays out of the way the moment a scene adds a Light
 of its own.
+
+## Graphics settings
+
+Press **F7**, or the *Graphics* button in the toolbar. Antialiasing, shadow quality and filter,
+tone mapping and exposure, render scale, pixel-ratio cap and anisotropic filtering — every one of
+them changeable while the scene is running, with no reload and no lost GL context.
+
+| Setting | Options | What it costs |
+| --- | --- | --- |
+| **Antialiasing** | Off, FXAA, MSAA 2× / 4× / 8× | FXAA is one fullscreen pass; MSAA is memory bandwidth per sample |
+| **Shadows** | Off, 512 → 4096, with Hard / PCF / Soft (VSM) filtering | Map size is VRAM; the filter is fill |
+| **Shadow distance** | 5–200 m half-extent | Free — and halving it sharpens shadows as much as doubling the map |
+| **Tone mapping** | None, Linear, Reinhard, Cineon, Neutral, ACES | Effectively free |
+| **Render scale** | 25–100% | Quadratic. The strongest lever in a browser |
+| **Pixel ratio cap** | ≤ 1× – 3× | Quadratic, and the first thing to reach for on a phone |
+| **Anisotropy** | Off – 16× | Cheap, and it is what stops a floor turning to mush in the distance |
+
+These are stored per browser, not per scene. How sharp your shadows are is a property of the
+machine you are sitting at; what colour the sky is belongs to the scene, and lives in the
+Environment component. Opening a colleague's scene should not try to run at their 8× MSAA.
+
+Antialiasing being changeable at all is the part worth explaining. The obvious way to get MSAA in
+WebGL is the context's `antialias` flag, which is fixed the moment the context is created — a
+settings menu built on it can only say *restart to apply*. So the frame is drawn into an offscreen
+multisampled buffer instead and resolved to the canvas, which makes the sample count an ordinary
+runtime value and hands us the intermediate image FXAA and tone mapping need anyway.
+
+See [docs/GRAPHICS.md](./docs/GRAPHICS.md) for the pipeline and the colour-space rules that go
+with it.
 
 ## Scatter
 
@@ -384,6 +414,7 @@ git checkout release/v0.5.0   # Scripting, NPCs and scene-owned rendering
 git checkout release/v0.6.0   # 2D shapes, extrude/lathe, tessellation
 git checkout release/v0.7.0   # Assistant tool layer and MCP server
 git checkout release/v0.7.1   # External hardware over Web Serial and WebSocket
+git checkout release/v0.7.2   # Scatter brush and instancing
 ```
 
 v0.7.0 added the assistant tool layer and the MCP server. It needed **no schema change and no
@@ -394,11 +425,10 @@ away. Scenes are unaffected in both directions.
 v0.7.1 added external hardware. Also no schema change: two new components, which round-trip like
 any other, and a bus beside `input` on the Engine.
 
-This version (v0.7.2) connects `ScatterLayer` and fixes six bugs. The component had been in the
-registry since Phase 1 with nothing reading it — the format was fixed early on purpose, and the
-brush that fills it is what v0.7.2 adds. Still **no schema change**: the new brush settings are
-additive fields on a component that already round-tripped, and the packed instance buffers are
-strings.
+v0.7.2 connected `ScatterLayer` and fixed six bugs. The component had been in the registry since
+Phase 1 with nothing reading it — the format was fixed early on purpose, and the brush that fills
+it is what v0.7.2 added. Still **no schema change**: the new brush settings are additive fields on
+a component that already round-tripped, and the packed instance buffers are strings.
 
 The bugs, all found by reading rather than by a failing test, and each now covered by one:
 
@@ -419,6 +449,42 @@ The bugs, all found by reading rather than by a failing test, and each now cover
 - **Save, Load and Import ran during Play mode.** Saving autosaved the running simulation over
   the authored scene; loading was discarded outright the moment you pressed Stop, because Stop
   restores the snapshot taken before it. Those four buttons now say why they are off.
+
+This version (v0.7.3) reworks the render pipeline and adds the graphics settings above. **No
+schema change** again: the settings are per-browser and never touch a scene file, and the one new
+component field — a light's normal bias — is optional and defaulted by its reader, so scenes saved
+before it round-trip unchanged.
+
+The rework is one structural change and four fixes. The structural change is that the frame is no
+longer always drawn straight to the canvas: when antialiasing is on it goes through an offscreen
+buffer that is resolved, tone mapped and encoded in a final pass. That is what makes MSAA a
+runtime setting rather than a reload, and it is where tone mapping had to move to — Three applies
+`toneMapping` and the sRGB encode only when it is drawing to the canvas, so the moment a render
+target is involved the last pass owns both.
+
+The fixes:
+
+- **The sky and the ground grid were rendered in the wrong colour space.** Both are custom
+  shaders, and `Color.set('#3f6fb5')` converts an authored sRGB value into the linear working
+  space — so writing it out untouched handed the framebuffer linear numbers the display then read
+  as sRGB. Everything drawn by a built-in material was correct; those two came out visibly dark
+  and desaturated, and the further a colour was from grey the worse it looked. Three's own
+  materials end with the tone-mapping and colour-space chunks; a `ShaderMaterial` has to ask.
+- **The renderer asked for a deprecated shadow filter.** Three removed `PCFSoftShadowMap`;
+  `WebGLShadowMap` now warns on the first shadow render and rewrites the type to plain PCF. So
+  shadows were never the filter the code requested, and the console said so every time. Soft
+  shadows are variance shadow mapping now, which is a filter that still exists.
+- **Hiding a scatter layer did not survive a shading pass.** Exactly the v0.7.2 bug above, in the
+  one place that had been missed: an `InstancedMesh` is a mesh as far as the pass is concerned,
+  but the batches never recorded `entityVisible`. Hiding a forest worked until you left wireframe
+  mode, at which point ten thousand trees came back with no way to hide them again.
+- **Shadow acne had only one dial.** Depth bias alone can only trade acne for peter-panning — push
+  it far enough to clean up a sphere and contact shadows detach from what casts them. Lights now
+  carry a normal bias too, which scales the correction with how obliquely the light hits.
+
+The resolution and shadow levers that used to live in the perf HUD moved into the settings the
+Graphics panel writes. They had been a second source of truth for values the renderer also held,
+and whichever was touched last won.
 
 CI (`.github/workflows/ci.yml`) runs typecheck, tests and build on every push and pull
 request. It needs GitHub Actions enabled on the repository to do anything.

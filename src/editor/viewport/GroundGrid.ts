@@ -1,7 +1,16 @@
 import * as THREE from 'three';
 
+/**
+ * Written in the GLSL 1 dialect even though everything compiles as `#version 300 es`.
+ *
+ * Three rewrites `varying` and `texture2D` for non-raw ShaderMaterials and, crucially, declares
+ * the fragment output as `gl_FragColor` itself — which is what its colour-space and tone-mapping
+ * chunks are written against. Authoring this as GLSL 3 meant declaring a private `out` that
+ * those chunks could not see, and the only way to bridge that is a `#define` of a `gl_`-prefixed
+ * name, which the GLSL preprocessor spec reserves. Derivatives (`fwidth`) are core either way.
+ */
 const VERTEX = /* glsl */ `
-out vec3 vWorldPosition;
+varying vec3 vWorldPosition;
 
 void main() {
   vec4 worldPosition = modelMatrix * vec4(position, 1.0);
@@ -11,10 +20,7 @@ void main() {
 `;
 
 const FRAGMENT = /* glsl */ `
-precision highp float;
-
-in vec3 vWorldPosition;
-out vec4 fragColor;
+varying vec3 vWorldPosition;
 
 uniform vec3 uCameraPosition;
 uniform float uCellSize;
@@ -70,7 +76,12 @@ void main() {
 
   alpha *= fade;
   if (alpha <= 0.002) discard;
-  fragColor = vec4(color, alpha);
+  gl_FragColor = vec4(color, alpha);
+  // Same reason as the sky dome: the uniforms are linear, the framebuffer is not. Without the
+  // encode the grid drew far darker than the colour it was authored with, and the axis lines
+  // in particular lost most of their tint.
+  #include <tonemapping_fragment>
+  #include <colorspace_fragment>
 }
 `;
 
@@ -109,7 +120,6 @@ export class GroundGrid {
     } = options;
 
     this.material = new THREE.ShaderMaterial({
-      glslVersion: THREE.GLSL3,
       vertexShader: VERTEX,
       fragmentShader: FRAGMENT,
       transparent: true,
