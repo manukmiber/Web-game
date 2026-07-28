@@ -2,7 +2,8 @@
 
 Status: **confirmed** (see §8). Phases 1 and 2 shipped; Phase 3 in progress — the play seam,
 scripting, agents and scene-owned rendering are in (§10), the assistant tool layer and MCP
-server are in (§11), physics and streaming are not.
+server are in (§11), physics (§15), the ECS layer (§16) and audio and save games (§18) are in;
+streaming is not.
 
 Two constraints drive every decision below.
 
@@ -379,8 +380,9 @@ gizmo drag is one entity and wants its event immediately.
   terrain to project onto. Still open: texture upload, texture painting, the asset browser.
 - **Phase 3** — Play/runtime mode (§6), `Script` component, Cloudflare persistence adapter,
   and the world-scale systems from §9: streaming, LOD, camera-relative rendering, workers.
-  *Shipped so far:* the play seam itself, scripting, NPC agents, a character controller, and
-  scene-owned rendering (§10). Still open: physics and collision, streaming, LOD, workers.
+  *Shipped so far:* the play seam itself, scripting, NPC agents, a character controller,
+  scene-owned rendering (§10), physics and collision (§15), the ECS layer (§16), and audio and
+  save games (§18). Still open: the Cloudflare persistence adapter, streaming, LOD, workers.
 
 ---
 
@@ -1361,4 +1363,85 @@ because the cache is the only thing that knows when the last reference went away
 
 One more consequence: textures decode asynchronously and materials are cached, so
 `AssetStore.textureLoaded` now re-resolves the slots of any live material naming that asset.
+
+---
+
+## 18. Audio and save games
+
+### 18.1 The `AudioContext` is built lazily, behind an injectable seam
+
+`engine/audio/AudioEngine` never constructs a real `AudioContext` in its own constructor. Two
+reasons, and only one of them is about testing. A browser refuses to start a context until a user
+gesture has reached the page — building one at `new Engine()` would hand back a context stuck in
+`suspended` for no benefit, so `AudioEngine` builds it on first use instead and `resume()` exists
+for the host to call from a click handler. And `AudioContext` does not exist in Vitest's Node
+environment at all: constructing it eagerly would make importing the module fail every test that
+touches an `Engine`, not only the ones about sound.
+
+The context comes from a `contextFactory` passed to the constructor, the same dependency-injection
+seam `HardwareTransport` and `ScenePersistence` already use elsewhere in the engine — production
+takes the default (`() => new AudioContext()`), and `AudioEngine.test.ts`/`AudioSystem.test.ts`
+hand in a fake that implements only the handful of Web Audio calls this file makes, and record on
+it what would otherwise require an ear.
+
+Failure is absorbed at the same seam. If construction throws — no Web Audio support, a
+locked-down embed — `AudioEngine` remembers that once and every later call becomes a no-op:
+`play` still returns a handle, it is simply inert. The rest of the engine, and every script using
+`audio.play(...)`, does not need a "does this browser support sound" branch.
+
+### 18.2 Three buses, one master, no bus for master
+
+`music`, `sfx` and `ambient` each get a `GainNode` feeding into a single master `GainNode` ahead
+of `destination`. Master is a separate pair of knobs (`setMasterVolume`/`setMuted`) rather than a
+fourth bus, because "turn the music down" and "mute everything" are different gestures a player
+reaches for independently, and a mute implemented as one more bus would have to remember to
+re-apply itself to a bus fader touched while muted.
+
+### 18.3 Spatial audio reads the same world transform the renderer does
+
+A sound started with a `position` gets a `PannerNode`; the Web Audio listener is moved every
+frame by `AudioSystem` from the primary camera's *world* transform (`physics/PhysicsSystem`'s
+`worldTransformOf`, the same helper the character controller uses to resolve a parented rig) —
+not the local transform, which would put the listener in the wrong place for any camera that is
+not a scene root. `AudioSystem` is `present`-staged (§16.2), the one point in the frame reserved
+for things that only read: by the time it runs, the character has moved and the agents have
+reacted, so a sound started this tick and a listener that just turned a corner both read
+correctly.
+
+### 18.4 A component for ambience, a script API for events
+
+`AudioSource` is for the sound that belongs to an object for as long as the object exists — a
+torch crackling, a machine's idle hum — driven by `autoplay` and stopped automatically when the
+component is disabled, removed, or the entity is deleted. It is deliberately not a general
+trigger: "play on death", "play on a footstep every half-second" go through `audio.play(...)` /
+`entity.playSound(...)` in the script API instead, the same split `HardwareOutput` (bindings for
+the steady case) and `hardware.write` (the script API for everything else) already draw.
+
+`clip` is a URL, not an asset id — there is no `AssetStore` entry for audio the way there is for
+textures, because building a second asset pipeline for one field is a bigger change than this
+component earns yet. It plays from wherever a texture URL already can (a pasted data URL, a path
+the host serves); an audio asset browser is future work, the same gap the README's Materials
+section already admits for textures.
+
+### 18.5 A save game is not the Play-mode snapshot, even though both call `scene.load`
+
+§6 already snapshots the scene on entering Play and restores it on Stop, so it is tempting to
+reach for the same machinery for "save the game". They are not the same operation. The Play
+snapshot always returns to the *authored* scene and always accompanies a mode flip; a save game
+freezes whatever was true the moment `captureSaveGame` ran and is loaded back in mid-session, in
+whichever mode the engine already happens to be in — "load, then press Play" from a title screen
+is two separate actions, not one.
+
+What a save actually needs beyond the scene is exactly what `GameState` deliberately keeps outside
+it (§6's "what restored has to cover"): health, factions, script variables. `GameState.toJSON` /
+`fromJSON` serialise that half; `gameplay/SaveGame.captureSaveGame` pairs it with `snapshotScene`
+(exported from `loop/Engine` for exactly this reuse) to make one JSON-safe record.
+
+`fromJSON` fires a `restored` event, not `reset`. That is the one place a save load and a Stop
+must *not* behave alike: `reset` tells every listener — an NPC's wander state, a script's own
+closures — to drop what it was doing, because Stop means the simulation is over. A save load
+means the opposite: positions and health jump to the saved moment, but *behaviour* keeps running,
+the same way a game console's "load" does not restart every enemy's AI from scratch. A listener
+that cannot tell the difference would make a loaded save open with every zombie standing still
+for a frame while it re-decides what to do.
 Without it a material built while its image was in flight stayed untextured for the session.

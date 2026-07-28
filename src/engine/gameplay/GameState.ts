@@ -15,6 +15,15 @@ export interface GameStateEvents {
   died: { id: EntityId; sourceId: EntityId | null };
   /** Fired when the whole registry is dropped — entering or leaving Play mode. */
   reset: Record<string, never>;
+  /** Fired after `fromJSON` repopulates the registry — a save game was loaded. */
+  restored: Record<string, never>;
+}
+
+/** What `toJSON`/`fromJSON` carry — the whole of `GameState`, in a plain, JSON-safe shape. */
+export interface GameStateSnapshot {
+  actors: ActorState[];
+  /** `Map` has no JSON form of its own; entries round-trip through `Object.fromEntries`-shaped pairs. */
+  vars: [string, unknown][];
 }
 
 /**
@@ -106,5 +115,33 @@ export class GameState {
     this.actors.clear();
     this.vars.clear();
     this.events.emit('reset', {});
+  }
+
+  // -------------------------------------------------------------- save games
+
+  /**
+   * A plain snapshot of every actor and every script variable — the half of a play session
+   * `snapshotScene` does not cover. `gameplay/SaveGame` pairs this with a scene snapshot to make
+   * a save file; nothing in here knows that is what it is for.
+   */
+  toJSON(): GameStateSnapshot {
+    return {
+      actors: this.list().map((actor) => ({ ...actor })),
+      vars: [...this.vars.entries()],
+    };
+  }
+
+  /**
+   * Replaces the registry wholesale and fires `restored` rather than `reset` — a save load is
+   * not Play mode stopping, and a listener that clears its own state on `reset` (an NPC's
+   * runtime, a script's `onMessage` mailbox) must not do that here, or a loaded save would come
+   * back with agents that forgot who they were chasing.
+   */
+  fromJSON(data: GameStateSnapshot): void {
+    this.actors.clear();
+    this.vars.clear();
+    for (const actor of data.actors) this.actors.set(actor.id, { ...actor });
+    for (const [key, value] of data.vars) this.vars.set(key, value);
+    this.events.emit('restored', {});
   }
 }

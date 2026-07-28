@@ -2,6 +2,7 @@ import type { ScriptPropValue } from '../components/Script';
 import type { InputState } from '../input/InputState';
 import type {
   EntityHandle,
+  ScriptAudio,
   ScriptClock,
   ScriptConsole,
   ScriptGame,
@@ -21,6 +22,7 @@ export interface ScriptContext {
   game: ScriptGame;
   physics: ScriptPhysics;
   hardware: ScriptHardware;
+  audio: ScriptAudio;
   mathf: ScriptMath;
   console: ScriptConsole;
 }
@@ -84,6 +86,7 @@ const CONTEXT_KEYS = [
   'game',
   'physics',
   'hardware',
+  'audio',
   'mathf',
   'console',
 ] as const;

@@ -13,6 +13,7 @@ function context(props: Record<string, ScriptPropValue> = {}): ScriptContext {
     game: {} as never,
     physics: {} as never,
     hardware: {} as never,
+    audio: {} as never,
     mathf: {} as never,
     console: { log() {}, warn() {}, error() {} },
   };

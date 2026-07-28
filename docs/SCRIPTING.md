@@ -232,6 +232,36 @@ Most rigs need no script at all: a `HardwareInput` component maps a button onto 
 potentiometer onto a named axis, and the game reads those exactly as it reads a keyboard. This
 is for what bindings cannot express. Full reference in [HARDWARE.md](./HARDWARE.md).
 
+### `audio` — Web Audio, and `entity.playSound`
+
+Safe with nothing loaded: a clip that has not finished decoding yet, or one that 404s, just plays
+no sound rather than throwing.
+
+```js
+function onCollisionEnter(collision) {
+  entity.playSound('sfx/impact.mp3', { volume: 0.6 });
+}
+```
+
+| Member | Notes |
+| --- | --- |
+| `play(clip, options?)` | One-shot or looping. `options.position` makes it spatial |
+| `music(clip, options?)` | Replaces the music bus, crossfading over `options.fadeSeconds` |
+| `stopMusic(fadeSeconds?)` | |
+| `stopAll()` | Every playing sound — a scene transition, a game-over screen |
+| `busVolume(bus)` / `setBusVolume(bus, volume)` | `'music'`, `'sfx'` or `'ambient'` |
+| `masterVolume` | Get/settable, above all three buses |
+| `muted` | Get/settable, and overrides `masterVolume` without forgetting it |
+
+`entity.playSound(clip, options?)` is the common case: a one-shot at the entity's current
+position, on the `sfx` bus by default. `AudioSource` is the component for the object-owned case —
+ambience that starts with Play and stops with the entity — described in the README's Play mode
+section; this API is for events, `AudioSource` is for things that just *are* playing.
+
+Every voice, whether started by a script or by an `AudioSource`, is silenced the moment Play
+stops — sounds are session state exactly the way `game` is (the note above about restores applies
+here too).
+
 ### `console`
 
 `console.log`, `console.warn`, `console.error`. Output goes to the editor's Console panel, not to

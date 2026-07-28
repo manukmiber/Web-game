@@ -1,6 +1,7 @@
 import { Emitter } from '../core/Emitter';
 import { Scene } from '../scene/Scene';
 import { AssetStore } from '../assets/AssetStore';
+import { AudioEngine } from '../audio/AudioEngine';
 import { EcsWorld } from '../ecs/EcsWorld';
 import { scheduleSystems, type SystemStage } from '../ecs/Schedule';
 import { GameState } from '../gameplay/GameState';
@@ -17,7 +18,12 @@ export type EngineMode = 'edit' | 'play';
 // Re-exported so a system can declare its stage without reaching into the ECS layer for a type.
 export type { SystemStage };
 
-interface SceneSnapshot {
+/**
+ * Exported for `gameplay/SaveGame`, which needs exactly the same "restore this scene exactly"
+ * guarantee for a player's save file that Play mode needs for the Stop button — see the note on
+ * `snapshotScene`.
+ */
+export interface SceneSnapshot {
   name: string;
   world: WorldSettings;
   entities: Entity[];
@@ -34,7 +40,7 @@ interface SceneSnapshot {
  * restored exactly as it was" has to mean exactly. And a 25 km world should not stringify
  * itself every time someone taps Play.
  */
-function snapshotScene(scene: Scene): SceneSnapshot {
+export function snapshotScene(scene: Scene): SceneSnapshot {
   return {
     name: scene.name,
     world: { ...scene.world },
@@ -124,6 +130,13 @@ export class Engine {
    */
   readonly physics = new PhysicsWorld();
   /**
+   * Web Audio, behind the same seam `physics` and `hardware` use: several things need it — the
+   * `AudioSystem`, scripts through `ScriptAudio` — and none of them owns it. Sounds are session
+   * state exactly the way a zombie's health is (§6's "what restored has to cover"), so every
+   * voice is stopped in `setMode` along with everything else a play session accumulates.
+   */
+  readonly audio: AudioEngine;
+  /**
    * The ECS view of the scene: the component index and the queries built on it.
    *
    * Owned here for the same reason `physics` is — several systems need it and none of them owns
@@ -144,9 +157,10 @@ export class Engine {
   private playSnapshot: SceneSnapshot | null = null;
   private unsubscribes: (() => void)[] = [];
 
-  constructor(scene = new Scene(), assets = new AssetStore()) {
+  constructor(scene = new Scene(), assets = new AssetStore(), audio = new AudioEngine()) {
     this.scene = scene;
     this.assets = assets;
+    this.audio = audio;
     this.ecs = new EcsWorld(scene);
     bindAssetStore(assets);
     /**
@@ -280,6 +294,10 @@ export class Engine {
     // Buffered lines and edges go; the connections stay. Before the systems reset, so a
     // system zeroing its outputs writes to a device that has forgotten what it last sent.
     this.hardware.reset();
+    // Every voice — autoplay ambience, a script's one-shot, the music track — dies here, before
+    // `AudioSystem.reset` forgets which entities it was tracking. Leaving a sound playing across
+    // Stop would be the audio equivalent of the zombie-at-12-health bug `GameState` guards against.
+    this.audio.stopAll();
     for (const system of this.systems) system.reset?.(this);
     this.events.emit('modeChanged', { mode });
   }
@@ -294,6 +312,7 @@ export class Engine {
     this.ecs.dispose();
     this.assets.disposeAll();
     this.hardware.dispose();
+    this.audio.dispose();
     this.events.clear();
   }
 }
