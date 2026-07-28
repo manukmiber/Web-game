@@ -28,6 +28,8 @@ export interface BusEvents {
   deviceRemoved: { deviceId: string };
   status: { deviceId: string; status: TransportStatus; detail?: string };
   log: { deviceId: string; level: 'info' | 'warn' | 'error'; text: string };
+  /** Every line either direction, bubbled up so a serial monitor can subscribe once for every device. */
+  line: { deviceId: string; direction: 'in' | 'out'; text: string };
 }
 
 /**
@@ -62,6 +64,9 @@ export class HardwareBus {
       ),
       device.events.on('log', ({ level, text }) =>
         this.events.emit('log', { deviceId: device.id, level, text }),
+      ),
+      device.events.on('line', ({ direction, text }) =>
+        this.events.emit('line', { deviceId: device.id, direction, text }),
       ),
     ]);
     this.events.emit('deviceAdded', { device });

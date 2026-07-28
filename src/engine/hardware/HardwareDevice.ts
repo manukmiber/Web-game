@@ -26,6 +26,13 @@ export interface DeviceEvents {
   /** Log and error lines from the board, and the device's own connection notes. */
   log: { level: 'info' | 'warn' | 'error'; text: string };
   hello: { name: string; protocol: number; channels: string[] };
+  /**
+   * Every line, in either direction, before it is classified — what a serial monitor shows.
+   * `log` only fires for the lines `apply` recognises as worth a console note (hello, `#`, `!`,
+   * an unparsed line); a stream of `A0=512` never reaches it, which is the right call for the
+   * console and the wrong one for "show me exactly what the wire is carrying".
+   */
+  line: { direction: 'in' | 'out'; text: string };
 }
 
 export interface DeviceOptions {
@@ -169,16 +176,20 @@ export class HardwareDevice {
     if (!this.connected) return false;
     if (!force && this.lastWritten.get(channel) === value) return false;
     this.lastWritten.set(channel, value);
-    this.transport.send(encodeCommand(channel, value));
+    const line = encodeCommand(channel, value);
+    this.transport.send(line);
     this.stats.linesOut += 1;
+    this.events.emit('line', { direction: 'out', text: line });
     return true;
   }
 
   /** Raw line out, for firmware commands this protocol does not model. Newline added if absent. */
   send(line: string): void {
     if (!this.connected) return;
-    this.transport.send(line.endsWith('\n') ? line : `${line}\n`);
+    const text = line.endsWith('\n') ? line : `${line}\n`;
+    this.transport.send(text);
     this.stats.linesOut += 1;
+    this.events.emit('line', { direction: 'out', text });
   }
 
   // --------------------------------------------------------------- lifecycle
@@ -191,6 +202,7 @@ export class HardwareDevice {
 
     for (const line of lines) {
       this.stats.linesIn += 1;
+      this.events.emit('line', { direction: 'in', text: line });
       const message = parseLine(line);
       if (message) this.apply(message);
     }

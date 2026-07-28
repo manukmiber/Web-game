@@ -26,13 +26,20 @@ Then swap the simulated rig for a real one: flash `firmware/WebGameLink/WebGameL
 | --- | --- | --- |
 | **USB Serial** | An Arduino on the end of a cable | Chrome or Edge (Web Serial), a user click |
 | **WebSocket** | ESP32, Pi Pico W, or a bridge process next to a USB board | A URL |
-| **Simulated** | Building and testing bindings with no hardware at all | Nothing |
+| **Bluetooth** | A board with no cable at all — an nRF52, an ESP32 running a BLE sketch | Chrome/Edge (Web Bluetooth), a user click |
+| **Simulated** | Building and testing bindings with no hardware at all | Nothing, and a choice of virtual board — see below |
 
-Web Serial only exists in Chromium browsers, and only from a user gesture — the port chooser is
-the browser's own, and a page cannot enumerate ports or open one silently. That is a privacy
-decision worth respecting rather than routing around: on Firefox and Safari, run something next
-to the board that relays its serial port to a WebSocket and connect to that. The contract is
-just "the same lines, both directions".
+Web Serial and Web Bluetooth only exist in Chromium browsers, and only from a user gesture — the
+device chooser is the browser's own, and a page cannot enumerate devices or open one silently.
+That is a privacy decision worth respecting rather than routing around: on Firefox and Safari,
+run something next to the board that relays its serial port to a WebSocket and connect to that.
+The contract is just "the same lines, both directions".
+
+**Bluetooth speaks the Nordic UART Service (NUS)** — not an official Bluetooth SIG profile, but
+the de facto one: Arduino's own BLE examples, the Adafruit Bluefruit library and Nordic's SDK all
+use it, so "a board that does BLE serial" and "a board that does NUS" are close enough to the
+same board. The **+ Bluetooth** button opens the same chooser Web Serial does, filtered to
+devices advertising the NUS service.
 
 Opening a serial port toggles DTR, which **resets most Arduinos**. That is why auto-connect is
 off by default: a page that reopens the port on every hot reload resets the board every time you
@@ -221,6 +228,44 @@ it is what makes hardware behaviour reproducible enough to test.
 The bus is pumped in edit mode too, which is why channel values move in the panel without
 pressing Play — calibrating a pot by watching a number is an editing task.
 
+## Virtual boards
+
+**+ Simulated** does not add one fixed fake board — the **Board** dropdown beside it picks a
+*profile*: which channels the virtual board offers and how wide its ADC is.
+
+| Profile | Channels | ADC |
+| --- | --- | --- |
+| Uno (10-bit) | `A0`, `A1`, `D2`, `D3` | 0–1023 |
+| ESP32 (12-bit) | `A0`–`A2`, `D2`–`D4` | 0–4095 |
+| Buttons only | `D2`–`D5` | — |
+
+The point is not variety for its own sake: a binding written against a 12-bit ADC (`A0 ->
+axis:turn max=4095`) cannot be built or tested against the 10-bit default, and a board with no
+analog pins wired up is a real and common case worth trying without inventing sliders that do
+nothing. Every profile idles its analog channels at the ADC's midpoint for the same reason the
+original fake board did — see the note on `simulatedRest` — and every profile's outputs show up
+in the same lamp row regardless of which one is picked.
+
+## Serial monitor & graph
+
+The **▤** button on a device card opens a raw line log and a live plot, the same two views the
+Arduino IDE's serial monitor and a bench oscilloscope give you, for the same reason: a jittery
+potentiometer and one stuck at zero read identically as a number scrolling past and look nothing
+alike as a trace.
+
+The log shows **every** line, in both directions — `←` for what the board sent, `→` for what the
+editor wrote — not just the `#`/`!`/`hello` lines the console already surfaces. It is what
+`docs/HARDWARE.md`'s own advice to "read [the wire] back to find out why a rig went quiet" needs
+to actually work when the board is streaming `A0=512` and nothing else. Up to 300 lines are kept
+per device; **✕** clears it.
+
+The graph plots the raw value of every channel the device has reported, scaled by the channel's
+assumed range (the same one the meter bars use), while its monitor is open — closing it stops
+sampling that device, so a rig sitting unwatched in the corner of the panel costs nothing. The
+x-axis is samples at the panel's own ~15 Hz refresh, not a precise time span; good enough to see
+whether a signal is centred and how noisy it is, which is what calibrating a pot is actually
+asking.
+
 ## Devices are not scene data
 
 Nothing about a connection is serialized. Which board is plugged in is a property of the desk,
@@ -234,8 +279,8 @@ remembers.
 
 ## What this does not do
 
-- **No HID or Bluetooth.** Web Serial and WebSocket cover a wired board and a networked one; a
-  gamepad is a different API with a different shape and is not pretended to be a serial device.
+- **No HID.** A gamepad is a different API with a different shape and is not pretended to be a
+  serial device.
 - **No auto-reconnect.** A board being flashed drops the link, and a transport that redials
   every second turns a flash cycle into a console full of failures. The panel has a button.
 - **No firmware upload.** Flash from the Arduino IDE, or `arduino-cli`.
