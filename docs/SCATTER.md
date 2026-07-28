@@ -60,7 +60,7 @@ readout is not decoration: one keystroke in the density field is the difference 
 hundred instances and two hundred thousand, and finding out afterwards is expensive.
 
 **Shadows are off by default.** Casting shadows from a hundred thousand instances is the single
-fastest way to turn a forest into a slideshow. Turn it on deliberately, with the perf HUD (`F8`)
+fastest way to turn a forest into a slideshow. Turn it on deliberately, with the Performance panel (`F8`)
 open.
 
 ## Generation is deterministic

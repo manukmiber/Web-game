@@ -76,7 +76,8 @@ the tests use and what a headless runtime would use. Same tools, no undo, no edi
 
 ## The Assistant panel
 
-Press **F2**, or the button at the bottom right of the viewport.
+Press **F2**, or the **✦ Assistant** button in the status bar. It is a tab in the right dock,
+sharing that dock with the Inspector.
 
 It needs an Anthropic API key, entered in the panel (⚙) and kept in `localStorage`. There is no
 backend to proxy through — the editor is a static site — so the key is the user's own and is
@@ -202,7 +203,7 @@ Two rules worth stating outright:
   contain hostile code. Scene JSON was already executable; an assistant writing it does not
   change that, and does not fix it either.
 - **Not streaming.** Assistant turns arrive whole. Tool calls appear as they run, which is the
-  progress that matters here; token-by-token prose in a 340px panel is not.
+  progress that matters here; token-by-token prose in a narrow dock is not.
 - **Not multi-tab.** One editor, one MCP client. The relay broadcasts and the transcript lives
   in one store.
 - **Not a deployed endpoint.** The MCP channel is dev-server only, on purpose.

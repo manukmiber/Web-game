@@ -101,6 +101,18 @@ it.
 **Viewport shading** — Shaded, Shaded + Wireframe, or Wireframe. Wireframe is how you actually
 see what subdivision did to the topology.
 
+**Layout** — three docks around the viewport, nothing floating over it. Hierarchy on the left,
+Inspector and Assistant sharing a tabbed dock on the right, and Console, Performance, Graphics
+and Hardware sharing a tabbed dock along the bottom. Every dock is resizable by dragging the
+divider — or by focusing it and using the arrow keys — collapsible from the arrow in its tab
+strip, and remembered per browser. Widths are re-fitted whenever the window changes size, so a
+layout saved on a large monitor opens on a laptop with the docks shrunk rather than with no
+viewport left.
+
+The **status bar** along the bottom is the index: one toggle per panel, an error count on the
+Console when there is one, and a live fps readout with the selection and object counts. Nothing
+in the editor is reachable only by knowing a function key exists.
+
 **Transform tools** — Unity's hotkeys and gizmos.
 
 | Key | Tool | | Key | Action |
@@ -110,9 +122,18 @@ see what subdivision did to the topology.
 | `E` | Rotate | | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / Redo |
 | `R` | Scale | | `Ctrl+D` | Duplicate |
 | `Del` | Delete | | `Ctrl+G` | Group selected |
-| `F2` | Assistant | | `Ctrl+A` | Select all |
-| `Esc` | Deselect | | `Ctrl+S` | Save to local storage |
-| `F8` | Perf HUD | | `F9` | Hardware panel |
+| `Esc` | Deselect | | `Ctrl+A` | Select all |
+| | | | `Ctrl+S` | Save to local storage |
+
+Panel keys work in both edit and play mode. Pressing one brings that panel frontmost; pressing
+it again collapses its dock.
+
+| Key | Panel | | Key | Panel |
+| --- | --- | --- | --- | --- |
+| `F3` | Hierarchy | | `F7` | Graphics |
+| `F6` | Inspector | | `F8` | Performance |
+| `F2` | Assistant | | `F9` | Hardware |
+| `F4` | Console | | | |
 
 Coloured axis handles (X red, Y green, Z blue), rotation rings, scale boxes with a centre
 handle for uniform scale. Local/Global space toggle. Grid snapping for move and angle snapping
@@ -139,7 +160,7 @@ sibling position, on undo.
 **Save/load** — autosaves to browser local storage and restores on reload. *Export* downloads
 the scene as JSON; *Import* reads one back.
 
-**Performance HUD (`F8`)** — fps, median and p95 frame time, JavaScript vs GPU-bound verdict,
+**Performance panel (`F8`)** — fps, median and p95 frame time, JavaScript vs GPU-bound verdict,
 draw calls, triangles and resource counts. Comes with two stress presets — *forest* (many
 instances of few meshes) and *city* (many unique meshes) — plus live sliders for density, mesh
 variety, render distance, instancing, resolution scale and shadows.
@@ -271,8 +292,9 @@ merely random.
 ground height. There is no physics yet, so it walks through walls. A Camera parented to it is the
 whole third-person rig; the transform hierarchy does the following.
 
-**Console** — script output and combat events, with the entity attached: click a message to
-select whatever produced it.
+**Console** (**F4**) — script output and combat events, with the entity attached: click a
+message to select whatever produced it. Filter by level, or search the text; an error opens the
+panel if the bottom dock is closed, and otherwise shows as a count on the tab.
 
 Add any of it from the toolbar's **Game ▾** menu: Player, Zombie, Villager, Animal, Camera,
 lights, Environment, a Game Logic object carrying an example spawner script, or a Hardware Rig
@@ -283,7 +305,7 @@ carrying the default bindings.
 The editor can be driven by a model, and by *your* model. Both go through one tool layer
 (`engine/assistant`), so the schemas, the validation and the undo behaviour exist once.
 
-**Assistant panel** (**F2**) — ask for scene changes in plain language and Claude calls the
+**Assistant** (**F2**, a tab in the right dock beside the Inspector) — ask for scene changes in plain language and Claude calls the
 tools: twenty of them, covering primitives, prefabs, transforms, hierarchy, components,
 scripts, the modifier stack and scatter layers. It needs an Anthropic API key, entered in the panel and kept in
 `localStorage`; there is no backend to proxy through, so the key is yours and goes straight from
@@ -415,6 +437,7 @@ git checkout release/v0.6.0   # 2D shapes, extrude/lathe, tessellation
 git checkout release/v0.7.0   # Assistant tool layer and MCP server
 git checkout release/v0.7.1   # External hardware over Web Serial and WebSocket
 git checkout release/v0.7.2   # Scatter brush and instancing
+git checkout release/v0.7.3   # Render pipeline rework and graphics settings
 ```
 
 v0.7.0 added the assistant tool layer and the MCP server. It needed **no schema change and no
@@ -450,7 +473,7 @@ The bugs, all found by reading rather than by a failing test, and each now cover
   the authored scene; loading was discarded outright the moment you pressed Stop, because Stop
   restores the snapshot taken before it. Those four buttons now say why they are off.
 
-This version (v0.7.3) reworks the render pipeline and adds the graphics settings above. **No
+v0.7.3 reworked the render pipeline and added the graphics settings above. **No
 schema change** again: the settings are per-browser and never touch a scene file, and the one new
 component field — a light's normal bias — is optional and defaulted by its reader, so scenes saved
 before it round-trip unchanged.
@@ -486,6 +509,63 @@ The resolution and shadow levers that used to live in the perf HUD moved into th
 Graphics panel writes. They had been a second source of truth for values the renderer also held,
 and whichever was touched last won.
 
+### v0.7.4 — the UI revamp
+
+This version moves every panel and rewrites the shell around them. **No schema change, no engine
+changes:** nothing here touches the scene model, the components or the renderer. A scene saved by
+v0.7.3 opens unchanged, and the only new persisted value is the dock layout, which lives beside
+the graphics settings in `localStorage` and never enters a scene file.
+
+The problem was structural rather than cosmetic. Two panels were docked; the other five were
+absolutely positioned over the canvas at fixed offsets — Graphics at `left: 10px`, Hardware also
+at the left edge, Performance at `right: 10px`, the Assistant also at the right, and the Console
+across the bottom. Any two of them open at once overlapped. Each had its own `visible` flag, its
+own header and its own close button, and their toggle buttons sat on the viewport's bottom edge
+where they collided with the camera hint and with each other. The Performance panel had no button
+at all: it opened only if you knew `F8` existed. A 3D editor whose UI covers the 3D is answering
+the wrong question.
+
+What replaced it:
+
+- **Three docks, no overlays.** Hierarchy left; Inspector and Assistant sharing a tabbed dock
+  right; Console, Performance, Graphics and Hardware sharing a tabbed dock along the bottom. A
+  dock takes space from the viewport rather than covering it, and shows one panel at a time.
+- **Resizable and remembered.** Every divider drags, and is a focusable `separator` with arrow-key
+  support so the sizes are reachable without a mouse. Sizes are clamped against the window on
+  every write, so a layout saved on a large monitor opens on a laptop with the docks shrunk
+  instead of with no viewport left.
+- **A status bar.** One toggle per panel, an error count on the Console, and a live fps readout
+  beside the selection and object counts. The frame rate used to be inside the Performance panel,
+  which meant the cheapest question in the editor — is this still running at speed? — cost opening
+  a panel that covered the thing you were asking about.
+- **One description of the panels.** `editor/state/layout.ts` names every panel, its dock, its
+  icon and its shortcut; the tab strips, the status bar and the keyboard handler are all built
+  from it. `useShortcuts` had a branch per panel duplicated across its edit- and play-mode paths,
+  which is why the panel keys behaved differently in the two modes.
+- **Panels that are not frontmost are unmounted.** The Hardware panel re-renders at 15 Hz off the
+  engine's frame event and the Performance panel polls the render loop four times a second; under
+  the old scheme both ran for as long as the panel was open, which was easy to leave true for a
+  whole session.
+
+Three things came out of the move rather than being the point of it:
+
+- **The simulated hardware rig moved into `EditorContext`.** It had been held in panel state,
+  which stops working the moment the panel is a tab that unmounts: the rig would be forgotten
+  while you looked at the Console, leaving its device in the bus with nothing draining its
+  outbound queue, and the next *+ Simulated* would add a second board beside it.
+- **An error no longer yanks the bottom dock.** It opens the Console if the dock is closed, and
+  otherwise shows a count on the tab. The old flag was unconditional, which was harmless when the
+  console was its own overlay and would have made the dock unusable under a script that throws
+  every frame.
+- **Console filtering and Hierarchy search.** Both are the reason their panels' limits are
+  livable — 200 messages with nothing but a scrollbar, and a tree with no way to find one of
+  three objects called *Wall*.
+
+`Row` and `Slider` were duplicated between the Performance and Graphics panels, sharing a
+stylesheet class while each kept its own copy of the components; they are now shared for real in
+`panels/controls.tsx`. The stylesheet lost its per-panel sections along with the panels they
+described: adding a panel should mean adding no CSS.
+
 CI (`.github/workflows/ci.yml`) runs typecheck, tests and build on every push and pull
 request. It needs GitHub Actions enabled on the repository to do anything.
 
@@ -497,8 +577,8 @@ src/
              loop, scripting, AI, gameplay, input, hardware (protocol, bus, bindings),
              scatter (packed instances + brush) and the assistant tool layer + MCP
              server. No React, no DOM. This is what the runtime uses.
-  editor/    panels, gizmo, undo/redo, persistence, console, assistant panel, and the
-             hardware transports (Web Serial, WebSocket). Editor only.
+  editor/    dock layout and panels, gizmo, undo/redo, persistence, console, assistant,
+             and the hardware transports (Web Serial, WebSocket). Editor only.
 tools/       mcp-bridge.mjs — stdio ↔ dev server, for external MCP clients.
 firmware/    WebGameLink — reference Arduino sketch for the hardware protocol.
 ```

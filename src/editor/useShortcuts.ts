@@ -7,6 +7,7 @@ import {
   DuplicateEntitiesCommand,
   GroupEntitiesCommand,
 } from './commands/sceneCommands';
+import { PANEL_SHORTCUTS } from './state/layout';
 import { AUTOSAVE_KEY, saveScene } from './state/persistence';
 import type { ViewportController } from './viewport/ViewportController';
 
@@ -23,26 +24,28 @@ export function useShortcuts(viewport: ViewportController | null): void {
       const ctrl = event.ctrlKey || event.metaKey;
 
       /**
-       * Play mode owns the keyboard. W is "walk forward" there, not "switch to the move
-       * tool", and a stray Ctrl+D mid-session would duplicate the zombie chasing you.
-       * Escape stops playing and F8 still opens the perf HUD — the two things you want while
-       * a session is running.
+       * Panel keys work in both modes, and there is one table of them rather than a branch per
+       * panel in each. Which panel a key opens now comes from `PANELS`, the same description
+       * the tab strips and the status bar are built from — so a new panel is one entry there
+       * and is reachable from all three places at once.
+       */
+      const panel = PANEL_SHORTCUTS[event.key];
+      if (panel) {
+        event.preventDefault();
+        store.togglePanel(panel);
+        return;
+      }
+
+      /**
+       * Play mode owns the rest of the keyboard. W is "walk forward" there, not "switch to the
+       * move tool", and a stray Ctrl+D mid-session would duplicate the zombie chasing you.
+       * Escape stops playing — and the panel keys above still work, because watching the frame
+       * time or a hardware channel while the character moves is exactly when you need them.
        */
       if (store.playing) {
         if (event.key === 'Escape') {
           event.preventDefault();
           engine.setMode('edit');
-        } else if (event.key === 'F8') {
-          event.preventDefault();
-          store.setPerf({ hudVisible: !store.perf.hudVisible });
-        } else if (event.key === 'F7') {
-          // Quality is exactly the thing you want to change while watching the frame time move.
-          event.preventDefault();
-          store.setGraphicsVisible(!store.graphicsVisible);
-        } else if (event.key === 'F9') {
-          // Watching a channel while the character moves is exactly when you need it.
-          event.preventDefault();
-          store.setHardwareVisible(!store.hardwareVisible);
         }
         return;
       }
@@ -120,22 +123,6 @@ export function useShortcuts(viewport: ViewportController | null): void {
           event.preventDefault();
           run(new DeleteEntitiesCommand(engine.scene, selection));
           store.clearSelection();
-          break;
-        case 'F2':
-          event.preventDefault();
-          store.setAssistantVisible(!store.assistantVisible);
-          break;
-        case 'F7':
-          event.preventDefault();
-          store.setGraphicsVisible(!store.graphicsVisible);
-          break;
-        case 'F8':
-          event.preventDefault();
-          store.setPerf({ hudVisible: !store.perf.hudVisible });
-          break;
-        case 'F9':
-          event.preventDefault();
-          store.setHardwareVisible(!store.hardwareVisible);
           break;
         case 'Escape':
           store.clearSelection();

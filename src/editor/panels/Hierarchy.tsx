@@ -34,31 +34,53 @@ export function Hierarchy() {
   const clearSelection = useEditorStore((s) => s.clearSelection);
 
   const [collapsed, setCollapsed] = useState<Set<EntityId>>(new Set());
+  const [query, setQuery] = useState('');
   const [renamingId, setRenamingId] = useState<EntityId | null>(null);
   const [menu, setMenu] = useState<{ x: number; y: number; id: EntityId | null } | null>(null);
   const [dropTarget, setDropTarget] = useState<{ id: EntityId | null; zone: DropZone } | null>(null);
   const draggedIds = useRef<EntityId[]>([]);
 
+  /**
+   * The visible rows.
+   *
+   * With a filter typed, a row survives if it matches *or* if a descendant does — an entity
+   * shown without its parents would be a flat list of names with no way to tell which of the
+   * three "Wall" objects it is. Collapsed state is ignored while filtering, for the same
+   * reason: a match inside a collapsed subtree that stayed hidden would read as "no results".
+   */
   const rows = useMemo<Row[]>(() => {
     void sceneRevision; // Recompute whenever scene structure changes.
+    const needle = query.trim().toLowerCase();
     const out: Row[] = [];
-    const walk = (id: EntityId, depth: number) => {
+
+    const walk = (id: EntityId, depth: number): boolean => {
       const entity = scene.get(id);
-      if (!entity) return;
+      if (!entity) return false;
       const children = scene.childrenOf(id);
-      out.push({
+      const self = needle === '' || entity.name.toLowerCase().includes(needle);
+      const row: Row = {
         id,
         depth,
         name: entity.name,
         hasChildren: children.length > 0,
         isEmpty: entity.components.length === 0,
-      });
-      if (collapsed.has(id)) return;
-      for (const child of children) walk(child, depth + 1);
+      };
+      const at = out.length;
+      out.push(row);
+
+      let descendant = false;
+      if (needle !== '' || !collapsed.has(id)) {
+        for (const child of children) descendant = walk(child, depth + 1) || descendant;
+      }
+      if (self || descendant) return true;
+      // No match here or below: drop this row and everything it pushed.
+      out.length = at;
+      return false;
     };
+
     for (const id of scene.rootIds()) walk(id, 0);
     return out;
-  }, [scene, sceneRevision, collapsed]);
+  }, [scene, sceneRevision, collapsed, query]);
 
   const toggleCollapsed = useCallback((id: EntityId) => {
     setCollapsed((previous) => {
@@ -193,13 +215,25 @@ export function Hierarchy() {
   };
 
   return (
-    <div className="panel">
-      <div className="panel-header">
-        <span>Hierarchy</span>
-        <span style={{ textTransform: 'none', fontWeight: 400 }}>{rows.length}</span>
+    <div className="panel-content">
+      <div className="panel-bar">
+        <input
+          className="panel-search"
+          value={query}
+          placeholder="Find by name…"
+          spellCheck={false}
+          onChange={(event) => setQuery(event.currentTarget.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') setQuery('');
+            event.stopPropagation();
+          }}
+        />
+        <span className="panel-bar-count" title="Objects shown">
+          {rows.length}
+        </span>
       </div>
       <div
-        className="panel-body"
+        className="panel-scroll"
         onDragOver={(event) => onDragOver(event, null)}
         onDrop={onDrop}
         onContextMenu={(event) => {
@@ -213,7 +247,9 @@ export function Hierarchy() {
         }}
       >
         {rows.length === 0 ? (
-          <div className="tree-empty">Scene is empty. Use Add in the toolbar.</div>
+          <div className="empty-note">
+            {query.trim() ? `Nothing matches “${query.trim()}”.` : 'Scene is empty. Use Add in the toolbar.'}
+          </div>
         ) : (
           <div className="tree">
             {rows.map((row) => {
@@ -252,7 +288,9 @@ export function Hierarchy() {
                       if (row.hasChildren) toggleCollapsed(row.id);
                     }}
                   >
-                    {row.hasChildren ? (collapsed.has(row.id) ? '▶' : '▼') : ''}
+                    {/* A filter expands everything, so the twisty has to agree with what is
+                        actually on screen rather than with the stored collapsed set. */}
+                    {row.hasChildren ? (collapsed.has(row.id) && !query.trim() ? '▶' : '▼') : ''}
                   </span>
                   <span className="tree-icon">{row.isEmpty ? '◻' : '◼'}</span>
                   {renamingId === row.id ? (

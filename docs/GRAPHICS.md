@@ -1,6 +1,7 @@
 # Graphics
 
-How a frame is drawn, and what the settings behind **F7** actually change.
+How a frame is drawn, and what the settings behind **F7** — the Graphics tab in the bottom dock
+— actually change.
 
 Two rules run through all of it. The editor and the game runtime must produce the *same* image,
 so everything that decides what the image looks like lives in the engine, in one object

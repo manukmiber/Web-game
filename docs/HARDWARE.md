@@ -10,7 +10,8 @@ a serial port is.
 
 ## The five-minute version
 
-1. Press **F9** (or the **⚡ Hardware** button under the viewport).
+1. Press **F9** (or the **⚡ Hardware** button in the status bar) to bring up the Hardware tab
+   in the bottom dock.
 2. Press **+ Simulated** — a board made of sliders, so none of this needs a delivery to arrive.
 3. Add a **Hardware Rig** from the toolbar's **Game ▾** menu, and a **Player** if the scene has
    none.

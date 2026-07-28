@@ -4,6 +4,15 @@ import type { StressPreset } from '@engine/perf/StressScene';
 import { normalizeGraphics, type GraphicsSettings } from '@engine/render/GraphicsSettings';
 import type { ShadingMode } from '@engine/render/RenderHost';
 import { loadGraphicsSettings, saveGraphicsSettings } from './graphicsSettings';
+import {
+  PANELS,
+  clampLayout,
+  dockKeys,
+  loadLayout,
+  saveLayout,
+  type LayoutState,
+  type PanelId,
+} from './layout';
 
 export type TransformTool = 'select' | 'move' | 'rotate' | 'scale';
 export type TransformSpace = 'local' | 'world';
@@ -11,13 +20,16 @@ export type TransformSpace = 'local' | 'world';
 /**
  * Stress-test levers for the measurement harness.
  *
- * These are driven by hand from the PerfHud so a budget can be measured on real devices. The
- * quality levers that used to sit beside them now live in `graphics` instead: having a
- * resolution scale here *and* a graphics setting for the same thing meant two sources of truth
- * for one renderer value, and whichever was touched last won.
+ * These are driven by hand from the Performance panel so a budget can be measured on real
+ * devices. The quality levers that used to sit beside them now live in `graphics` instead:
+ * having a resolution scale here *and* a graphics setting for the same thing meant two sources
+ * of truth for one renderer value, and whichever was touched last won.
+ *
+ * Whether the panel is *open* is no longer one of these. That is layout, it belongs with every
+ * other panel's visibility in `layout`, and keeping it here meant the perf HUD was the one
+ * panel the status bar and the dock system could not describe.
  */
 export interface PerfSettings {
-  hudVisible: boolean;
   stressPreset: StressPreset | 'off';
   /** Objects per 100 m². */
   density: number;
@@ -27,7 +39,6 @@ export interface PerfSettings {
 }
 
 export const DEFAULT_PERF: PerfSettings = {
-  hudVisible: false,
   stressPreset: 'off',
   density: 0.8,
   uniqueMeshes: 6,
@@ -82,13 +93,11 @@ interface EditorState {
   perf: PerfSettings;
   /** Renderer quality. Persisted per browser, not per scene — see `graphicsSettings.ts`. */
   graphics: GraphicsSettings;
-  graphicsVisible: boolean;
+  /** Dock sizes and which panel is frontmost in each. Persisted — see `layout.ts`. */
+  layout: LayoutState;
   consoleMessages: ConsoleMessage[];
-  consoleVisible: boolean;
-  assistantVisible: boolean;
   assistantBusy: boolean;
   assistantEntries: AssistantEntry[];
-  hardwareVisible: boolean;
 
   setSelection(ids: EntityId[]): void;
   toggleSelection(id: EntityId): void;
@@ -105,15 +114,29 @@ interface EditorState {
   setPerf(patch: Partial<PerfSettings>): void;
   setGraphics(patch: Partial<GraphicsSettings>): void;
   resetGraphics(): void;
-  setGraphicsVisible(visible: boolean): void;
+  setLayout(patch: Partial<LayoutState>): void;
+  /** Opens the panel's dock and brings the panel frontmost. */
+  showPanel(panel: PanelId): void;
+  /** Frontmost in an open dock closes the dock; anything else is brought frontmost. */
+  togglePanel(panel: PanelId): void;
+  /** Re-fits the docks after the window changes size. */
+  refitLayout(): void;
   pushConsole(message: Omit<ConsoleMessage, 'id'>): void;
   clearConsole(): void;
-  setConsoleVisible(visible: boolean): void;
-  setAssistantVisible(visible: boolean): void;
   setAssistantBusy(busy: boolean): void;
   pushAssistantEntry(entry: Omit<AssistantEntry, 'id'>): void;
   clearAssistant(): void;
-  setHardwareVisible(visible: boolean): void;
+}
+
+/** True when `panel` is the one its dock is currently showing, and that dock is open. */
+export function isPanelVisible(layout: LayoutState, panel: PanelId): boolean {
+  const keys = dockKeys(PANELS[panel].dock);
+  if (!layout[keys.open]) return false;
+  return keys.panel === null || layout[keys.panel] === panel;
+}
+
+function windowSize() {
+  return { width: window.innerWidth, height: window.innerHeight };
 }
 
 let consoleCounter = 0;
@@ -144,13 +167,10 @@ export const useEditorStore = create<EditorState>((set) => ({
   statusMessage: null,
   perf: { ...DEFAULT_PERF },
   graphics: loadGraphicsSettings(),
-  graphicsVisible: false,
+  layout: loadLayout(),
   consoleMessages: [],
-  consoleVisible: false,
-  assistantVisible: false,
   assistantBusy: false,
   assistantEntries: [],
-  hardwareVisible: false,
 
   setSelection: (ids) => set({ selection: ids, lastSelected: ids[ids.length - 1] ?? null }),
   toggleSelection: (id) =>
@@ -187,20 +207,63 @@ export const useEditorStore = create<EditorState>((set) => ({
       saveGraphicsSettings(graphics);
       return { graphics };
     }),
-  setGraphicsVisible: (graphicsVisible) => set({ graphicsVisible }),
+  /**
+   * Sizes are clamped against the window on write, not on read, for the same reason graphics
+   * settings are normalized on write: the splitter's readout and the dock's actual width are
+   * then the same number by construction.
+   */
+  setLayout: (patch) =>
+    set((state) => {
+      const layout = clampLayout({ ...state.layout, ...patch }, windowSize());
+      saveLayout(layout);
+      return { layout };
+    }),
+  showPanel: (panel) =>
+    set((state) => {
+      const keys = dockKeys(PANELS[panel].dock);
+      const layout = clampLayout(
+        { ...state.layout, [keys.open]: true, ...(keys.panel ? { [keys.panel]: panel } : {}) },
+        windowSize(),
+      );
+      saveLayout(layout);
+      return { layout };
+    }),
+  togglePanel: (panel) =>
+    set((state) => {
+      const keys = dockKeys(PANELS[panel].dock);
+      // Clicking the panel you are already looking at closes the dock — the same gesture a tab
+      // strip gives you everywhere else, and the reason no panel needs its own ✕ any more.
+      const frontmost = keys.panel === null || state.layout[keys.panel] === panel;
+      const open = !(state.layout[keys.open] && frontmost);
+      const layout = clampLayout(
+        { ...state.layout, [keys.open]: open, ...(keys.panel ? { [keys.panel]: panel } : {}) },
+        windowSize(),
+      );
+      saveLayout(layout);
+      return { layout };
+    }),
+  refitLayout: () => set((state) => ({ layout: clampLayout(state.layout, windowSize()) })),
   pushConsole: (message) =>
     set((state) => {
       consoleCounter += 1;
       const next = [...state.consoleMessages, { ...message, id: consoleCounter }];
+      /**
+       * An error is worth interrupting for; a log line is not. But it only interrupts a *closed*
+       * dock: a script throwing on every frame would otherwise yank the bottom dock back to the
+       * Console sixty times a second while you were reading the graphics settings. Once the
+       * dock is open on something else, the error count in the status bar is the notification.
+       */
+      const shouldOpen = message.level === 'error' && !state.layout.bottomOpen;
+      const layout = shouldOpen
+        ? clampLayout({ ...state.layout, bottomOpen: true, bottomPanel: 'console' }, windowSize())
+        : state.layout;
+      if (shouldOpen) saveLayout(layout);
       return {
         consoleMessages: next.length > CONSOLE_LIMIT ? next.slice(-CONSOLE_LIMIT) : next,
-        // An error is worth interrupting for; a log line is not.
-        consoleVisible: state.consoleVisible || message.level === 'error',
+        layout,
       };
     }),
   clearConsole: () => set({ consoleMessages: [] }),
-  setConsoleVisible: (consoleVisible) => set({ consoleVisible }),
-  setAssistantVisible: (assistantVisible) => set({ assistantVisible }),
   setAssistantBusy: (assistantBusy) => set({ assistantBusy }),
   pushAssistantEntry: (entry) =>
     set((state) => {
@@ -208,7 +271,6 @@ export const useEditorStore = create<EditorState>((set) => ({
       return { assistantEntries: [...state.assistantEntries, { ...entry, id: assistantCounter }] };
     }),
   clearAssistant: () => set({ assistantEntries: [] }),
-  setHardwareVisible: (hardwareVisible) => set({ hardwareVisible }),
 }));
 
 /** Reads current state outside React (gizmo handlers, keyboard shortcuts). */

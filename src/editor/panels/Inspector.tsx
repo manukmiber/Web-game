@@ -39,10 +39,11 @@ export function Inspector() {
 
   if (selection.length === 0) {
     return (
-      <div className="panel">
-        <div className="panel-header">Inspector</div>
-        <div className="panel-body">
-          <div className="inspector-empty">Nothing selected</div>
+      <div className="panel-content">
+        <div className="panel-scroll">
+          <div className="empty-note centered">
+            Nothing selected. Pick an object in the viewport or the Hierarchy.
+          </div>
         </div>
       </div>
     );
@@ -51,9 +52,8 @@ export function Inspector() {
   const entities = selection.map((id) => scene.get(id)).filter((e) => e !== undefined);
   if (entities.length === 0) {
     return (
-      <div className="panel">
-        <div className="panel-header">Inspector</div>
-        <div className="panel-body" />
+      <div className="panel-content">
+        <div className="panel-scroll" />
       </div>
     );
   }
@@ -98,9 +98,8 @@ export function Inspector() {
   );
 
   return (
-    <div className="panel">
-      <div className="panel-header">Inspector</div>
-      <div className="panel-body">
+    <div className="panel-content">
+      <div className="panel-scroll">
         <div className="entity-header">
           <input
             key={`${primary.id}:${primary.name}`}
@@ -204,7 +203,7 @@ export function Inspector() {
         )}
 
         {missingDefinitions.length > 0 && (
-          <div style={{ padding: 8 }}>
+          <div className="add-component">
             <select
               value=""
               onChange={(event) => {
@@ -216,7 +215,6 @@ export function Inspector() {
                 }
                 event.currentTarget.value = '';
               }}
-              style={{ width: '100%' }}
             >
               <option value="" disabled>
                 Add Component…

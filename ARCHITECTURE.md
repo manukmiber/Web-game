@@ -75,16 +75,19 @@ src/
                             server (§11)
 
   editor/                 ← everything the runtime will NOT ship
-    state/                  Zustand store: selection, active tool, snapping, console
+    state/                  Zustand store: selection, active tool, snapping, console,
+                            and layout.ts — the panel/dock description (§13)
+    layout/                 the dock shell: tab strips and resize handles
     commands/               command pattern + undo/redo stack
     viewport/               RenderHost host + OrbitControls, gizmo, grid, selection
                             outline, light/camera handles, picking, axis widget
-    panels/                 Hierarchy, Inspector, Toolbar, Console, ScriptEditor,
-                            ScatterEditor, AssistantPanel
+    panels/                 Hierarchy, Inspector, Toolbar, StatusBar, Console,
+                            PerformancePanel, GraphicsPanel, HardwarePanel,
+                            AssistantPanel, ScriptEditor, ScatterEditor
     assistant/              CommandSceneEditor (tools → undo stack), the Anthropic
                             tool-use loop, and the MCP transports
     hardware/               the transports themselves: Web Serial, WebSocket, and the
-                            simulated rig the panel drives
+                            simulated rig EditorContext owns
     styles/                 dark Unity-like theme
 
   runtime/                ← Phase 3 placeholder. Same engine, no panels.
@@ -499,7 +502,7 @@ fragment from world position (`editor/viewport/GroundGrid.ts`), not a `GridHelpe
 Numbers beat arguments, so the engine ships an instrument rather than a set of assumptions.
 `Engine.stats` (`engine/perf/FrameStats.ts`) records a rolling window and
 `engine/perf/StressScene.ts` generates the two load shapes an engine has to survive. The
-editor exposes both through the perf HUD (**F8**).
+editor exposes both through the Performance panel (**F8**).
 
 **Why two presets.** They fail for opposite reasons, and tuning against one produces a
 renderer that collapses on the other:
@@ -892,3 +895,69 @@ Light of its own, exactly as §10.1 describes, and the settings go with it.
 
 The global switches — whether the shadow pass runs at all, and which filter it uses — stay in the
 settings, because those are properties of the machine.
+
+## 14. The editor shell
+
+### 14.1 Panels take space; they do not cover the viewport
+
+Until v0.7.4 the editor had two docked panels — Hierarchy and Inspector — and five that were
+absolutely positioned over the canvas: Graphics at `left: 10px`, Hardware also anchored to the
+left edge, Performance at `right: 10px`, the Assistant also at the right, and the Console across
+the bottom. Any two panels on the same side overlapped. Their toggle buttons were `position:
+absolute` on the viewport's bottom edge, where they collided with the camera hint and with one
+another, and the Performance panel had no button at all.
+
+The rule now is that **a panel takes space from the viewport rather than covering it**. That is
+not a style preference; it is what makes the panels usable at the same time as the thing they
+describe. Adjusting shadow distance while the panel adjusting it covers the shadow is not a
+workflow, and it is why the Graphics panel's explanatory notes — the part that stops people
+turning everything up and blaming the engine — went unread as a 314 px column of scrolling prose.
+
+The one thing still drawn over the canvas is the camera hint, which is `pointer-events: none`.
+
+### 14.2 The panels are data
+
+`editor/state/layout.ts` describes every panel: its dock, its label, its icon, its shortcut. Three
+consumers are built from that one description — the tab strips (`layout/Dock.tsx`), the status bar
+toggles, and the keyboard handler. Adding a panel is one entry there plus a case in the dock's
+render switch; it is then reachable by mouse, by tab and by key without touching any of the three.
+
+The alternative is what the code did before: a `visible` flag per panel on the store, a setter per
+flag, a close button per panel, and a branch per panel in `useShortcuts` — duplicated across its
+edit-mode and play-mode paths, which is exactly why the panel keys had come to behave differently
+in the two modes.
+
+Dock geometry (`leftWidth`, `rightWidth`, `bottomHeight`, which panel is frontmost, which docks
+are open) persists to `localStorage` beside the graphics settings, and for the same reason §13.1
+gives for those: how wide the Inspector should be is a property of the screen you are sitting at,
+not of the scene you opened. It never enters a scene file.
+
+### 14.3 Sizes are clamped on write, against the window
+
+`clampLayout` fits a layout into the window it has to live in, and it runs on every write — a
+splitter drag, a panel toggle, a window resize, and on load. Two consequences worth stating:
+
+- **The stored number and the rendered width are the same number.** The store is not a request the
+  layout might ignore, so a splitter can never show a size the dock does not have. This is the
+  same argument §13.1 makes for normalizing graphics settings on write.
+- **A layout saved on a 32-inch monitor opens on a laptop.** Both side docks give ground
+  proportionally rather than one being cut to nothing, and the bottom dock yields to keep a
+  viewport above it. The function is idempotent, so a resize storm settles instead of creeping.
+
+### 14.4 A hidden panel is unmounted, not display-none
+
+The dock renders only its frontmost panel. That is a correctness property, not a rendering
+optimisation: the Hardware panel re-renders at 15 Hz off the engine's `afterUpdate` and the
+Performance panel polls the render loop four times a second. Under the old floating scheme those
+ran for as long as the panel was open, which was easy to leave true for an entire session —
+measurement instruments quietly costing frames in the thing being measured.
+
+Unmounting has one cost, and it is the general one: **state a panel needs to outlive its own
+visibility cannot live in the panel.** The simulated hardware rig is the case in this codebase, so
+it moved to `EditorContext` (§12.5's line about devices not being scene data still holds — it is
+host state either way). Held in panel state it would have been forgotten the moment another tab
+came forward, leaving its device in the bus with nothing draining its outbound queue and the next
+*+ Simulated* adding a second board beside it.
+
+The same reasoning constrains anything added later: a panel may own draft text and scroll
+position, but not a connection, a subscription or a queue.

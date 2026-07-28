@@ -35,6 +35,11 @@ export function Viewport({ onReady }: Props) {
           stops and restores the scene
         </div>
       )}
+      {/*
+        The hint is the only thing left drawn over the canvas, and it now has the corner to
+        itself — the Console, Hardware and Assistant toggles used to sit on the same 8px of
+        viewport edge, overlapping it and each other.
+      */}
       <div className="viewport-hint">
         {playing
           ? 'Editor tools are paused while playing'

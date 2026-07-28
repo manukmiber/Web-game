@@ -7,19 +7,22 @@ import { useEditorStore } from '../state/editorStore';
 const PLACEHOLDER = 'Build a walled courtyard with a gate, drop a player inside and put two zombies outside.';
 
 /**
- * The assistant, as a panel over the viewport.
+ * The assistant, as a tab in the right dock beside the Inspector.
  *
  * Tool calls are shown rather than summarised away. An assistant that reports "I built the
  * courtyard" and an assistant that called `create_primitive` eleven times look identical from
  * the prose alone, and the difference matters the moment something is not where it should be —
  * the same argument the script Console settles for Play mode.
+ *
+ * It shares the right dock with the Inspector rather than getting one of its own, and that is
+ * the honest arrangement: you are either describing a change or adjusting one by hand, and a
+ * 340px overlay pinned over the right of the viewport — which is where this used to live — was
+ * a third column that covered the scene instead of taking space beside it.
  */
 export function AssistantPanel() {
   const { toolContext, mcpState } = useEditor();
-  const visible = useEditorStore((state) => state.assistantVisible);
   const busy = useEditorStore((state) => state.assistantBusy);
   const entries = useEditorStore((state) => state.assistantEntries);
-  const setVisible = useEditorStore((state) => state.setAssistantVisible);
   const clearAssistant = useEditorStore((state) => state.clearAssistant);
 
   const [settings, setSettings] = useState(loadAssistantSettings);
@@ -74,51 +77,42 @@ export function AssistantPanel() {
     void session.send(prompt);
   }, [draft, session, busy]);
 
-  if (!visible) {
-    return (
-      <button className="assistant-toggle" onClick={() => setVisible(true)} title="Open the assistant (F2)">
-        ✦ Assistant
-      </button>
-    );
-  }
-
   const mcp = mcpState();
 
   return (
-    <div className="assistant">
-      <div className="assistant-header">
-        <span>✦ Assistant</span>
-        <span>
-          <select
-            value={settings.model}
-            onChange={(event) => {
-              const model = event.currentTarget.value as AssistantModel;
-              setSettings((current) => ({ ...current, model }));
-              saveAssistantSettings({ model });
-            }}
-            title="Model used for scene authoring"
-          >
-            {ASSISTANT_MODELS.map((model) => (
-              <option key={model} value={model}>
-                {model}
-              </option>
-            ))}
-          </select>
-          <button onClick={() => setShowSettings(!showSettings)} title="API key">
-            ⚙
-          </button>
-          <button onClick={clearAssistant} disabled={entries.length === 0} title="Clear the transcript">
-            Clear
-          </button>
-          <button onClick={() => setVisible(false)} title="Hide the assistant">
-            ✕
-          </button>
-        </span>
+    <div className="panel-content">
+      <div className="panel-bar">
+        <select
+          value={settings.model}
+          onChange={(event) => {
+            const model = event.currentTarget.value as AssistantModel;
+            setSettings((current) => ({ ...current, model }));
+            saveAssistantSettings({ model });
+          }}
+          title="Model used for scene authoring"
+        >
+          {ASSISTANT_MODELS.map((model) => (
+            <option key={model} value={model}>
+              {model}
+            </option>
+          ))}
+        </select>
+        <span className="panel-bar-spacer" />
+        <button
+          className={`icon-button ${showSettings ? 'active' : ''}`}
+          onClick={() => setShowSettings(!showSettings)}
+          title="API key"
+        >
+          ⚙
+        </button>
+        <button onClick={clearAssistant} disabled={entries.length === 0} title="Clear the transcript">
+          Clear
+        </button>
       </div>
 
       {showSettings && (
         <div className="assistant-settings">
-          <label>
+          <label className="stacked-field">
             Anthropic API key
             <input
               type="password"
@@ -133,20 +127,20 @@ export function AssistantPanel() {
               onKeyDown={(event) => event.stopPropagation()}
             />
           </label>
-          <p className="assistant-note">
+          <p className="note">
             Stored in this browser and sent straight to the Anthropic API — there is no backend
             in between. Use a key you are willing to spend from a browser.
           </p>
         </div>
       )}
 
-      <div className="assistant-body">
+      <div className="panel-scroll assistant-body">
         {entries.length === 0 && (
-          <div className="assistant-empty">
+          <div className="empty-note">
             <p>Ask for scene changes in plain language. Everything it does lands on the undo stack.</p>
             <p className="assistant-example">“{PLACEHOLDER}”</p>
             {mcp.channels.length > 0 && (
-              <p className="assistant-note">
+              <p className="note">
                 MCP is live on {mcp.channels.join(', ')}
                 {mcp.client ? ` — ${mcp.client} connected` : ''}. See docs/AI.md to attach an
                 external client.

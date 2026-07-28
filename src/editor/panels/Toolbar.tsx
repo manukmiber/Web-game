@@ -43,15 +43,13 @@ export function Toolbar({ spawnPoint }: Props) {
   const playing = useEditorStore((s) => s.playing);
   const shading = useEditorStore((s) => s.shading);
   const setShading = useEditorStore((s) => s.setShading);
-  const graphicsVisible = useEditorStore((s) => s.graphicsVisible);
-  const setGraphicsVisible = useEditorStore((s) => s.setGraphicsVisible);
-  const statusMessage = useEditorStore((s) => s.statusMessage);
   const setTool = useEditorStore((s) => s.setTool);
   const setSpace = useEditorStore((s) => s.setSpace);
   const setSnapEnabled = useEditorStore((s) => s.setSnapEnabled);
   const setSnapValues = useEditorStore((s) => s.setSnapValues);
   const setSelection = useEditorStore((s) => s.setSelection);
   const setStatusMessage = useEditorStore((s) => s.setStatusMessage);
+
 
   const status = (message: string) => {
     setStatusMessage(message);
@@ -123,58 +121,67 @@ export function Toolbar({ spawnPoint }: Props) {
 
   return (
     <div className="toolbar">
-      <div className="toolbar-group">
+      <div className="toolbar-group segmented" role="group" aria-label="Transform tool">
         {TOOLS.map((entry) => (
           <button
             key={entry.tool}
-            className={`tool-button ${tool === entry.tool ? 'active' : ''}`}
+            className={tool === entry.tool ? 'active' : ''}
             title={entry.title}
             onClick={() => setTool(entry.tool)}
           >
-            <span>{entry.label}</span>
-            <span className="hint">{entry.hint}</span>
+            <span className="tool-glyph">{entry.label}</span>
+            <span className="tool-hint">{entry.hint}</span>
           </button>
         ))}
       </div>
-
-      <div className="toolbar-divider" />
 
       <div className="toolbar-group">
         <button
           onClick={() => setSpace(space === 'local' ? 'world' : 'local')}
           title="Toggle gizmo orientation between the object's own axes and world axes (X)"
         >
-          {space === 'local' ? 'Local' : 'Global'}
+          {space === 'local' ? '⌾ Local' : '⊕ Global'}
         </button>
-        <button
-          className={snapEnabled ? 'active' : ''}
-          onClick={() => setSnapEnabled(!snapEnabled)}
-          title="Toggle grid and angle snapping"
-        >
-          Snap
-        </button>
-        <label title="Grid snap increment for Move">
-          Grid
-          <input
-            type="number"
-            min={0.001}
-            step={0.1}
-            value={moveSnap}
-            onChange={(event) => setSnapValues({ moveSnap: Number(event.currentTarget.value) || 1 })}
-          />
-        </label>
-        <label title="Angle snap increment for Rotate, in degrees">
-          Angle
-          <input
-            type="number"
-            min={1}
-            step={1}
-            value={rotateSnap}
-            onChange={(event) =>
-              setSnapValues({ rotateSnap: Number(event.currentTarget.value) || 15 })
-            }
-          />
-        </label>
+        {/*
+          Snapping is one control, not three. The increments only mean anything while snapping
+          is on, so they are inside the toggle's group and disabled with it — a grid field that
+          silently does nothing is a bug report waiting to be filed.
+        */}
+        <div className={`snap-group ${snapEnabled ? 'on' : ''}`}>
+          <button
+            className={snapEnabled ? 'active' : ''}
+            onClick={() => setSnapEnabled(!snapEnabled)}
+            title="Toggle grid and angle snapping"
+          >
+            ⌗ Snap
+          </button>
+          <label title="Grid snap increment for Move">
+            <span>Grid</span>
+            <input
+              type="number"
+              min={0.001}
+              step={0.1}
+              disabled={!snapEnabled}
+              value={moveSnap}
+              onChange={(event) =>
+                setSnapValues({ moveSnap: Number(event.currentTarget.value) || 1 })
+              }
+            />
+          </label>
+          <label title="Angle snap increment for Rotate, in degrees">
+            <span>Angle</span>
+            <input
+              type="number"
+              min={1}
+              step={1}
+              disabled={!snapEnabled}
+              value={rotateSnap}
+              onChange={(event) =>
+                setSnapValues({ rotateSnap: Number(event.currentTarget.value) || 15 })
+              }
+            />
+          </label>
+        </div>
       </div>
 
       <div className="toolbar-divider" />
@@ -237,13 +244,6 @@ export function Toolbar({ spawnPoint }: Props) {
           <option value="shadedWireframe">Shaded + Wireframe</option>
           <option value="wireframe">Wireframe</option>
         </select>
-        <button
-          className={graphicsVisible ? 'active' : ''}
-          onClick={() => setGraphicsVisible(!graphicsVisible)}
-          title="Graphics settings — antialiasing, shadows, tone mapping, resolution (F7)"
-        >
-          Graphics
-        </button>
       </div>
 
       <div className="toolbar-divider" />
@@ -303,11 +303,14 @@ export function Toolbar({ spawnPoint }: Props) {
 
       <div className="toolbar-spacer" />
 
-      {statusMessage && <span className="status">{statusMessage}</span>}
-
       <div className="toolbar-group">
+        {/*
+          The status line moved to the status bar in v0.7.4. It used to sit here, where a long
+          message pushed the Play button around and — once the toolbar wrapped — occasionally
+          onto a second row.
+        */}
         <button
-          className={playing ? 'active' : ''}
+          className={`play-button ${playing ? 'playing' : ''}`}
           onClick={() => engine.setMode(playing ? 'edit' : 'play')}
           title="Run scripts, NPCs and the character controller through the scene's own camera. The scene is snapshotted and restored on stop. Esc stops."
         >

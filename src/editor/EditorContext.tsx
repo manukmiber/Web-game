@@ -9,6 +9,7 @@ import { CommandSceneEditor } from './assistant/CommandSceneEditor';
 import { connectMcpBridge, type McpBridgeState } from './assistant/mcpBridge';
 import type { Command } from './commands/Command';
 import { CommandHistory } from './commands/Command';
+import { SimulatedRig } from './hardware/simulated';
 import { LocalStorageAdapter, type ScenePersistence } from './state/persistence';
 import { useEditorStore } from './state/editorStore';
 
@@ -29,12 +30,23 @@ export interface EditorContextValue {
   setSpawnPoint(resolve: () => Vec3): void;
   mcp: McpServer;
   mcpState(): McpBridgeState;
+  /**
+   * The simulated board, if one has been added.
+   *
+   * Owned here rather than by the Hardware panel because the panel is now a dock tab, and a
+   * tab that is not frontmost is unmounted. A rig held in panel state would be forgotten the
+   * moment you looked at the Console — leaving its device in the bus with nothing draining its
+   * outbound queue, and the *next* "+ Simulated" adding a second one beside it.
+   */
+  simulatedRig(): SimulatedRig | null;
+  addSimulatedRig(id: string): Promise<SimulatedRig>;
+  removeSimulatedRig(): void;
 }
 
 const EditorContext = createContext<EditorContextValue | null>(null);
 
 /** Reported to MCP clients in `initialize`, so a client can tell which build it is driving. */
-const EDITOR_VERSION = '0.7.2';
+const EDITOR_VERSION = '0.7.4';
 
 export function EditorProvider({ children }: { children: ReactNode }) {
   // Refs rather than state: these are created once and must survive every re-render, and
@@ -51,6 +63,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
   // Replaced by the viewport once it has a camera; until then new objects land at the origin.
   const spawnPointRef = useRef<() => Vec3>(() => [0, 0, 0]);
   const mcpStateRef = useRef<McpBridgeState>({ channels: [], client: null, handled: 0 });
+  const rigRef = useRef<SimulatedRig | null>(null);
 
   const value = useMemo<EditorContextValue>(() => {
     const engine = engineRef.current!;
@@ -73,6 +86,18 @@ export function EditorProvider({ children }: { children: ReactNode }) {
       },
       mcp: new McpServer({ name: 'web-3d-scene-editor', version: EDITOR_VERSION, context: toolContext }),
       mcpState: () => mcpStateRef.current,
+      simulatedRig: () => rigRef.current,
+      addSimulatedRig: async (id) => {
+        if (rigRef.current) return rigRef.current;
+        const rig = new SimulatedRig(id);
+        rigRef.current = rig;
+        engine.hardware.add(rig.device);
+        await rig.start();
+        return rig;
+      },
+      removeSimulatedRig: () => {
+        rigRef.current = null;
+      },
     };
   }, []);
 
@@ -155,6 +180,10 @@ export function EditorProvider({ children }: { children: ReactNode }) {
         store.clearSelection();
       }),
       engine.events.on('modeChanged', ({ mode }) => store.setPlaying(mode === 'play')),
+      // The simulated board's outbound queue has to be drained whether or not anyone is
+      // looking, or a play session with the Hardware tab in the background accumulates every
+      // line the engine ever wrote to it.
+      engine.events.on('afterUpdate', () => rigRef.current?.poll()),
     ];
 
     engine.start();
