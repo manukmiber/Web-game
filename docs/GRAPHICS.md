@@ -110,7 +110,7 @@ Defined in `src/engine/render/GraphicsSettings.ts`, applied by `RenderHost.apply
 | `antialias` | `off` `fxaa` `msaa2` `msaa4` `msaa8` | FXAA and MSAA are alternatives, never both |
 | `shadowQuality` | `off` `low` `medium` `high` `ultra` | 0 / 512 / 1024 / 2048 / 4096 |
 | `shadowFilter` | `hard` `pcf` `soft` | Basic / PCF / VSM |
-| `shadowDistance` | 5–500 m | Half-extent of the built-in sun's frustum |
+| `shadowDistance` | 5–500 m | Half-extent of the built-in sun's frustum, which follows the camera |
 | `maxShadowLights` | -1, or 0–32 | How many lights may cast at once. `-1` is no limit |
 | `toneMapping` | `none` `linear` `reinhard` `cineon` `neutral` `aces` | |
 | `exposure` | 0.1–4 | Applied before the curve |
