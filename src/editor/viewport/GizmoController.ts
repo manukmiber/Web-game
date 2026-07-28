@@ -78,6 +78,19 @@ export class GizmoController {
     this.syncPivot();
   }
 
+  /**
+   * Draws the handles bigger, for pointers that cannot hit small ones.
+   *
+   * `size` scales the picker geometry along with the visible arrows, which is the point — the
+   * gizmo has to be *hittable*, not merely visible. On a phone at the default size the translate
+   * arrows are thinner than the contact patch of a fingertip, so a drag meant for the X arrow
+   * landed on the free-move handle in the middle and the object slid across the ground plane
+   * instead of along the axis.
+   */
+  setHandleScale(scale: number): void {
+    this.controls.size = scale;
+  }
+
   setSnapping(enabled: boolean, move: number, rotate: number, scale: number): void {
     this.controls.setTranslationSnap(enabled ? move : null);
     this.controls.setRotationSnap(enabled ? rotate * (Math.PI / 180) : null);

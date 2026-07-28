@@ -118,7 +118,17 @@ shadows near the player" and "shadows everywhere, all mushy". A single shadow ma
 large area has no usable resolution anywhere. Halving the range sharpens shadows exactly as much as
 doubling the map size, and costs no memory at all.
 
-Cascades remove the trade-off and arrive with the streaming work
+**Where that box sits is not up to you, and should not be.** It follows the camera — centred
+`shadowRange` ahead of it, so the covered slab runs from about the near clip to twice the range
+rather than spending half of itself behind you. Only the light's *rotation* is the light's own.
+
+That is worth saying plainly because the alternative is a trap this engine fell into until v0.7.8:
+the box used to be centred on the light entity, so moving a directional light made every shadow in
+the scene disappear while the shading did not change at all. A directional light models a source far
+enough away that its rays are parallel — it has a direction and no position, and its gizmo sits
+wherever is convenient to grab. Put it where you can see it; it will not move the shadows.
+
+Cascades remove the range trade-off entirely and arrive with the streaming work
 ([ARCHITECTURE.md §9.4](../ARCHITECTURE.md)).
 
 ## Ambient light and the sky

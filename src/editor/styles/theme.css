@@ -73,6 +73,15 @@ body {
   font: var(--font);
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
+  /*
+   * The page itself never scrolls — panels scroll inside themselves. Without this, a drag that
+   * runs past the end of a dock rubber-bands the whole application on iOS, and the pointer
+   * stream it was part of is cancelled halfway through.
+   *
+   * Note this is *not* `touch-action: none`: that would inherit into the docks and stop them
+   * scrolling under a finger. The canvas asks for it specifically — see `.viewport`.
+   */
+  overscroll-behavior: none;
 }
 
 /* -------------------------------------------------------------- controls */
@@ -492,6 +501,10 @@ code {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
+  /* Stated, not inherited: a panel is the one place a finger drag *should* scroll. */
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
 }
 
 /*
@@ -1115,12 +1128,23 @@ code {
   height: 100%;
   background: var(--bg-viewport);
   overflow: hidden;
+  /*
+   * Every gesture over the viewport belongs to the camera, the gizmo or the on-screen pads —
+   * none of it to the browser. OrbitControls sets this on the canvas itself while it is
+   * connected, but the touch pads and the rest of the viewport are not the canvas, and a drag
+   * that starts on a pad and slides onto the surround must not turn into a page pan halfway.
+   */
+  touch-action: none;
 }
 
 .viewport canvas {
   display: block;
   width: 100%;
   height: 100%;
+  /* A long press on the canvas otherwise offers "save image", mid-orbit. */
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .viewport-hint {
@@ -1955,4 +1979,192 @@ code {
 ::-webkit-scrollbar-thumb:hover {
   background: #5a6473;
   background-clip: padding-box;
+}
+
+/* ------------------------------------------------------- touch and mobile
+ *
+ * Everything below exists because the editor was built for a mouse and a keyboard, and on a
+ * phone that meant three separate dead ends: gestures the browser claimed before the canvas saw
+ * them, hit targets smaller than a fingertip, and a Play mode whose only controls were keys the
+ * device does not have. The rules here are the presentation half of that fix; the input half is
+ * in `ViewportController` and `TouchControls`.
+ */
+
+/*
+ * On-screen movement controls, Play mode only.
+ *
+ * Laid out as two thumb zones and a button column rather than a painted joystick in a fixed
+ * spot: the pads are transparent to look at and *relative* to use — wherever the thumb lands is
+ * the centre — so they take no attention away from the scene.
+ */
+.touch-controls {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  /* Under the play banner, over the canvas. */
+  z-index: 2;
+}
+
+.touch-pad {
+  position: absolute;
+  bottom: 0;
+  /* Leaves the middle third clear for the buttons — see `.touch-buttons`. */
+  width: 34%;
+  max-width: 240px;
+  height: 62%;
+  pointer-events: auto;
+  touch-action: none;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding-bottom: 12px;
+}
+
+.touch-pad-move {
+  left: 0;
+  border-top-right-radius: 30% 22%;
+}
+
+.touch-pad-look {
+  right: 0;
+  border-top-left-radius: 30% 22%;
+}
+
+/* Held pads tint faintly, so it is obvious which thumb the scene is responding to. */
+.touch-pad:active {
+  background: rgba(90, 162, 255, 0.07);
+}
+
+.touch-pad-label {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  opacity: 0.55;
+}
+
+/*
+ * Between the two thumb pads, along the bottom edge.
+ *
+ * Stacked up the right-hand side first, which put them off the top of the viewport on a phone
+ * in landscape — the orientation this is mostly used in, and the one with the least height to
+ * spare. The middle is the one region neither thumb rests in, and it is bounded by the pads
+ * rather than by a guess at how tall the window is.
+ */
+.touch-buttons {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: 12px;
+  display: flex;
+  gap: 10px;
+  pointer-events: auto;
+}
+
+.touch-button {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: rgba(20, 23, 28, 0.6);
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  touch-action: none;
+}
+
+.touch-button.held {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: var(--accent-text);
+}
+
+/* Harness rows in the Statistics table name geometry with no entity behind it. */
+.stats-table tr.unselectable {
+  cursor: default;
+  color: var(--text-dim);
+}
+
+/*
+ * Coarse pointers get bigger controls everywhere, not only in the viewport.
+ *
+ * A 22px row and a 5px splitter handle are comfortable with a mouse and unusable with a thumb.
+ * Keyed off the pointer rather than the width, because the two are independent — see
+ * `isCoarsePointer` for the same argument on the input side.
+ */
+@media (pointer: coarse) {
+  :root {
+    --row-height: 30px;
+  }
+
+  button,
+  select,
+  input[type='text'],
+  input[type='number'] {
+    min-height: 30px;
+  }
+
+  .dock-tab {
+    padding: 6px 10px;
+  }
+
+  .splitter {
+    /* The bar stays thin; only the region that answers a drag grows. */
+    position: relative;
+  }
+
+  .splitter::after {
+    content: '';
+    position: absolute;
+    inset: -8px;
+  }
+}
+
+/*
+ * Narrow windows: the docks stop taking columns and become drawers over the viewport.
+ *
+ * 900px is `DRAWER_BREAKPOINT` in `state/layout.ts`, where it is derived rather than chosen —
+ * the two files make one decision from opposite sides and have to agree. A phone in landscape
+ * is 844px and lands under it: in flow the two docks leave a 264px viewport, which is a 3D
+ * editor with almost no 3D in it. Floating over the scene is the only arrangement that fits.
+ */
+@media (max-width: 899.98px) {
+  .editor-body {
+    /* One column: the viewport. The docks are positioned out of flow below. */
+    grid-template-columns: minmax(0, 1fr) !important;
+    position: relative;
+  }
+
+  .dock-left,
+  .dock-right {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: min(86vw, 340px);
+    z-index: 5;
+    box-shadow: var(--shadow-2);
+  }
+
+  .dock-left {
+    left: 0;
+  }
+
+  .dock-right {
+    right: 0;
+  }
+
+  .editor-body > .splitter {
+    display: none;
+  }
+
+  .viewport-column {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .viewport-hint {
+    /* It would otherwise sit under the right-hand thumb pad. */
+    display: none;
+  }
 }

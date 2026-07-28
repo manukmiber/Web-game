@@ -940,6 +940,52 @@ Light of its own, exactly as §10.1 describes, and the settings go with it.
 The global switches — whether the shadow pass runs at all, and which filter it uses — stay in the
 settings, because those are properties of the machine.
 
+### 13.4 A directional shadow frustum follows the view, not the light
+
+A directional light has no position. Only its rotation means anything: it models a source far
+enough away that its rays are parallel, so moving one changes nothing about how the scene is lit.
+Its *shadow map*, though, has to be a finite box somewhere, and the obvious place to put that box —
+around the light entity, where its gizmo is — is wrong in a way that takes a while to see.
+
+It was wrong here until v0.7.8, and the symptom was not "shadows are in the wrong place". It was
+shadows vanishing. Drag the sun thirty metres sideways and the shading is pixel-identical, because
+the direction did not change; but the ±`shadowRange` box went with the gizmo and left the geometry
+behind, so every shadow in the scene disappeared with no control anywhere that looked responsible
+for it. Fly far enough from the origin in an unlit scene and the placeholder rig did the same thing,
+for the same reason.
+
+So the frustum is placed from the camera: centred `range` ahead of it, so the covered slab runs from
+roughly the near clip to twice the range rather than spending half of itself behind the viewer, and
+oriented by the light's rotation. The light's own position is then a property of its gizmo and
+nothing else, which is what a directional light's position always was.
+
+Two details are not optional. The centre is **quantised to whole shadow-map texels**, in the light's
+own basis — a map that slides continuously with the camera resamples every shadow edge every frame,
+and the shadows crawl and shimmer as you orbit. And the placement is written to the Three light's
+*local* transform, never to the entity's Transform: the bridge reads scene data and writes Three
+(§10), and a renderer that wrote camera-dependent positions back into the scene would put them in
+the undo history and the save file.
+
+This is a single frustum, which means one resolution across the whole covered range. Cascades —
+several boxes at increasing size, chosen per fragment by depth — are the standard answer and arrive
+with the streaming work (§9.4); the trade-off `shadowRange` exposes is exactly the one they remove.
+
+### 13.5 Touch is input, so it stops at the same line everything else does
+
+The on-screen movement controls added in v0.7.8 needed no engine code. They set the named analog
+axes `InputState` already exposed (`move`, `strafe`, `turn`) and the keys it already had, which is
+the same door a gamepad on the hardware bus (§12) or a script comes through. `CharacterSystem` reads
+`combinedAxis`, so a touch laptop can drive both at once and neither knows the other exists.
+
+That this was free is §9.5 paying out rather than a happy accident. The engine does not listen to
+the DOM, so "input" was already a data structure the host fills, and adding a fourth filler was a
+component in `editor/panels`. Had the engine grown a `KeyboardInput` that attached its own
+listeners, a phone would have needed a second input path through every system that reads one.
+
+The parts that genuinely are the host's problem stayed there: which gestures the browser is allowed
+to claim (`touch-action`), how big a hit target has to be before a finger can hold it, and how far a
+tap may travel before it is a drag. §14.5 covers the last two.
+
 ## 14. The editor shell
 
 ### 14.1 Panels take space; they do not cover the viewport
@@ -1005,6 +1051,28 @@ came forward, leaving its device in the bus with nothing draining its outbound q
 
 The same reasoning constrains anything added later: a panel may own draft text and scroll
 position, but not a connection, a subscription or a queue.
+
+### 14.5 A finger is not a small mouse
+
+Two independent properties get confused constantly, and treating them as one produces a mobile
+layer that is wrong on half the devices it runs on:
+
+- **How much room there is.** A window narrower than `DRAWER_BREAKPOINT` cannot lay both side docks
+  out beside a usable viewport, so below it they float over the scene instead. The constant is
+  derived — both default dock widths plus `MIN_VIEWPORT_WIDTH` — rather than picked, because the
+  number that matters is "when does this stop fitting", and a phone in landscape is 844px, which
+  sounds roomy and is not.
+- **What is doing the pointing.** Hit targets have to grow for a finger whatever the screen size,
+  and a 13-inch touchscreen laptop is a wide coarse pointer while a desktop window dragged narrow
+  is a narrow fine one. This is a `(pointer: coarse)` question, asked separately.
+
+Under the second heading, and worth stating because each was a bug reported as something else: the
+transform gizmo's `size` scales its *picker* geometry along with its arrows, and at the default the
+arrows are thinner than a fingertip's contact patch — so a drag meant for an axis lands on the
+free-move handle and the object slides across the ground plane. Click-versus-drag needs a larger
+threshold, because a tap on glass moves while the finger flattens. And picking fires a small cross
+of rays rather than one, because a ray through the centre of a contact patch misses anything thin
+even when you are plainly touching it.
 
 ---
 

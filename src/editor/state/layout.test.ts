@@ -5,8 +5,10 @@ import {
   DOCK_PANELS,
   PANELS,
   PANEL_SHORTCUTS,
+  DRAWER_BREAKPOINT,
   clampLayout,
   dockKeys,
+  usesDrawers,
   type LayoutState,
   type PanelId,
 } from './layout';
@@ -124,5 +126,54 @@ describe('clampLayout', () => {
     const small = { width: 880, height: 620 };
     const once = clampLayout(layout({ bottomOpen: true, leftWidth: 470, rightWidth: 610 }), small);
     expect(clampLayout(once, small)).toEqual(once);
+  });
+});
+
+/**
+ * On a phone the two side docks at their minimum widths are 420px between them, so laying them
+ * out beside the viewport on a 390px screen left the viewport nothing at all. Below the
+ * breakpoint they float over the scene instead — see the mobile block in `theme.css`, which
+ * makes the same decision from the CSS side.
+ */
+describe('drawer layout on narrow screens', () => {
+  it('switches over at the breakpoint the stylesheet uses', () => {
+    // At the breakpoint itself the in-flow layout still leaves a full minimum viewport, so it
+    // is the last width that does *not* need drawers.
+    expect(usesDrawers(DRAWER_BREAKPOINT)).toBe(false);
+    expect(usesDrawers(DRAWER_BREAKPOINT - 1)).toBe(true);
+  });
+
+  it('is the narrowest window that fits both docks and a minimum viewport', () => {
+    const fitted = clampLayout(layout(), { width: DRAWER_BREAKPOINT, height: 800 });
+    // Nothing had to be shrunk to make room, which is what "narrowest that fits" means.
+    expect(fitted.leftWidth).toBe(DEFAULT_LAYOUT.leftWidth);
+    expect(fitted.rightWidth).toBe(DEFAULT_LAYOUT.rightWidth);
+  });
+
+  it('treats a phone in landscape as narrow, not as a small desktop', () => {
+    // 844px sounds roomy; in flow it leaves a 264px viewport.
+    expect(usesDrawers(844)).toBe(true);
+  });
+
+  it('stops charging the viewport for docks that float over it', () => {
+    const phone = { width: 390, height: 780 };
+    const fitted = clampLayout(layout({ leftWidth: 300, rightWidth: 320 }), phone);
+    // Kept whole: a drawer is as wide as it wants to be, because it costs the viewport nothing.
+    expect(fitted.leftWidth).toBe(300);
+    expect(fitted.rightWidth).toBe(320);
+  });
+
+  it('still keeps a viewport above the bottom dock, which does take space', () => {
+    const fitted = clampLayout(layout({ bottomOpen: true, bottomHeight: 700 }), {
+      width: 390,
+      height: 700,
+    });
+    expect(fitted.bottomHeight).toBeLessThan(700);
+  });
+
+  it('is idempotent on a phone too', () => {
+    const phone = { width: 390, height: 780 };
+    const once = clampLayout(layout({ bottomOpen: true }), phone);
+    expect(clampLayout(once, phone)).toEqual(once);
   });
 });

@@ -2,7 +2,16 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      `user-scalable=no` because every gesture over this page belongs to the application. Pinch
+      is how you zoom the 3D view; if the browser also reads it as page zoom, the scene zooms and
+      the interface grows at the same time. `viewport-fit=cover` puts the canvas under a phone's
+      rounded corners and notch rather than in a letterbox.
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
     <title>Web 3D Scene Editor</title>
   </head>
   <body>

@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createCollider } from '../components/Collider';
 import { createLight } from '../components/Light';
@@ -154,5 +155,70 @@ describe('collectSceneStats', () => {
       scene.add(createPrimitiveEntity('Box', { name: `Box ${i}`, position: [i * 2, 0, 0] }));
     }
     expect(collectSceneStats(scene, bridge, { topCount: 3 }).heaviest).toHaveLength(3);
+  });
+
+  /**
+   * The bug this covers: the Performance panel's stress harness is added to the render host's
+   * scene rather than to the bridge, so loading the Forest preset put four thousand cones on
+   * screen and every number in the Statistics panel stayed exactly where it was.
+   */
+  describe('geometry that belongs to no entity', () => {
+    /** Stand-in for the stress harness: a root the bridge knows nothing about. */
+    function harness(instances: number): THREE.Group {
+      const root = new THREE.Group();
+      root.name = 'StressScene';
+      const mesh = new THREE.InstancedMesh(
+        new THREE.BoxGeometry(1, 1, 1),
+        new THREE.MeshStandardMaterial(),
+        instances,
+      );
+      mesh.castShadow = true;
+      root.add(mesh);
+      return root;
+    }
+
+    it('counts it, because the frame draws it whoever put it there', () => {
+      scene.add(createPrimitiveEntity('Box', { name: 'Crate' }));
+      const authored = collectSceneStats(scene, bridge);
+
+      const stats = collectSceneStats(scene, bridge, { extraRoots: [harness(100)] });
+      // 100 boxes of 12 triangles each, on top of whatever the scene already had.
+      expect(stats.triangles.total).toBe(authored.triangles.total + 1200);
+      expect(stats.triangles.visible).toBe(authored.triangles.visible + 1200);
+      expect(stats.objects.scatterInstances).toBe(100);
+      expect(stats.objects.drawCallEstimate).toBe(authored.objects.drawCallEstimate + 1);
+    });
+
+    it('leaves the entity census alone, because the harness owns no entities', () => {
+      scene.add(createPrimitiveEntity('Box', { name: 'Crate' }));
+      const stats = collectSceneStats(scene, bridge, { extraRoots: [harness(50)] });
+      expect(stats.objects.entities).toBe(1);
+      expect(stats.objects.externalMeshes).toBe(1);
+    });
+
+    it('names it in the heaviest table but leaves it unselectable', () => {
+      scene.add(createPrimitiveEntity('Box', { name: 'Crate' }));
+      const { heaviest } = collectSceneStats(scene, bridge, { extraRoots: [harness(500)] });
+
+      const external = heaviest.find((entry) => entry.kind === 'external');
+      expect(external?.name).toBe('StressScene');
+      expect(external?.instances).toBe(500);
+      // No entity behind it, so the panel must not offer a row that selects nothing.
+      expect(external?.id).toBe('');
+      // Far heavier than the one authored box, so it sorts to the top.
+      expect(heaviest[0]).toBe(external);
+    });
+
+    it('shares geometry with the scene, so `unique` does not double-count it', () => {
+      const geometry = new THREE.BoxGeometry(1, 1, 1);
+      const first = new THREE.Group();
+      first.add(new THREE.Mesh(geometry, new THREE.MeshStandardMaterial()));
+      const second = new THREE.Group();
+      second.add(new THREE.Mesh(geometry, new THREE.MeshStandardMaterial()));
+
+      const stats = collectSceneStats(scene, bridge, { extraRoots: [first, second] });
+      expect(stats.triangles.total).toBe(24);
+      expect(stats.triangles.unique).toBe(12);
+    });
   });
 });
