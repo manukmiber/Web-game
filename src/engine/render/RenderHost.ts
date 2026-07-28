@@ -101,6 +101,8 @@ export class RenderHost {
   private post = new PostProcess();
   private graphics: GraphicsSettings = { ...DEFAULT_GRAPHICS };
   private assets: AssetStore | null;
+  /** Lights that were granted a shadow map by the last frame's budget. */
+  private activeShadowCasters = 0;
 
   constructor(engineScene: Scene, options: RenderHostOptions) {
     const {
@@ -236,6 +238,7 @@ export class RenderHost {
       previous.antialias !== next.antialias ||
       previous.shadowQuality !== next.shadowQuality ||
       previous.shadowFilter !== next.shadowFilter ||
+      previous.maxShadowLights !== next.maxShadowLights ||
       previous.resolutionScale !== next.resolutionScale
     ) {
       this.stats?.reset();
@@ -245,6 +248,22 @@ export class RenderHost {
   /** True when the frame is routed through the offscreen antialiasing buffer. */
   usesPostProcessing(): boolean {
     return needsPostProcessing(this.graphics.antialias);
+  }
+
+  /**
+   * Shadow-casting lights the budget granted on the last frame, and how many asked.
+   *
+   * Reported rather than left implicit because a light silently losing its shadow is exactly
+   * the kind of change that reads as a renderer bug. The Statistics panel shows "3 of 9", and
+   * the answer to "why is my torch not casting" becomes visible instead of mysterious.
+   */
+  shadowBudget(): { active: number; requested: number; limit: number } {
+    const summary = this.bridge.lightSummary();
+    return {
+      active: this.activeShadowCasters,
+      requested: summary.requestedShadows,
+      limit: this.graphics.maxShadowLights,
+    };
   }
 
   private invalidateMaterials(): void {
@@ -445,6 +464,17 @@ export class RenderHost {
     this.syncGameCamera();
     const camera = this.activeCamera;
     this.sky?.update(camera);
+
+    // Spent per frame rather than once, because which lights matter is a function of where the
+    // camera is: walking towards a torch should let it take a shadow map from one behind you.
+    this.activeShadowCasters =
+      this.graphics.shadowQuality === 'off'
+        ? 0
+        : this.bridge.applyShadowBudget(this.graphics.maxShadowLights, [
+            camera.position.x,
+            camera.position.y,
+            camera.position.z,
+          ]);
 
     // Restored before binding a target, so `setRenderTarget(null)` at the end of the resolve
     // chain comes back to a full-size viewport rather than to whatever the last extra pass left.

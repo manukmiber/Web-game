@@ -106,6 +106,71 @@ describe('Scene components', () => {
     const { scene, ids } = sceneWith('Empty');
     expect(scene.expect(ids[0]!).components).toEqual([]);
   });
+
+  /**
+   * Repeatable components — `Script`, as of v0.7.5.
+   *
+   * Every method here exists because the by-type ones cannot express "the second one", and
+   * silently operating on the first is the failure mode: removing script two deleted script one.
+   */
+  describe('several components of one type', () => {
+    it('lists every component of a type in array order', () => {
+      const { scene, ids } = sceneWith('Box');
+      const id = ids[0]!;
+      scene.addComponent(id, { type: 'Script', name: 'First' });
+      scene.addComponent(id, { type: 'Script', name: 'Second' });
+
+      expect(scene.getComponents(id, 'Script').map((c) => c.name)).toEqual(['First', 'Second']);
+      // The by-type reader still answers with the first, which is what single-instance callers
+      // have always wanted from it.
+      expect(scene.getComponent(id, 'Script')?.name).toBe('First');
+    });
+
+    it('removes the one at an index, not the first of its type', () => {
+      const { scene, ids } = sceneWith('Box');
+      const id = ids[0]!;
+      scene.addComponent(id, { type: 'Script', name: 'First' });
+      scene.addComponent(id, { type: 'Script', name: 'Second' });
+
+      const index = scene.expect(id).components.findIndex((c) => c.name === 'First');
+      const removed = scene.removeComponentAt(id, index);
+
+      expect(removed?.name).toBe('First');
+      expect(scene.getComponents(id, 'Script').map((c) => c.name)).toEqual(['Second']);
+    });
+
+    it('ignores an index that is out of range rather than splicing wildly', () => {
+      const { scene, ids } = sceneWith('Box');
+      const before = scene.expect(ids[0]!).components.length;
+      expect(scene.removeComponentAt(ids[0]!, 99)).toBeUndefined();
+      expect(scene.removeComponentAt(ids[0]!, -1)).toBeUndefined();
+      expect(scene.expect(ids[0]!).components).toHaveLength(before);
+    });
+
+    it('patches the component at an index', () => {
+      const { scene, ids } = sceneWith('Box');
+      const id = ids[0]!;
+      scene.addComponent(id, { type: 'Script', name: 'First' });
+      scene.addComponent(id, { type: 'Script', name: 'Second' });
+
+      const index = scene.expect(id).components.findIndex((c) => c.name === 'Second');
+      scene.updateComponentAt(id, index, { name: 'Renamed' });
+
+      expect(scene.getComponents(id, 'Script').map((c) => c.name)).toEqual(['First', 'Renamed']);
+    });
+
+    it('announces an in-place mutation through touchComponents', () => {
+      const { scene, ids } = sceneWith('Box');
+      let fired = 0;
+      scene.events.on('componentsChanged', () => (fired += 1));
+      scene.touchComponents(ids[0]!);
+      expect(fired).toBe(1);
+
+      // A dead entity has nothing to announce, and must not throw for asking.
+      scene.touchComponents('nope');
+      expect(fired).toBe(1);
+    });
+  });
 });
 
 describe('uniqueName', () => {

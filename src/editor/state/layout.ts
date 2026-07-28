@@ -22,6 +22,7 @@ export type PanelId =
   | 'assistant'
   | 'console'
   | 'performance'
+  | 'statistics'
   | 'graphics'
   | 'hardware';
 
@@ -77,6 +78,14 @@ export const PANELS: Record<PanelId, PanelMeta> = {
     shortcut: 'F8',
     title: 'Frame timing, draw calls and the stress-scene harness (F8)',
   },
+  statistics: {
+    id: 'statistics',
+    label: 'Statistics',
+    icon: '△',
+    dock: 'bottom',
+    shortcut: 'F10',
+    title: 'Triangle and object census, per entity and per component (F10)',
+  },
   graphics: {
     id: 'graphics',
     label: 'Graphics',
@@ -99,7 +108,7 @@ export const PANELS: Record<PanelId, PanelMeta> = {
 export const DOCK_PANELS: Record<DockId, PanelId[]> = {
   left: ['hierarchy'],
   right: ['inspector', 'assistant'],
-  bottom: ['console', 'performance', 'graphics', 'hardware'],
+  bottom: ['console', 'performance', 'statistics', 'graphics', 'hardware'],
 };
 
 /**

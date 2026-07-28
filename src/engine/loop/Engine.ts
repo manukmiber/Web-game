@@ -5,6 +5,7 @@ import { GameState } from '../gameplay/GameState';
 import { HardwareBus } from '../hardware/HardwareBus';
 import { InputState } from '../input/InputState';
 import { FrameStats } from '../perf/FrameStats';
+import { PhysicsWorld } from '../physics/PhysicsWorld';
 import { bindAssetStore } from '../render/material';
 import type { AssetRecord, Entity, WorldSettings } from '../scene/types';
 import '../components';
@@ -93,6 +94,17 @@ export class Engine {
    * would be its own kind of rude.
    */
   readonly hardware = new HardwareBus();
+  /**
+   * The physics world.
+   *
+   * Owned by the Engine rather than by the PhysicsSystem, for the same reason `input` and
+   * `game` are: three separate things need it and only one of them ticks it. The
+   * CharacterSystem casts against it to find the floor, scripts raycast and shove bodies
+   * through it, and the PhysicsSystem is simply whoever calls `step`. A world hidden inside
+   * that system would have to be reached through `engine.systems.find(...)`, which is how a
+   * clean seam turns into a service locator.
+   */
+  readonly physics = new PhysicsWorld();
 
   private systems: System[] = [];
   private mode: EngineMode = 'edit';
@@ -156,8 +168,14 @@ export class Engine {
     // the same contract `InputState` keeps for the keyboard. Pumped in edit mode too, so the
     // hardware panel shows live channel values while a pot is being calibrated.
     this.hardware.pump();
+    // Timed individually rather than as a block. "The frame costs 14 ms" is a fact you can do
+    // nothing with; "11 of the 14 are in the PhysicsSystem" tells you what to fix, and it is
+    // the difference between the performance panel being a readout and being an instrument.
     for (const system of this.systems) {
-      if (system.runsIn.includes(this.mode)) system.update(dt, this);
+      if (!system.runsIn.includes(this.mode)) continue;
+      this.stats.beginSection(system.name);
+      system.update(dt, this);
+      this.stats.endSection(system.name);
     }
     // Systems mutate transforms in place and mark them dirty; this is where those become one
     // event per entity, after every system has had its say and before anything renders.
@@ -191,6 +209,10 @@ export class Engine {
     this.mode = mode;
     this.game.reset();
     this.input.clear();
+    // Bodies describe entities that are about to be restored from the snapshot, so every one of
+    // them is stale — including their velocities, which are the clearest example of state a
+    // play session accumulates outside the scene.
+    this.physics.clear();
     // Buffered lines and edges go; the connections stay. Before the systems reset, so a
     // system zeroing its outputs writes to a device that has forgotten what it last sent.
     this.hardware.reset();

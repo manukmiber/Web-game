@@ -78,12 +78,18 @@ export class CommandSceneEditor implements SceneEditor {
     this.run(new AddComponentCommand(this.scene, id, component));
   }
 
-  removeComponent(id: EntityId, type: string): void {
-    this.run(new RemoveComponentCommand(this.scene, id, type));
+  removeComponent(id: EntityId, type: string, componentIndex?: number): void {
+    this.run(new RemoveComponentCommand(this.scene, id, type, componentIndex));
   }
 
-  setComponentProperty(ids: EntityId[], type: string, path: string, value: unknown): void {
-    this.run(new SetComponentPropertyCommand(this.scene, ids, type, path, value));
+  setComponentProperty(
+    ids: EntityId[],
+    type: string,
+    path: string,
+    value: unknown,
+    componentIndex?: number,
+  ): void {
+    this.run(new SetComponentPropertyCommand(this.scene, ids, type, path, value, componentIndex));
   }
 
   select(ids: EntityId[]): void {

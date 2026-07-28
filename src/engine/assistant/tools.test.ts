@@ -385,3 +385,69 @@ describe('scatter_instances', () => {
     expect(result.text).toContain('Capped at 1000');
   });
 });
+
+/**
+ * Several scripts on one entity, through the assistant.
+ *
+ * `set_script` addressed "the" Script by type, which stopped being a well-defined thing in
+ * v0.7.5. The `script` parameter is the handle a caller actually has — a name — and unmatched
+ * names add rather than fail, so "give the crate a Patrol script" is one call.
+ */
+describe('set_script with several scripts on one entity', () => {
+  it('targets a script by name and adds one when the name is new', () => {
+    const id = createBox();
+    call('set_script', { entity: id, script: 'Patrol', source: '// patrol' });
+    call('set_script', { entity: id, script: 'Health', source: '// health' });
+
+    const scripts = scene.getComponents<ScriptComponent>(id, 'Script');
+    expect(scripts.map((script) => script.name)).toEqual(['Patrol', 'Health']);
+    expect(scripts.map((script) => script.source)).toEqual(['// patrol', '// health']);
+  });
+
+  it('edits the named script rather than the first one', () => {
+    const id = createBox();
+    call('set_script', { entity: id, script: 'Patrol', source: '// a' });
+    call('set_script', { entity: id, script: 'Health', source: '// b' });
+
+    call('set_script', { entity: id, script: 'Health', source: '// edited' });
+
+    const scripts = scene.getComponents<ScriptComponent>(id, 'Script');
+    expect(scripts[0]!.source).toBe('// a');
+    expect(scripts[1]!.source).toBe('// edited');
+  });
+
+  it('writes the entity\'s first script when no name is given, as it always did', () => {
+    const id = createBox();
+    call('set_script', { entity: id, source: '// first' });
+    call('set_script', { entity: id, source: '// same one' });
+
+    expect(scene.getComponents(id, 'Script')).toHaveLength(1);
+    expect(scene.getComponent<ScriptComponent>(id, 'Script')?.source).toBe('// same one');
+  });
+
+  it('sets the execution order', () => {
+    const id = createBox();
+    call('set_script', { entity: id, script: 'Camera', source: '// cam', order: 10 });
+    expect(scene.getComponent<ScriptComponent>(id, 'Script')?.order).toBe(10);
+  });
+
+  it('reports how many scripts the entity now carries', () => {
+    const id = createBox();
+    call('set_script', { entity: id, script: 'One', source: '//' });
+    const result = call('set_script', { entity: id, script: 'Two', source: '//' });
+    expect(result.text).toMatch(/2 scripts/);
+  });
+
+  it('adds a second Script through add_component, since the type allows several', () => {
+    const id = createBox();
+    call('add_component', { entity: id, component: 'Script' });
+    call('add_component', { entity: id, component: 'Script' });
+    expect(scene.getComponents(id, 'Script')).toHaveLength(2);
+  });
+
+  it('still refuses a second component of a single-instance type', () => {
+    const id = createBox();
+    expect(call('add_component', { entity: id, component: 'Collider' }).isError).toBeUndefined();
+    expect(call('add_component', { entity: id, component: 'Collider' }).isError).toBe(true);
+  });
+});

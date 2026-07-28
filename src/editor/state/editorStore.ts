@@ -85,6 +85,14 @@ interface EditorState {
   scaleSnap: number;
   playing: boolean;
   shading: ShadingMode;
+  /**
+   * The frame-rate overlay drawn over the viewport.
+   *
+   * Not part of `layout`: it is not a dock and it takes no space from anything, so the dock
+   * clamping and tab logic have nothing to say about it. It is the one readout that has to be
+   * visible *while* you are playing, which is exactly when every dock is in the way.
+   */
+  hudVisible: boolean;
   /** Bumped whenever scene structure changes, to re-render the Hierarchy tree. */
   sceneRevision: number;
   canUndo: boolean;
@@ -108,6 +116,7 @@ interface EditorState {
   setSnapValues(values: Partial<Pick<EditorState, 'moveSnap' | 'rotateSnap' | 'scaleSnap'>>): void;
   setPlaying(playing: boolean): void;
   setShading(shading: ShadingMode): void;
+  toggleHud(): void;
   bumpSceneRevision(): void;
   setHistoryState(canUndo: boolean, canRedo: boolean): void;
   setStatusMessage(message: string | null): void;
@@ -161,6 +170,7 @@ export const useEditorStore = create<EditorState>((set) => ({
   scaleSnap: 0.1,
   playing: false,
   shading: 'shaded',
+  hudVisible: false,
   sceneRevision: 0,
   canUndo: false,
   canRedo: false,
@@ -186,6 +196,7 @@ export const useEditorStore = create<EditorState>((set) => ({
   setSnapValues: (values) => set(values),
   setPlaying: (playing) => set({ playing }),
   setShading: (shading) => set({ shading }),
+  toggleHud: () => set((state) => ({ hudVisible: !state.hudVisible })),
   bumpSceneRevision: () => set((state) => ({ sceneRevision: state.sceneRevision + 1 })),
   setHistoryState: (canUndo, canRedo) => set({ canUndo, canRedo }),
   setStatusMessage: (statusMessage) => set({ statusMessage }),

@@ -111,6 +111,7 @@ Defined in `src/engine/render/GraphicsSettings.ts`, applied by `RenderHost.apply
 | `shadowQuality` | `off` `low` `medium` `high` `ultra` | 0 / 512 / 1024 / 2048 / 4096 |
 | `shadowFilter` | `hard` `pcf` `soft` | Basic / PCF / VSM |
 | `shadowDistance` | 5–500 m | Half-extent of the built-in sun's frustum |
+| `maxShadowLights` | -1, or 0–32 | How many lights may cast at once. `-1` is no limit |
 | `toneMapping` | `none` `linear` `reinhard` `cineon` `neutral` `aces` | |
 | `exposure` | 0.1–4 | Applied before the curve |
 | `resolutionScale` | 0.25–1 | |
@@ -139,6 +140,15 @@ per-sample bandwidth.
 aliasing inside a texture or a shader.
 
 ### Shadows
+
+`maxShadowLights` is the one setting here that is a multiplier on the *whole frame* rather than on
+one pass. Each shadow-casting light re-renders every caster from its own point of view, so four
+lights is five renders. Which four is decided per frame by `selectShadowCasters`, from each light's
+`shadowPriority`, its brightness, and its distance to the camera — so a scene with thirty torches
+spends its budget on the three nearest plus the sun, instead of on whichever thirty happen to
+exist. `RenderHost.shadowBudget()` reports what was granted against what was asked, which is what
+the Statistics panel shows; a light silently losing its shadow reads as a renderer bug otherwise.
+The per-light half of this is in [LIGHTING.md](./LIGHTING.md).
 
 Quality is the map resolution; filter is how the lookup is smoothed; distance is how much world
 that map has to cover. The panel does the arithmetic for you, because the interesting number is

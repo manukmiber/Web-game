@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { Scene } from '@engine/scene/Scene';
 import { createPrimitiveEntity } from '@engine/scene/primitives';
 import type { Transform } from '@engine/scene/types';
+import { createScript } from '@engine/components/Script';
 import { CommandHistory } from './Command';
 import {
+  AddComponentCommand,
   AddEntityCommand,
   DeleteEntitiesCommand,
   DuplicateEntitiesCommand,
@@ -352,6 +354,84 @@ describe('component commands', () => {
 
     history.undo();
     expect(scene.expect(id).components.map((c) => c.type)).toEqual(['MeshRenderer', 'Material']);
+  });
+
+  /**
+   * Addressing a specific component rather than the first of its type.
+   *
+   * Every case below was a real bug before v0.7.5 made `Script` repeatable: editing the second
+   * script wrote to the first, removing it removed the first, and undoing an added one deleted
+   * the wrong one.
+   */
+  describe('with several components of one type', () => {
+    function scripted() {
+      const id = addPrimitive('Box');
+      history.execute(new AddComponentCommand(scene, id, createScript({ name: 'First' })));
+      history.execute(new AddComponentCommand(scene, id, createScript({ name: 'Second' })));
+      return id;
+    }
+
+    const scriptNames = (id: string) =>
+      scene.getComponents(id, 'Script').map((c) => c.name as string);
+
+    it('writes to the component at the given index', () => {
+      const id = scripted();
+      const index = scene.expect(id).components.findIndex((c) => c.name === 'Second');
+
+      history.execute(
+        new SetComponentPropertyCommand(scene, [id], 'Script', 'source', 'x', index),
+      );
+
+      const scripts = scene.getComponents(id, 'Script');
+      expect(scripts[1]!.source).toBe('x');
+      expect(scripts[0]!.source).not.toBe('x');
+
+      history.undo();
+      expect(scene.getComponents(id, 'Script')[1]!.source).not.toBe('x');
+    });
+
+    it('keeps two indexed edits as separate history entries', () => {
+      const id = scripted();
+      const components = scene.expect(id).components;
+      const first = components.findIndex((c) => c.name === 'First');
+      const second = components.findIndex((c) => c.name === 'Second');
+
+      history.execute(new SetComponentPropertyCommand(scene, [id], 'Script', 'source', 'a', first));
+      history.execute(new SetComponentPropertyCommand(scene, [id], 'Script', 'source', 'b', second));
+
+      // Different components, so the merge key differs and the two do not coalesce.
+      history.undo();
+      expect(scene.getComponents(id, 'Script')[0]!.source).toBe('a');
+    });
+
+    it('removes the component at the index and puts it back there', () => {
+      const id = scripted();
+      const index = scene.expect(id).components.findIndex((c) => c.name === 'First');
+
+      history.execute(new RemoveComponentCommand(scene, id, 'Script', index));
+      expect(scriptNames(id)).toEqual(['Second']);
+
+      history.undo();
+      expect(scriptNames(id)).toEqual(['First', 'Second']);
+    });
+
+    it('undoes an added component by removing that one, not the first of its type', () => {
+      const id = addPrimitive('Box');
+      history.execute(new AddComponentCommand(scene, id, createScript({ name: 'First' })));
+      history.execute(new AddComponentCommand(scene, id, createScript({ name: 'Second' })));
+
+      history.undo();
+      expect(scriptNames(id)).toEqual(['First']);
+    });
+
+    it('falls back to the first of its type when the index no longer holds one', () => {
+      const id = scripted();
+      // An index pointing at the Material, not a Script: the type check has to reject it.
+      const wrong = scene.expect(id).components.findIndex((c) => c.type === 'Material');
+      history.execute(new RemoveComponentCommand(scene, id, 'Script', wrong));
+      expect(scriptNames(id)).toEqual(['Second']);
+      expect(scene.getComponent(id, 'Material')).toBeDefined();
+    });
   });
 });
 

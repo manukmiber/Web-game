@@ -46,7 +46,7 @@ export interface EditorContextValue {
 const EditorContext = createContext<EditorContextValue | null>(null);
 
 /** Reported to MCP clients in `initialize`, so a client can tell which build it is driving. */
-const EDITOR_VERSION = '0.7.4';
+const EDITOR_VERSION = '0.7.5';
 
 export function EditorProvider({ children }: { children: ReactNode }) {
   // Refs rather than state: these are created once and must survive every re-render, and

@@ -8,10 +8,12 @@ function context(props: Record<string, ScriptPropValue> = {}): ScriptContext {
     entity: {} as never,
     scene: {} as never,
     input: {} as never,
-    time: { dt: 0, elapsed: 0, frame: 0 },
+    time: {} as never,
     props,
     game: {} as never,
+    physics: {} as never,
     hardware: {} as never,
+    mathf: {} as never,
     console: { log() {}, warn() {}, error() {} },
   };
 }

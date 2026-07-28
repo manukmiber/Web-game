@@ -11,6 +11,7 @@ import {
 } from '@engine/render/GraphicsSettings';
 import { useEditorStore } from '../state/editorStore';
 import { Group, Row, Slider } from './controls';
+import { FrameGraph } from './FrameGraph';
 import type { ViewportController } from '../viewport/ViewportController';
 
 /**
@@ -113,18 +114,50 @@ export function PerformancePanel({ viewport }: Props) {
   // 30fps is the floor the engine targets, so the readout is coloured against it rather than
   // against 60 — a green 45fps is a pass, not a near-miss.
   const fpsClass = fps >= 55 ? 'good' : fps >= 30 ? 'ok' : 'bad';
+  const low1 = report?.low1Fps ?? 0;
+  // The 1% low is graded harder than the average, because that is the whole point of it: a
+  // scene whose worst percent drops to 35 fps stutters, even though 35 would be a fine average.
+  const lowClass = low1 >= 48 ? 'good' : low1 >= 28 ? 'ok' : 'bad';
 
   return (
     <div className="panel-content">
       <div className="metric-strip">
         <Metric label="fps" value={fps.toFixed(0)} className={fpsClass} large />
+        <Metric
+          label="1% low"
+          value={low1.toFixed(0)}
+          className={lowClass}
+          large
+          title="Average of the slowest 1% of frames, as fps. The number that decides whether a run feels smooth — an average never will."
+        />
+        <Metric
+          label="0.1% low"
+          value={(report?.low01Fps ?? 0).toFixed(0)}
+          title="Slowest one frame in a thousand. Where the true hitches live."
+        />
+        <Metric
+          label="avg"
+          value={(report?.averageFps ?? 0).toFixed(0)}
+          title="Mean frame rate. Above the median when the run is spiky, which is exactly why it is not the headline."
+        />
         <Metric label="median" value={`${(report?.medianMs ?? 0).toFixed(1)} ms`} />
         <Metric
           label="p95"
           value={`${(report?.p95Ms ?? 0).toFixed(1)} ms`}
           title="95th-percentile frame time — this is what stutter feels like, and a mean hides it"
         />
+        <Metric
+          label="p99"
+          value={`${(report?.p99Ms ?? 0).toFixed(1)} ms`}
+          title="99th-percentile frame time"
+        />
         <Metric label="worst" value={`${(report?.worstMs ?? 0).toFixed(1)} ms`} />
+        <Metric
+          label="hitches"
+          value={String(report?.stutterCount ?? 0)}
+          className={(report?.stutterCount ?? 0) > 0 ? 'ok' : undefined}
+          title="Frames at least twice the median, or 8 ms over it — the ones you can feel. Counted across the sample window."
+        />
         <Metric
           label="js"
           value={`${(report?.medianJsMs ?? 0).toFixed(1)} ms`}
@@ -150,6 +183,8 @@ export function PerformancePanel({ viewport }: Props) {
         )}
       </div>
 
+      {report && report.history.length > 0 && <FrameGraph history={report.history} />}
+
       {report && report.bound !== 'unknown' && (
         <div className={`verdict ${report.bound}`}>
           {report.bound === 'cpu' ? (
@@ -167,6 +202,34 @@ export function PerformancePanel({ viewport }: Props) {
       )}
 
       <div className="panel-scroll panel-columns">
+        {/*
+          Where the JavaScript half of the frame actually goes. Before v0.7.5 the panel could
+          say "11 ms of this 14 ms frame is JavaScript" and stop there, which left bisecting by
+          commenting systems out as the only way to find the other half of the answer.
+        */}
+        {report && report.sections.length > 0 && (
+          <Group title="Frame breakdown">
+            {report.sections.map((section) => (
+              <div className="control-row section-row" key={section.name}>
+                <label>{section.name.replace(/System$/, '')}</label>
+                <span className="section-bar">
+                  <span
+                    className="section-fill"
+                    style={{ width: `${Math.min(100, section.share * 100)}%` }}
+                  />
+                </span>
+                <span className="control-value" title={`worst ${section.worstMs.toFixed(2)} ms`}>
+                  {section.medianMs.toFixed(2)} ms
+                </span>
+              </div>
+            ))}
+            <p className="note">
+              Median per system, worst first. Systems only tick in Play mode, so this is empty
+              until you press Play.
+            </p>
+          </Group>
+        )}
+
         <Group title="Stress scene">
           <Row label="Preset">
             <select

@@ -1,6 +1,6 @@
 {
   "name": "web-3d-scene-editor",
-  "version": "0.7.4",
+  "version": "0.7.5",
   "description": "Browser-based 3D scene editor and the core of a web game engine",
   "scripts": {
     "dev": "vite",

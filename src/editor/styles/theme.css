@@ -1249,6 +1249,267 @@ code {
   border-left-color: var(--accent);
 }
 
+
+/* ---------------------------------------------------- frame graph & sections */
+
+/*
+ * The frame-time trace, shared by the Performance panel and the viewport overlay.
+ *
+ * `preserveAspectRatio: none` on the SVG is what lets one bar per frame stretch to whatever
+ * width the container happens to be — the graph is a shape, not a diagram, and a hundred
+ * 1-unit-wide rects scaled horizontally is exactly the right primitive for it.
+ */
+.frame-graph {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 10px 4px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-dock);
+  flex: 0 0 auto;
+}
+
+.frame-graph.empty {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.frame-graph svg {
+  display: block;
+  width: 100%;
+  height: 48px;
+  background: var(--bg-input);
+  border-radius: var(--radius-sm);
+}
+
+.frame-graph rect.good {
+  fill: var(--good);
+}
+
+.frame-graph rect.ok {
+  fill: var(--warn);
+}
+
+.frame-graph rect.bad {
+  fill: var(--danger);
+}
+
+.frame-graph line.budget {
+  stroke: var(--accent);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  vector-effect: non-scaling-stroke;
+  opacity: 0.7;
+}
+
+.frame-graph-axis {
+  display: flex;
+  justify-content: space-between;
+  color: var(--text-dim);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* One system's share of the frame, as a label, a bar and a number. */
+.control-row.section-row {
+  grid-template-columns: 1fr minmax(40px, 2fr) auto;
+  align-items: center;
+}
+
+.section-bar {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-input);
+  overflow: hidden;
+}
+
+.section-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+
+/* ---------------------------------------------------------- statistics */
+
+.control-row.stat-row {
+  grid-template-columns: 1fr auto;
+}
+
+/*
+ * The heaviest-objects table sits inside the same scroll container as the stat groups, spanning
+ * every column of the auto-fill grid. Its own scroller competing with the panel's meant that in a
+ * 220px dock neither had room and the table was simply cut off.
+ */
+.stats-table-wrap {
+  grid-column: 1 / -1;
+  overflow-x: auto;
+  border-top: 1px solid var(--border);
+  background: var(--bg-dock);
+}
+
+.stats-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+}
+
+.stats-table caption {
+  padding: 5px 10px;
+  color: var(--text-dim);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-align: left;
+}
+
+.stats-table th {
+  position: sticky;
+  top: 0;
+  padding: 4px 10px;
+  background: var(--bg-bar);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
+.stats-table td {
+  padding: 3px 10px;
+  border-bottom: 1px solid var(--bg-dock);
+  white-space: nowrap;
+}
+
+.stats-table td.numeric {
+  text-align: right;
+}
+
+.stats-table tbody tr:hover {
+  background: var(--bg-hover);
+  cursor: pointer;
+}
+
+.stats-table td.flags {
+  display: flex;
+  gap: 4px;
+}
+
+.stats-table td.flags span {
+  padding: 0 4px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-raised);
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+/* ------------------------------------------------------------ fps overlay */
+
+/*
+ * The single thing allowed to sit over the canvas, and it earns it by being needed precisely
+ * when every dock is either closed or in the way. `pointer-events: none` so it never eats a
+ * click meant for the scene behind it.
+ */
+.fps-overlay {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 4;
+  width: 190px;
+  padding: 6px 8px 4px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius);
+  background: rgba(22, 24, 28, 0.82);
+  box-shadow: var(--shadow-1);
+  backdrop-filter: blur(3px);
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.fps-overlay .frame-graph {
+  padding: 4px 0 2px;
+  border: 0;
+  background: transparent;
+}
+
+.fps-overlay .frame-graph svg {
+  height: 32px;
+}
+
+.fps-overlay-head {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+}
+
+.fps-overlay-fps {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.fps-overlay-fps.good,
+.fps-overlay-low.good {
+  color: var(--good);
+}
+
+.fps-overlay-fps.ok,
+.fps-overlay-low.ok {
+  color: var(--warn);
+}
+
+.fps-overlay-fps.bad,
+.fps-overlay-low.bad {
+  color: var(--danger);
+}
+
+.fps-overlay-unit {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.fps-overlay-low {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.fps-overlay-rows {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0 8px;
+  margin: 0;
+}
+
+.fps-overlay-rows > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+.fps-overlay-rows dt {
+  color: var(--text-dim);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.fps-overlay-rows dd {
+  margin: 0;
+  font-size: 11px;
+}
+
+/* The fps readout became a button when it gained the overlay toggle. */
+.status-chip.fps {
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+
+.status-chip.fps.active {
+  border-color: var(--accent-dim);
+  background: var(--accent-soft);
+}
+
 /* --------------------------------------------------------------- console */
 
 .console-body {

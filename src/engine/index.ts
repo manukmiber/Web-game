@@ -25,6 +25,8 @@ export * from './render/material';
 export * from './render/ResourceCache';
 export * from './assets/AssetStore';
 export * from './perf/FrameStats';
+export * from './perf/SceneStats';
+export * from './physics';
 export * from './loop/Engine';
 export * from './core/Emitter';
 export * from './input/InputState';

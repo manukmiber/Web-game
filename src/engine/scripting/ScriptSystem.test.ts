@@ -227,3 +227,258 @@ describe('ScriptSystem', () => {
     expect(engine.scene.expect(entity.id).transform.position[0]).toBe(0);
   });
 });
+
+/**
+ * The v0.7.5 additions: several scripts on one entity, the new hooks, and the two things that
+ * make several scripts worth having — a defined running order and a way to talk to each other.
+ */
+describe('ScriptSystem, several scripts per entity', () => {
+  let engine: Engine;
+  let system: ScriptSystem;
+  let messages: ScriptMessage[];
+
+  beforeEach(() => {
+    engine = new Engine();
+    system = new ScriptSystem();
+    engine.addSystem(system);
+    messages = [];
+    system.events.on('message', (message) => messages.push(message));
+  });
+
+  /** An entity carrying several Script components, in the order given. */
+  function multi(...scripts: Partial<ScriptComponent>[]): Entity {
+    const entity = createPrimitiveEntity('Box', { name: 'Multi' });
+    for (const script of scripts) entity.components.push(createScript(script));
+    return entity;
+  }
+
+  it('runs every script on the entity, each with its own state', () => {
+    const entity = multi(
+      { name: 'A', source: 'let n = 0; function update() { n += 1; props.a = n; }', props: { a: 0 } },
+      { name: 'B', source: 'let n = 0; function update() { n += 10; props.b = n; }', props: { b: 0 } },
+    );
+    engine.scene.add(entity);
+    engine.setMode('play');
+    engine.tick(STEP);
+    engine.tick(STEP);
+
+    const scripts = entity.components.filter((c): c is ScriptComponent => c.type === 'Script');
+    expect(scripts[0]!.props.a).toBe(2);
+    expect(scripts[1]!.props.b).toBe(20);
+    expect(system.instanceCount).toBe(2);
+  });
+
+  it('runs them in `order`, not in the order they were added', () => {
+    const entity = multi(
+      { name: 'Late', order: 10, source: 'function update() { game.set("log", game.get("log", "") + "L"); }' },
+      { name: 'Early', order: -10, source: 'function update() { game.set("log", game.get("log", "") + "E"); }' },
+    );
+    engine.scene.add(entity);
+    engine.setMode('play');
+    engine.tick(STEP);
+
+    expect(engine.game.getVar('log')).toBe('EL');
+  });
+
+  it('re-sorts when an order field changes mid-play', () => {
+    const entity = multi(
+      { name: 'A', order: 0, source: 'function update() { game.set("log", game.get("log", "") + "A"); }' },
+      { name: 'B', order: 1, source: 'function update() { game.set("log", game.get("log", "") + "B"); }' },
+    );
+    engine.scene.add(entity);
+    engine.setMode('play');
+    engine.tick(STEP);
+    expect(engine.game.getVar('log')).toBe('AB');
+
+    const scripts = entity.components.filter((c): c is ScriptComponent => c.type === 'Script');
+    scripts[1]!.order = -1;
+    engine.game.setVar('log', '');
+    engine.tick(STEP);
+    expect(engine.game.getVar('log')).toBe('BA');
+  });
+
+  it('parks one broken script and keeps its neighbour on the same entity running', () => {
+    const entity = multi(
+      { name: 'Broken', source: 'function update() { throw new Error("boom"); }' },
+      { name: 'Fine', source: 'function update() { props.ticks += 1; }', props: { ticks: 0 } },
+    );
+    engine.scene.add(entity);
+    engine.setMode('play');
+    engine.tick(STEP);
+    engine.tick(STEP);
+
+    const scripts = entity.components.filter((c): c is ScriptComponent => c.type === 'Script');
+    expect(scripts[1]!.props.ticks).toBe(2);
+    expect(messages.filter((m) => m.level === 'error')).toHaveLength(1);
+  });
+
+  it('keeps the surviving script running when its neighbour is removed', () => {
+    const entity = multi(
+      { name: 'Doomed', source: 'function destroy() { console.log("gone"); }' },
+      { name: 'Survivor', source: 'function update() { props.ticks += 1; }', props: { ticks: 0 } },
+    );
+    engine.scene.add(entity);
+    engine.setMode('play');
+    engine.tick(STEP);
+
+    // Remove the *first* Script. Keyed by entity alone, this used to hand the survivor's
+    // running instance to the wrong component.
+    const index = entity.components.findIndex((c) => c.type === 'Script');
+    engine.scene.removeComponentAt(entity.id, index);
+    engine.tick(STEP);
+
+    expect(messages.map((m) => m.text)).toContain('gone');
+    expect(system.instanceCount).toBe(1);
+    const survivor = entity.components.find((c): c is ScriptComponent => c.type === 'Script')!;
+    expect(survivor.name).toBe('Survivor');
+    expect(survivor.props.ticks).toBe(2);
+  });
+
+  it('delivers a message to every script on the target', () => {
+    const entity = multi(
+      { name: 'Sender', source: 'function update() { if (time.frame === 1) scene.send(entity, "ping", 7); }' },
+      { name: 'Listener', source: 'function onMessage(name, payload) { props.got = name + ":" + payload; }', props: { got: '' } },
+    );
+    engine.scene.add(entity);
+    engine.setMode('play');
+    engine.tick(STEP);
+
+    const scripts = entity.components.filter((c): c is ScriptComponent => c.type === 'Script');
+    expect(scripts[1]!.props.got).toBe('ping:7');
+  });
+
+  it('broadcasts to every script in the scene', () => {
+    const sender = multi({
+      name: 'Sender',
+      source: 'function update() { if (time.frame === 1) props.reached = scene.broadcast("wave"); }',
+      props: { reached: 0 },
+    });
+    engine.scene.add(sender);
+    const listener = multi({
+      name: 'Listener',
+      source: 'function onMessage(name) { props.heard = name; }',
+      props: { heard: '' },
+    });
+    engine.scene.add(listener);
+    engine.setMode('play');
+    engine.tick(STEP);
+
+    expect(scriptOf(listener).props.heard).toBe('wave');
+    expect(scriptOf(sender).props.reached).toBe(1);
+  });
+
+  it('survives two scripts that answer each other, rather than blowing the stack', () => {
+    const entity = multi(
+      {
+        name: 'Ping',
+        source: `
+          function update() { if (time.frame === 1) scene.send(entity, 'ping'); }
+          function onMessage(name) { if (name === 'pong') { props.depth += 1; scene.send(entity, 'ping'); } }
+        `,
+        props: { depth: 0 },
+      },
+      {
+        name: 'Pong',
+        source: `function onMessage(name) { if (name === 'ping') scene.send(entity, 'pong'); }`,
+      },
+    );
+    engine.scene.add(entity);
+    engine.setMode('play');
+    engine.tick(STEP);
+
+    // Bounded by the depth guard rather than by the JavaScript stack.
+    const depth = scriptOf(entity).props.depth as number;
+    expect(depth).toBeGreaterThan(0);
+    expect(depth).toBeLessThan(10);
+  });
+
+  it('runs lateUpdate after every update, which is what a follow camera needs', () => {
+    const entity = multi(
+      { name: 'Mover', source: 'function update() { game.set("log", game.get("log", "") + "u"); }' },
+      { name: 'Camera', source: 'function lateUpdate() { game.set("log", game.get("log", "") + "L"); }' },
+    );
+    engine.scene.add(entity);
+    engine.setMode('play');
+    engine.tick(STEP);
+    expect(engine.game.getVar('log')).toBe('uL');
+  });
+
+  it('fires a one-shot timer once, and a repeating one on schedule', () => {
+    const entity = multi({
+      name: 'Timers',
+      source: `
+        function start() {
+          time.after(0.1, function () { props.once += 1; });
+          time.every(0.05, function () { props.repeat += 1; });
+        }
+      `,
+      props: { once: 0, repeat: 0 },
+    });
+    engine.scene.add(entity);
+    engine.setMode('play');
+
+    for (let i = 0; i < 30; i += 1) engine.tick(STEP);
+
+    expect(scriptOf(entity).props.once).toBe(1);
+    // Half a second of 50 ms intervals, give or take a step.
+    expect(scriptOf(entity).props.repeat).toBeGreaterThanOrEqual(8);
+    expect(scriptOf(entity).props.repeat).toBeLessThanOrEqual(11);
+  });
+
+  it('cancels a timer on request, and drops the rest when play stops', () => {
+    const entity = multi({
+      name: 'Timers',
+      source: `
+        let handle = 0;
+        function start() { handle = time.every(0.05, function () { props.ticks += 1; }); }
+        function update() { if (time.elapsed > 0.2) time.cancel(handle); }
+      `,
+      props: { ticks: 0 },
+    });
+    engine.scene.add(entity);
+    engine.setMode('play');
+    for (let i = 0; i < 30; i += 1) engine.tick(STEP);
+
+    const cancelled = scriptOf(entity).props.ticks as number;
+    for (let i = 0; i < 30; i += 1) engine.tick(STEP);
+    expect(scriptOf(entity).props.ticks).toBe(cancelled);
+
+    engine.setMode('edit');
+    expect(system.timerCount).toBe(0);
+  });
+
+  it('parks a script whose timer callback throws, not the frame', () => {
+    const entity = multi({
+      name: 'Bad Timer',
+      source: 'function start() { time.after(0.05, function () { throw new Error("late boom"); }); }',
+    });
+    engine.scene.add(entity);
+    engine.setMode('play');
+    for (let i = 0; i < 10; i += 1) engine.tick(STEP);
+
+    expect(messages.some((m) => m.level === 'error' && /late boom/.test(m.text))).toBe(true);
+  });
+
+  it('exposes the maths helpers, so scripts do not each rewrite lerp', () => {
+    const entity = multi({
+      name: 'Maths',
+      source: `
+        function start() {
+          props.lerp = mathf.lerp(0, 10, 0.5);
+          props.clamped = mathf.clamp(15, 0, 10);
+          props.angle = mathf.lerpAngle(350, 10, 0.5);
+        }
+      `,
+      props: { lerp: 0, clamped: 0, angle: 0 },
+    });
+    engine.scene.add(entity);
+    engine.setMode('play');
+    engine.tick(STEP);
+
+    const props = scriptOf(entity).props;
+    expect(props.lerp).toBe(5);
+    expect(props.clamped).toBe(10);
+    // The short way round through 0, not the long way through 180.
+    expect(props.angle).toBeCloseTo(0);
+  });
+});

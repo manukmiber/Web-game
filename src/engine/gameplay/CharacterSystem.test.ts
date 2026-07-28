@@ -22,6 +22,16 @@ function run(engine: Engine, seconds: number): void {
   for (let i = 0; i < Math.round(seconds / STEP); i += 1) engine.tick(STEP);
 }
 
+/** Runs for `seconds` and reports the highest the entity got — the apex of a jump arc. */
+function highestOver(engine: Engine, entity: Entity, seconds: number): number {
+  let peak = entity.transform.position[1];
+  for (let i = 0; i < Math.round(seconds / STEP); i += 1) {
+    engine.tick(STEP);
+    peak = Math.max(peak, entity.transform.position[1]);
+  }
+  return peak;
+}
+
 describe('CharacterSystem', () => {
   let engine: Engine;
 
@@ -99,12 +109,46 @@ describe('CharacterSystem', () => {
     );
   });
 
-  it('stays pinned to its ground height', () => {
+  it('falls under gravity and settles on its ground height', () => {
     const entity = player([0, 12, 0]);
     engine.scene.add(entity);
     engine.setMode('play');
 
+    // One frame is a fall, not a teleport: before v0.7.5 this snapped straight to the ground.
     engine.tick(STEP);
+    expect(entity.transform.position[1]).toBeLessThan(12);
+    expect(entity.transform.position[1]).toBeGreaterThan(11);
+
+    // A scene with no colliders still has the ground-height floor to land on.
+    run(engine, 3);
+    expect(entity.transform.position[1]).toBe(0);
+  });
+
+  it('pins straight to its ground height when gravity is off', () => {
+    const entity = player([0, 12, 0]);
+    entity.components = [createCharacterController({ useGravity: false })];
+    engine.scene.add(entity);
+    engine.setMode('play');
+
+    engine.tick(STEP);
+    expect(entity.transform.position[1]).toBe(0);
+  });
+
+  it('jumps on Space and comes back down', () => {
+    const entity = player();
+    engine.scene.add(entity);
+    engine.setMode('play');
+
+    engine.input.setKey('Space', true);
+    engine.tick(STEP);
+    expect(entity.transform.position[1]).toBeGreaterThan(0);
+
+    engine.input.setKey('Space', false);
+    const peak = highestOver(engine, entity, 2);
+    // v²/2g with the defaults is about 1.1 m; the check is that it is a jump, not a hop or a
+    // launch, and that it lands again rather than drifting.
+    expect(peak).toBeGreaterThan(0.5);
+    expect(peak).toBeLessThan(3);
     expect(entity.transform.position[1]).toBe(0);
   });
 

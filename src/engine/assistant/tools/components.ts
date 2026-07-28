@@ -151,20 +151,40 @@ registerTool<{ entities: string[]; component: string; path: string; value: unkno
  * prop exists — and writing them as two separate calls leaves a window where the behaviour
  * throws on every frame. One call, one undo entry, one consistent state.
  */
-registerTool<{ entity: string; source?: string; name?: string; props?: Record<string, unknown> }>({
+registerTool<{
+  entity: string;
+  source?: string;
+  name?: string;
+  props?: Record<string, unknown>;
+  script?: string;
+  order?: number;
+}>({
   name: 'set_script',
   title: 'Set script',
   description:
-    'Writes a Script component: source, display name and props together. Adds the component if ' +
-    'the entity has none. Scripts run in Play mode with entity, scene, input, time, props, ' +
-    'game and console in scope; define start(), update(dt) and destroy() as plain functions. ' +
-    'Props are the per-entity tunables the source reads as props.<name>.',
+    'Writes a Script component: source, display name, order and props together. An entity may ' +
+    'carry several scripts — pass `script` with a name to target or create a specific one, or ' +
+    'omit it to write the entity\'s first. Scripts run in Play mode with entity, scene, input, ' +
+    'time, props, game, physics, hardware, mathf and console in scope; define start(), ' +
+    'update(dt), fixedUpdate(dt), lateUpdate(dt), onCollisionEnter(hit), onTriggerEnter(hit), ' +
+    'onMessage(name, payload) and destroy() as plain functions. Props are the per-entity ' +
+    'tunables the source reads as props.<name>.',
   input: {
     type: 'object',
     properties: {
       entity: { type: 'string', description: 'Id or name.' },
       source: { type: 'string', description: 'The script body.' },
       name: { type: 'string', description: 'Display name shown in the console and Inspector.' },
+      script: {
+        type: 'string',
+        description:
+          'Which script on the entity to write, by its display name. Adds a new one under that ' +
+          'name if there is none. Omit to write the first script the entity has.',
+      },
+      order: {
+        type: 'number',
+        description: 'Execution order within the frame. Lower runs first; default 0.',
+      },
       props: {
         type: 'object',
         description: 'Tunables, numbers/strings/booleans only. Replaces the existing set.',
@@ -174,10 +194,10 @@ registerTool<{ entity: string; source?: string; name?: string; props?: Record<st
     },
     required: ['entity'],
   },
-  run({ entity: reference, source, name, props }, { editor }) {
+  run({ entity: reference, source, name, props, script: target, order }, { editor }) {
     const entity = resolveEntity(editor.scene, reference);
-    if (source === undefined && name === undefined && props === undefined) {
-      throw new Error('Give at least one of source, name or props.');
+    if (source === undefined && name === undefined && props === undefined && order === undefined) {
+      throw new Error('Give at least one of source, name, order or props.');
     }
 
     const checked: Record<string, ScriptPropValue> = {};
@@ -191,9 +211,22 @@ registerTool<{ entity: string; source?: string; name?: string; props?: Record<st
     }
 
     const definition = expectDefinition('Script');
-    const existing = entity.components.find((component) => component.type === 'Script') as
-      | ScriptComponent
-      | undefined;
+    /**
+     * Which script this writes to.
+     *
+     * By display name rather than by index, because a name is the only handle the caller has:
+     * a model that asked for "the Patrol script" has no idea what position it occupies, and an
+     * index would silently write to whichever component happened to be there. Unmatched names
+     * add a new script, which is what makes "add a script called Patrol" one call.
+     */
+    const index = target
+      ? entity.components.findIndex(
+          (component) =>
+            component.type === 'Script' && (component as ScriptComponent).name === target,
+        )
+      : entity.components.findIndex((component) => component.type === 'Script');
+    const existing = index >= 0 ? (entity.components[index] as ScriptComponent) : undefined;
+    const displayName = name ?? target;
 
     return editor.batch(existing ? 'Edit script' : 'Add script', () => {
       if (!existing) {
@@ -201,17 +234,26 @@ registerTool<{ entity: string; source?: string; name?: string; props?: Record<st
           entity.id,
           definition.create({
             ...(source !== undefined ? { source } : {}),
-            ...(name !== undefined ? { name } : {}),
+            ...(displayName !== undefined ? { name: displayName } : {}),
+            ...(order !== undefined ? { order } : {}),
             ...(props !== undefined ? { props: checked } : {}),
           } as never),
         );
       } else {
-        if (source !== undefined) editor.setComponentProperty([entity.id], 'Script', 'source', source);
-        if (name !== undefined) editor.setComponentProperty([entity.id], 'Script', 'name', name);
-        if (props !== undefined) editor.setComponentProperty([entity.id], 'Script', 'props', checked);
+        const write = (path: string, value: unknown) =>
+          editor.setComponentProperty([entity.id], 'Script', path, value, index);
+        if (source !== undefined) write('source', source);
+        if (displayName !== undefined) write('name', displayName);
+        if (order !== undefined) write('order', order);
+        if (props !== undefined) write('props', checked);
       }
-      const script = editor.scene.getComponent<ScriptComponent>(entity.id, 'Script')!;
-      return `Script "${script.name}" on "${entity.name}" — props ${JSON.stringify(script.props)}. Press Play to run it.`;
+
+      const scripts = editor.scene.getComponents<ScriptComponent>(entity.id, 'Script');
+      const written = existing ? scripts[index] : scripts[scripts.length - 1];
+      const total = scripts.length;
+      return `Script "${written?.name ?? 'Script'}" on "${entity.name}" — props ${JSON.stringify(
+        written?.props ?? {},
+      )}${total > 1 ? `, ${total} scripts on this entity` : ''}. Press Play to run it.`;
     });
   },
 });

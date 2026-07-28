@@ -242,6 +242,17 @@ export class Scene {
     return this.get(id)?.components.find((c) => c.type === type) as T | undefined;
   }
 
+  /**
+   * Every component of a type, in the order the entity stores them.
+   *
+   * Most types are one per entity and `getComponent` is the right call. Some are deliberately
+   * not — an entity can carry several `Script` components, one per behaviour — and everything
+   * that has to see all of them goes through here. See `ComponentDefinition.allowMultiple`.
+   */
+  getComponents<T extends Component = Component>(id: EntityId, type: string): T[] {
+    return (this.get(id)?.components.filter((c) => c.type === type) ?? []) as T[];
+  }
+
   addComponent(id: EntityId, component: Component, index?: number): void {
     const entity = this.expect(id);
     if (index === undefined) entity.components.push(component);
@@ -253,17 +264,48 @@ export class Scene {
     const entity = this.expect(id);
     const index = entity.components.findIndex((c) => c.type === type);
     if (index === -1) return undefined;
+    return this.removeComponentAt(id, index);
+  }
+
+  /**
+   * Removes whichever component sits at `index`.
+   *
+   * The by-type form cannot express "the second Script on this entity", and once a type can
+   * repeat, removing by type quietly deletes the wrong one — the first, always.
+   */
+  removeComponentAt(id: EntityId, index: number): Component | undefined {
+    const entity = this.expect(id);
+    if (index < 0 || index >= entity.components.length) return undefined;
     const [removed] = entity.components.splice(index, 1);
     this.events.emit('componentsChanged', { id });
     return removed;
   }
 
-  /** Shallow-merges `patch` into the component of that type. No-op if the entity lacks it. */
+  /** Shallow-merges `patch` into the first component of that type. No-op if the entity lacks it. */
   updateComponent(id: EntityId, type: string, patch: Record<string, unknown>): void {
     const component = this.getComponent(id, type);
     if (!component) return;
     Object.assign(component, patch);
     this.events.emit('componentsChanged', { id });
+  }
+
+  /** Shallow-merges `patch` into the component at `index`. */
+  updateComponentAt(id: EntityId, index: number, patch: Record<string, unknown>): void {
+    const component = this.get(id)?.components[index];
+    if (!component) return;
+    Object.assign(component, patch);
+    this.events.emit('componentsChanged', { id });
+  }
+
+  /**
+   * Announces that a component was mutated in place.
+   *
+   * The command layer writes through a dotted path directly into the component object, so there
+   * is no patch to merge — but the render bridge still has to hear about it. `updateComponent`
+   * with an empty patch used to serve as this, which only worked while every type was unique.
+   */
+  touchComponents(id: EntityId): void {
+    if (this.has(id)) this.events.emit('componentsChanged', { id });
   }
 
   // ----------------------------------------------------------------- assets

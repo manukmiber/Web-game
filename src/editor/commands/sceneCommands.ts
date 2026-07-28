@@ -281,6 +281,16 @@ export class SetTransformCommand implements Command {
   }
 }
 
+/**
+ * One field of one component, changed across a selection.
+ *
+ * `componentIndex` addresses a specific component on the entity rather than the first of its
+ * type, which is what an entity carrying several Scripts requires: without it, editing the
+ * second script's source writes to the first one. It is a position in the entity's whole
+ * component array, not an index among components of that type, because that is what the
+ * Inspector already has in hand and what survives a component of another type being removed
+ * between the command being built and being run — the type is re-checked on write.
+ */
 export class SetComponentPropertyCommand implements Command {
   readonly label: string;
   readonly mergeKey: string;
@@ -292,12 +302,15 @@ export class SetComponentPropertyCommand implements Command {
     private readonly componentType: string,
     private readonly path: string,
     private nextValue: unknown,
+    private readonly componentIndex?: number,
   ) {
     this.label = `Set ${path}`;
-    this.mergeKey = `component:${componentType}:${path}:${[...ids].sort().join(',')}`;
+    this.mergeKey = `component:${componentType}:${componentIndex ?? '*'}:${path}:${[...ids]
+      .sort()
+      .join(',')}`;
     this.previous = new Map();
     for (const id of ids) {
-      const component = scene.getComponent(id, componentType);
+      const component = this.componentAt(id);
       if (component) this.previous.set(id, structuredClone(readPath(component, path)));
     }
   }
@@ -321,11 +334,18 @@ export class SetComponentPropertyCommand implements Command {
   }
 
   private write(id: EntityId, value: unknown): void {
-    const component = this.scene.getComponent(id, this.componentType);
+    const component = this.componentAt(id);
     if (!component) return;
     writePath(component, this.path, value);
     // Re-emit through the Scene so the render bridge picks up the mutation.
-    this.scene.updateComponent(id, this.componentType, {});
+    this.scene.touchComponents(id);
+  }
+
+  /** The addressed component, or nothing when the index no longer holds one of this type. */
+  private componentAt(id: EntityId): Component | undefined {
+    if (this.componentIndex === undefined) return this.scene.getComponent(id, this.componentType);
+    const component = this.scene.get(id)?.components[this.componentIndex];
+    return component?.type === this.componentType ? component : undefined;
   }
 }
 
@@ -370,6 +390,8 @@ export class SetComponentPropertiesCommand implements Command {
 
 export class AddComponentCommand implements Command {
   readonly label: string;
+  /** Where the component landed, so undo removes that one rather than the first of its type. */
+  private index = -1;
 
   constructor(
     private readonly scene: Scene,
@@ -381,10 +403,14 @@ export class AddComponentCommand implements Command {
 
   execute(): void {
     this.scene.addComponent(this.id, structuredClone(this.component));
+    this.index = (this.scene.get(this.id)?.components.length ?? 0) - 1;
   }
 
   undo(): void {
-    this.scene.removeComponent(this.id, this.component.type);
+    // By index, not by type. Adding a second Script and undoing used to delete the first one,
+    // because `removeComponent` finds the earliest match.
+    if (this.index >= 0) this.scene.removeComponentAt(this.id, this.index);
+    else this.scene.removeComponent(this.id, this.component.type);
   }
 }
 
@@ -397,19 +423,32 @@ export class RemoveComponentCommand implements Command {
     private readonly scene: Scene,
     private readonly id: EntityId,
     private readonly componentType: string,
+    /** Position in the entity's component array. Omitted means the first of its type. */
+    private readonly componentIndex?: number,
   ) {
     this.label = `Remove ${componentType}`;
   }
 
   execute(): void {
     const entity = this.scene.get(this.id);
-    this.index = entity?.components.findIndex((c) => c.type === this.componentType) ?? -1;
-    this.removed = this.scene.removeComponent(this.id, this.componentType);
+    const components = entity?.components ?? [];
+    const target =
+      this.componentIndex !== undefined &&
+      components[this.componentIndex]?.type === this.componentType
+        ? this.componentIndex
+        : components.findIndex((c) => c.type === this.componentType);
+
+    this.index = target;
+    this.removed = target >= 0 ? this.scene.removeComponentAt(this.id, target) : undefined;
   }
 
   undo(): void {
     if (!this.removed) return;
-    this.scene.addComponent(this.id, structuredClone(this.removed), this.index >= 0 ? this.index : undefined);
+    this.scene.addComponent(
+      this.id,
+      structuredClone(this.removed),
+      this.index >= 0 ? this.index : undefined,
+    );
   }
 }
 

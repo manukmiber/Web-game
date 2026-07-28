@@ -2,10 +2,12 @@ import type { ScriptPropValue } from '../components/Script';
 import type { InputState } from '../input/InputState';
 import type {
   EntityHandle,
+  ScriptClock,
   ScriptConsole,
   ScriptGame,
   ScriptHardware,
-  ScriptTime,
+  ScriptMath,
+  ScriptPhysics,
   ScriptWorld,
 } from './ScriptApi';
 
@@ -14,16 +16,57 @@ export interface ScriptContext {
   entity: EntityHandle;
   scene: ScriptWorld;
   input: InputState;
-  time: ScriptTime;
+  time: ScriptClock;
   props: Record<string, ScriptPropValue>;
   game: ScriptGame;
+  physics: ScriptPhysics;
   hardware: ScriptHardware;
+  mathf: ScriptMath;
   console: ScriptConsole;
 }
 
+/** One collision or trigger overlap, as a script sees it. */
+export interface ScriptCollision {
+  /** The other entity's id. Resolve it with `scene.byId(...)` when a handle is wanted. */
+  otherId: string;
+  /** Unit vector pointing from this entity towards the other one. */
+  normal: [number, number, number];
+  point: [number, number, number];
+  /** Overlap along the normal, in metres. */
+  depth: number;
+  /** Closing speed at the moment of contact — impact damage is a function of this. */
+  impactSpeed: number;
+}
+
+/**
+ * The hooks a script may define.
+ *
+ * All optional and all picked up by name, so the simplest useful script is three lines. The
+ * list grew in v0.7.5 from three hooks to nine, which is the difference between "a script can
+ * move something" and "a script can be a behaviour": physics needs a fixed-rate hook, a camera
+ * needs to run after everything it follows, contacts need somewhere to arrive, and several
+ * scripts on one object need a way to talk.
+ */
 export interface ScriptHooks {
   start?: (() => void) | null;
   update?: ((dt: number) => void) | null;
+  /**
+   * Called once per physics step, with the fixed step as `dt`.
+   *
+   * Anything that applies force belongs here rather than in `update`. A push applied once per
+   * *frame* is a push whose strength depends on the frame rate, which is the single most
+   * common physics bug in every engine that offers both hooks.
+   */
+  fixedUpdate?: ((dt: number) => void) | null;
+  /** After every `update` in the scene has run. Where a follow camera belongs. */
+  lateUpdate?: ((dt: number) => void) | null;
+  onCollisionEnter?: ((collision: ScriptCollision) => void) | null;
+  onCollisionStay?: ((collision: ScriptCollision) => void) | null;
+  onCollisionExit?: ((otherId: string) => void) | null;
+  onTriggerEnter?: ((collision: ScriptCollision) => void) | null;
+  onTriggerExit?: ((otherId: string) => void) | null;
+  /** A message from another script — see `scene.send` and `scene.broadcast`. */
+  onMessage?: ((name: string, payload: unknown, senderId: string | null) => void) | null;
   destroy?: (() => void) | null;
 }
 
@@ -39,7 +82,9 @@ const CONTEXT_KEYS = [
   'time',
   'props',
   'game',
+  'physics',
   'hardware',
+  'mathf',
   'console',
 ] as const;
 
@@ -108,13 +153,30 @@ const SHADOWED_GLOBALS = [
  * mode — the one place `typeof` does not throw on an undeclared name — so a script that only
  * defines `update` needs no boilerplate for the two it skipped.
  */
+const HOOK_NAMES = [
+  'start',
+  'update',
+  'fixedUpdate',
+  'lateUpdate',
+  'onCollisionEnter',
+  'onCollisionStay',
+  'onCollisionExit',
+  'onTriggerEnter',
+  'onTriggerExit',
+  'onMessage',
+  'destroy',
+] as const;
+
 function wrap(source: string): string {
+  // Built from the list rather than written out, so adding a hook is one entry in one array
+  // instead of an edit here that has to agree with the `ScriptHooks` type by eye.
+  const collected = HOOK_NAMES.map(
+    (hook) => `  ${hook}: typeof ${hook} === 'function' ? ${hook} : null,`,
+  ).join('\n');
   return `'use strict';
 ${source}
 ;return {
-  start: typeof start === 'function' ? start : null,
-  update: typeof update === 'function' ? update : null,
-  destroy: typeof destroy === 'function' ? destroy : null,
+${collected}
 };`;
 }
 

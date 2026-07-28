@@ -5,6 +5,7 @@ import type { Engine } from '@engine/loop/Engine';
 import type { GraphicsSettings } from '@engine/render/GraphicsSettings';
 import type { RenderBridge } from '@engine/render/RenderBridge';
 import { RenderHost } from '@engine/render/RenderHost';
+import { collectSceneStats } from '@engine/perf/SceneStats';
 import {
   CITY_PRESET,
   FOREST_PRESET,
@@ -145,6 +146,25 @@ export class ViewportController {
 
   frameReport() {
     return this.engine.stats.report();
+  }
+
+  /**
+   * The full triangle and object census.
+   *
+   * Computed on demand rather than every frame: it walks the whole rendered tree, and the panel
+   * that wants it polls four times a second. Doing it in the render loop would make the thing
+   * being measured slower, which is the one failure a performance instrument must not have.
+   */
+  sceneStats(topCount?: number) {
+    return collectSceneStats(this.engine.scene, this.bridge, {
+      ...(topCount === undefined ? {} : { topCount }),
+      activeShadowCasters: this.host.shadowBudget().active,
+    });
+  }
+
+  /** Shadow-casting lights granted, requested, and the current cap. */
+  shadowBudget() {
+    return this.host.shadowBudget();
   }
 
   /** Convenience passthrough — plenty of editor code only wants the bridge. */

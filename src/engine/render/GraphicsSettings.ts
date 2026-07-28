@@ -110,6 +110,16 @@ export interface GraphicsSettings {
    * is a property of each light, not of the renderer.
    */
   shadowDistance: number;
+  /**
+   * How many lights may cast a shadow at once. -1 for no limit.
+   *
+   * A cap rather than a per-light decision, because the cost is not per light — it is per
+   * shadow *pass*, and each one re-renders the visible scene from that light's point of view.
+   * Four casters means five renders a frame. Which four is decided per frame by
+   * `selectShadowCasters`, so a scene with thirty torches spends its budget on the three
+   * nearest the camera plus the sun, instead of on whichever thirty happen to exist.
+   */
+  maxShadowLights: number;
   toneMapping: ToneMappingMode;
   exposure: number;
   /** Fraction of the display resolution to render at, then upscale. */
@@ -133,6 +143,7 @@ export const DEFAULT_GRAPHICS: GraphicsSettings = {
   shadowQuality: 'high',
   shadowFilter: 'pcf',
   shadowDistance: 30,
+  maxShadowLights: 4,
   toneMapping: 'neutral',
   exposure: 1,
   resolutionScale: 1,
@@ -226,6 +237,10 @@ export function normalizeGraphics(raw: Partial<GraphicsSettings> | null | undefi
     shadowQuality: pick(input.shadowQuality, SHADOW_QUALITIES, DEFAULT_GRAPHICS.shadowQuality),
     shadowFilter: pick(input.shadowFilter, SHADOW_FILTERS, DEFAULT_GRAPHICS.shadowFilter),
     shadowDistance: clampNumber(input.shadowDistance, 5, 500, DEFAULT_GRAPHICS.shadowDistance),
+    // -1 is a legal value meaning "no limit", so the floor has to admit it.
+    maxShadowLights: Math.round(
+      clampNumber(input.maxShadowLights, -1, 32, DEFAULT_GRAPHICS.maxShadowLights),
+    ),
     toneMapping: pick(input.toneMapping, TONE_MAPPINGS, DEFAULT_GRAPHICS.toneMapping),
     exposure: clampNumber(input.exposure, 0.1, 4, DEFAULT_GRAPHICS.exposure),
     resolutionScale: clampNumber(input.resolutionScale, 0.25, 1, DEFAULT_GRAPHICS.resolutionScale),
@@ -243,6 +258,7 @@ export function sameGraphics(a: GraphicsSettings, b: GraphicsSettings): boolean 
     a.shadowQuality === b.shadowQuality &&
     a.shadowFilter === b.shadowFilter &&
     a.shadowDistance === b.shadowDistance &&
+    a.maxShadowLights === b.maxShadowLights &&
     a.toneMapping === b.toneMapping &&
     a.exposure === b.exposure &&
     a.resolutionScale === b.resolutionScale &&

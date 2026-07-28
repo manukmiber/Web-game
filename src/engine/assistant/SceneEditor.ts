@@ -36,8 +36,15 @@ export interface SceneEditor {
   reparent(ids: EntityId[], parentId: EntityId | null): void;
   setTransform(id: EntityId, transform: Partial<Transform>): void;
   addComponent(id: EntityId, component: Component): void;
-  removeComponent(id: EntityId, type: string): void;
-  setComponentProperty(ids: EntityId[], type: string, path: string, value: unknown): void;
+  /** `componentIndex` addresses one of several components of a type — see `Scene.getComponents`. */
+  removeComponent(id: EntityId, type: string, componentIndex?: number): void;
+  setComponentProperty(
+    ids: EntityId[],
+    type: string,
+    path: string,
+    value: unknown,
+    componentIndex?: number,
+  ): void;
 
   /**
    * Selection is an editor concept, so a headless host ignores it. It is on the interface
@@ -101,17 +108,31 @@ export class DirectSceneEditor implements SceneEditor {
     this.scene.addComponent(id, component);
   }
 
-  removeComponent(id: EntityId, type: string): void {
-    this.scene.removeComponent(id, type);
+  removeComponent(id: EntityId, type: string, componentIndex?: number): void {
+    if (componentIndex === undefined) {
+      this.scene.removeComponent(id, type);
+      return;
+    }
+    if (this.scene.get(id)?.components[componentIndex]?.type !== type) return;
+    this.scene.removeComponentAt(id, componentIndex);
   }
 
-  setComponentProperty(ids: EntityId[], type: string, path: string, value: unknown): void {
+  setComponentProperty(
+    ids: EntityId[],
+    type: string,
+    path: string,
+    value: unknown,
+    componentIndex?: number,
+  ): void {
     for (const id of ids) {
-      const component = this.scene.getComponent(id, type);
-      if (!component) continue;
+      const component =
+        componentIndex === undefined
+          ? this.scene.getComponent(id, type)
+          : this.scene.get(id)?.components[componentIndex];
+      if (!component || component.type !== type) continue;
       writePath(component, path, value);
       // Re-announce through the Scene so the render bridge picks the mutation up.
-      this.scene.updateComponent(id, type, {});
+      this.scene.touchComponents(id);
     }
   }
 

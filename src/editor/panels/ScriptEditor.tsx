@@ -7,6 +7,14 @@ import { SetComponentPropertyCommand } from '../commands/sceneCommands';
 
 interface Props {
   entityId: EntityId;
+  /**
+   * Where this Script sits in the entity's component array.
+   *
+   * Not optional, and not derived from the type: an entity may carry several scripts, and every
+   * write below has to name which one. Addressing by type would edit the first script's source
+   * whichever editor you typed into.
+   */
+  componentIndex: number;
   script: ScriptComponent;
 }
 
@@ -28,7 +36,7 @@ const PROP_DEFAULTS: Record<string, ScriptPropValue> = {
  * A plain textarea rather than CodeMirror or Monaco: syntax highlighting is worth real money
  * in bundle size, and the compile check below already catches the error that matters.
  */
-export function ScriptEditor({ entityId, script }: Props) {
+export function ScriptEditor({ entityId, componentIndex, script }: Props) {
   const { engine, run } = useEditor();
   const [draft, setDraft] = useState(script.source);
   const [newProp, setNewProp] = useState('');
@@ -51,17 +59,35 @@ export function ScriptEditor({ entityId, script }: Props) {
   // Re-sync when the selection changes, or when an undo rewrites the source underneath us.
   useEffect(() => {
     setDraft(script.source);
-  }, [entityId, script.source]);
+  }, [entityId, componentIndex, script.source]);
 
   const apply = () => {
     if (!dirty) return;
     // A script that does not parse is still saved — losing what you typed because it has a
     // missing brace would be its own kind of broken. The error banner reports it instead.
-    run(new SetComponentPropertyCommand(engine.scene, [entityId], 'Script', 'source', draft));
+    run(
+      new SetComponentPropertyCommand(
+        engine.scene,
+        [entityId],
+        'Script',
+        'source',
+        draft,
+        componentIndex,
+      ),
+    );
   };
 
   const setProps = (props: Record<string, ScriptPropValue>) => {
-    run(new SetComponentPropertyCommand(engine.scene, [entityId], 'Script', 'props', props));
+    run(
+      new SetComponentPropertyCommand(
+        engine.scene,
+        [entityId],
+        'Script',
+        'props',
+        props,
+        componentIndex,
+      ),
+    );
   };
 
   const addProp = () => {

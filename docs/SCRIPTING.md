@@ -27,11 +27,56 @@ boilerplate and nothing to return.
 | --- | --- |
 | `start()` | Once, on the first frame the script is live |
 | `update(dt)` | Every frame, `dt` in seconds |
+| `fixedUpdate(dt)` | Once per physics step, `dt` always the fixed timestep |
+| `lateUpdate(dt)` | After every `update` in the scene has run |
+| `onCollisionEnter(hit)` | A solid contact began |
+| `onCollisionStay(hit)` | A solid contact is still there — once per frame, not once per step |
+| `onCollisionExit(otherId)` | A solid contact ended |
+| `onTriggerEnter(hit)` | Something entered a collider marked **Is Trigger** |
+| `onTriggerExit(otherId)` | It left |
+| `onMessage(name, payload, senderId)` | Another script sent this entity a message |
 | `destroy()` | On stop, on the entity being deleted, or on the script being disabled or edited |
 
 Editing the source while playing destroys the old instance and starts a new one, so you can tune
 a behaviour without leaving Play mode. Local variables are lost on that reload — `start()` runs
 again.
+
+### `update` or `fixedUpdate`?
+
+Anything that applies **force** belongs in `fixedUpdate`. A push applied once per *frame* is a
+push whose strength depends on the frame rate, which is the most common physics bug there is:
+the same code sends a crate twice as far on a 120 Hz monitor as on a 60 Hz one. `fixedUpdate`
+runs exactly as often as the solver stepped — several times in a slow frame, not at all in a very
+fast one — so a force applied there is the same force everywhere.
+
+Everything else belongs in `update`: reading input, animating, counting down. And `lateUpdate` is
+for anything that has to see the finished frame, which in practice means a follow camera.
+
+## Several scripts on one entity
+
+An entity may carry as many `Script` components as it likes, and each is a separate behaviour
+with its own local variables, its own timers and its own error state. Deleting one leaves the
+others running.
+
+They run in the order of the component's **Order** field — lower first, ties in the order the
+components were added. Order matters more often than it looks: a camera script that follows a
+character has to run after the movement script, or it tracks where the character *was*.
+
+```js
+// "Health" — order 0
+function onMessage(name, payload) {
+  if (name !== 'hit') return;
+  props.hp -= payload;
+  if (props.hp <= 0) scene.send(entity, 'died');
+}
+
+// "Loot" — order 10, and it does not know the Health script exists
+function onMessage(name) {
+  if (name === 'died') scene.spawn('Sphere', { name: 'Coin', position: entity.position.toArray() });
+}
+```
+
+That is the point of the split: either behaviour can be deleted without touching the other.
 
 ## What is in scope
 
@@ -43,8 +88,13 @@ again.
 | `position`, `rotation`, `scale` | Live views: `.x/.y/.z`, `.set(x,y,z)`, `.add(x,y,z)`, `.toArray()`. Rotation is Euler degrees |
 | `component(type)` | The raw component object — mutate it to change the entity (`entity.component('Material').color = '#ff0000'`) |
 | `has(type)` | |
-| `addComponent(type, overrides?)` | Any registered type, with the same defaults the Inspector uses. One per type |
-| `removeComponent(type)` | |
+| `components(type)` | Every component of a type — `entity.components('Script')` |
+| `addComponent(type, overrides?)` | Any registered type, with the same defaults the Inspector uses. One per type, except types that allow several (`Script`) |
+| `removeComponent(type)` | Removes the first of that type |
+| `body` | A `BodyHandle` when the entity has a `RigidBody`, else `null` |
+| `grounded` | Standing on something. Answers for a rigid body *or* a character controller |
+| `jump(speed)` | Launches a character controller; an equivalent impulse on a rigid body |
+| `send(name, payload?)` | Delivers `onMessage` to every script on this entity |
 | `parent()`, `children()` | Handles, or `null` |
 | `forward()` | Unit vector, following the engine's **-Z is forward** convention |
 | `lookAt(x, z)` | Yaw only |
@@ -61,6 +111,8 @@ again.
 | `withComponent(type)` | e.g. `scene.withComponent('NpcAgent')` |
 | `nearest(from, type, maxDistance?)` | Ground-plane distance, excludes `from` |
 | `spawn(kind, { name, position, color, parentId })` | Any primitive: `'Box'`, `'Capsule'`, … |
+| `send(target, name, payload?)` | Message every script on one entity. Returns how many heard it |
+| `broadcast(name, payload?)` | Message every script in the scene |
 | `count` | |
 
 ### `input` — keyboard and pointer
@@ -83,10 +135,24 @@ from a script. External hardware writes `move`, `strafe` and `turn` there, which
 potentiometer steers a character that was written against `KeyW`. Unlike keys, an axis holds its
 value until something writes another one.
 
-### `time`
+### `time` — the clock, and timers
 
-`time.dt` (same value `update` receives), `time.elapsed` (seconds since Play started),
-`time.frame`.
+`time.dt` (the same value `update` receives), `time.elapsed` (seconds since Play started),
+`time.frame`, `time.fixedDt` (the physics step).
+
+```js
+function start() {
+  time.after(2, function () { console.log('two seconds in'); });
+  const handle = time.every(0.5, function () { entity.rotation.y += 45; });
+  time.after(5, function () { time.cancel(handle); });
+}
+```
+
+`time.after(seconds, fn)` runs once, `time.every(seconds, fn)` repeats, and both return a handle
+for `time.cancel`. They belong to the script instance: they are dropped when the script is
+disabled, edited, deleted, or when Play mode stops. That is exactly the behaviour people wanted
+from `setTimeout` and would not have got — a real timer outlives the play session and keeps
+firing into a scene that no longer exists, which is why `setTimeout` is shadowed.
 
 ### `props`
 
@@ -104,6 +170,49 @@ and `game.health(target)`, `game.maxHealth(target)`, `game.isAlive(target)`,
 an entity id.
 
 None of it survives leaving Play mode, which is the point — see the note on restores below.
+
+### `physics` — the simulated world
+
+Every query is safe in a scene with no colliders: casts miss and overlaps come back empty. See
+[PHYSICS.md](./PHYSICS.md) for the components these queries are asking about.
+
+```js
+// Shoot: a ray from the entity, ignoring its own collider.
+const hit = physics.raycast(entity.position.toArray(), entity.forward(), 50, { ignore: [entity.id] });
+if (hit) {
+  console.log('hit ' + hit.entity.name + ' at ' + hit.distance.toFixed(1) + ' m');
+  hit.entity.damage(10, entity.id);
+}
+```
+
+| Member | Notes |
+| --- | --- |
+| `gravity` | The scene's gravity vector |
+| `bodyCount` | Bodies the solver is tracking |
+| `raycast(origin, direction, maxDistance?, options?)` | Nearest hit, or `null` |
+| `raycastAll(...)` | Every hit, nearest first |
+| `overlapSphere(center, radius, options?)` | Handles for everything inside |
+| `groundBelow(origin, maxDistance?, options?)` | Straight down — "what is under this" |
+| `explode(center, radius, strength, options?)` | Shoves nearby bodies out, falling off with distance |
+
+A hit carries `entity`, `entityId`, `distance`, `point` and `normal`. `options` takes
+`ignore: [id, …]`, `layers: ['props', …]` and `includeTriggers: true`; triggers are skipped by
+default, because a bullet should not stop at a checkpoint.
+
+`entity.body` is how a script pushes its own body about — `velocity`, `speed`, `mass`,
+`sleeping`, `grounded`, `groundId`, `impulse(x, y, z)`, `force(x, y, z)`, `teleport(x, y, z)`,
+`wake()`. It is `null` when nothing is simulating the entity, which is the honest answer.
+
+### `mathf` — the arithmetic every gameplay script writes
+
+`clamp`, `clamp01`, `lerp`, `inverseLerp`, `remap`, `damp`, `moveTowards`, `smoothstep`,
+`wrapAngle`, `angleDelta`, `lerpAngle`, `random(min?, max?)`, `randomInt(min, max)`,
+`randomDirection()`, `distance(a, b)`, `distanceXZ(a, b)`.
+
+Two are worth calling out. `mathf.damp(current, target, smoothing, dt)` is the fix for the
+`x += (target - x) * 0.1` everyone writes, which converges twice as fast at 120 fps as at 60 and
+so makes a camera feel different on different machines. And `mathf.lerpAngle` goes the short way
+round, so 350° to 10° turns forward through zero rather than backwards through 180.
 
 ### `hardware` — attached boards
 
@@ -137,6 +246,11 @@ the browser devtools. Clicking a message selects the entity that produced it.
   instance is parked, and every other script keeps running. Fix the source and it restarts.
 - **A script that hogs the frame is reported.** Over ~4 ms in one `update` earns a one-time
   warning naming the script.
+- **Contacts arrive in the frame they happened.** Physics steps before scripts run, so a script
+  hears about a landing and can react to it on the same frame rather than the next one.
+- **Messages are delivered synchronously**, so `scene.send` can be a question and not just an
+  announcement. Two scripts that answer each other are cut off after eight rounds rather than
+  blowing the stack.
 
 ## Limits worth knowing before you hit them
 
@@ -151,12 +265,18 @@ first.
 **An infinite loop hangs the tab.** There is no way to interrupt synchronous JavaScript on the
 main thread. Same fix as above, same reason it has not been done yet.
 
-**No timers, no async.** `setTimeout` and `setInterval` are shadowed deliberately: a timer
-outlives Play mode and would keep firing into a scene that no longer exists. Count in
-`update(dt)` or read `time.elapsed`.
+**No `setTimeout`, no async.** `setTimeout` and `setInterval` are shadowed deliberately: a real
+timer outlives Play mode and would keep firing into a scene that no longer exists. Use
+`time.after` and `time.every`, which are owned by the script instance and die with it. There is
+still no way to `await` anything.
 
-**One Script per entity.** Use child entities for multiple behaviours. The Inspector addresses
-components by type, and lifting that restriction is a bigger change than it looks.
+**`grounded` is one frame old.** Scripts run before the character controller moves, so
+`entity.grounded` is what the last completed step found. It is the same one-frame contract
+Unity's `isGrounded` has, and for the same reason.
+
+**Physics is linear only.** Contacts never spin a body — there is no angular velocity. See
+[PHYSICS.md](./PHYSICS.md) for why, and for what to reach for instead when tumbling is the
+feature.
 
 ## Worked example: a spawner
 

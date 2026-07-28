@@ -5,11 +5,13 @@ import { Dock } from './layout/Dock';
 import { Splitter } from './layout/Splitter';
 import { AssistantPanel } from './panels/AssistantPanel';
 import { Console } from './panels/Console';
+import { FpsOverlay } from './panels/FpsOverlay';
 import { GraphicsPanel } from './panels/GraphicsPanel';
 import { HardwarePanel } from './panels/HardwarePanel';
 import { Hierarchy } from './panels/Hierarchy';
 import { Inspector } from './panels/Inspector';
 import { PerformancePanel } from './panels/PerformancePanel';
+import { StatisticsPanel } from './panels/StatisticsPanel';
 import { StatusBar } from './panels/StatusBar';
 import { Toolbar } from './panels/Toolbar';
 import { Viewport } from './viewport/Viewport';
@@ -103,6 +105,8 @@ function EditorShell() {
         <div className="viewport-column">
           <div className="viewport-host">
             <Viewport onReady={setViewport} />
+            {/* The one thing allowed to sit over the canvas — see FpsOverlay for why. */}
+            <FpsOverlay viewport={viewport} />
           </div>
           {layout.bottomOpen && (
             <>
@@ -147,6 +151,8 @@ function BottomPanel({ panel, viewport }: { panel: PanelId; viewport: ViewportCo
   switch (panel) {
     case 'performance':
       return <PerformancePanel viewport={viewport} />;
+    case 'statistics':
+      return <StatisticsPanel viewport={viewport} />;
     case 'graphics':
       return <GraphicsPanel />;
     case 'hardware':

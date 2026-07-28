@@ -13,6 +13,9 @@ tool layer an external MCP client can drive it with.
 Press **F9** and it takes a controller: an Arduino on the end of a USB cable becomes an analog
 steering axis, and the player's health dims an LED on the desk.
 
+Add a **Collider** and things fall: gravity, contacts, friction, triggers and raycasts, from a
+solver that ships in the engine rather than in a dependency.
+
 Add a **Scatter Layer** and a hundred thousand trees are one row in the Hierarchy and one draw
 call — because a 25 km world cannot afford them as anything else.
 
@@ -20,7 +23,9 @@ See [ARCHITECTURE.md](./ARCHITECTURE.md) for the design and §9 for what the 25 
 open-world target forces us to decide up front, [docs/SCRIPTING.md](./docs/SCRIPTING.md) for
 the script API, [docs/AI.md](./docs/AI.md) for the tools and MCP,
 [docs/HARDWARE.md](./docs/HARDWARE.md) for external hardware,
-[docs/SCATTER.md](./docs/SCATTER.md) for mass instancing, and
+[docs/SCATTER.md](./docs/SCATTER.md) for mass instancing,
+[docs/PHYSICS.md](./docs/PHYSICS.md) for gravity and collision,
+[docs/LIGHTING.md](./docs/LIGHTING.md) for the light model, and
 [docs/GRAPHICS.md](./docs/GRAPHICS.md) for the render pipeline and quality settings.
 
 ## Running it
@@ -201,6 +206,7 @@ them changeable while the scene is running, with no reload and no lost GL contex
 | **Antialiasing** | Off, FXAA, MSAA 2× / 4× / 8× | FXAA is one fullscreen pass; MSAA is memory bandwidth per sample |
 | **Shadows** | Off, 512 → 4096, with Hard / PCF / Soft (VSM) filtering | Map size is VRAM; the filter is fill |
 | **Shadow distance** | 5–200 m half-extent | Free — and halving it sharpens shadows as much as doubling the map |
+| **Shadow lights** | None, 1–12, or no limit | A multiplier on the whole frame: each caster is another render of the scene |
 | **Tone mapping** | None, Linear, Reinhard, Cineon, Neutral, ACES | Effectively free |
 | **Render scale** | 25–100% | Quadratic. The strongest lever in a browser |
 | **Pixel ratio cap** | ≤ 1× – 3× | Quadratic, and the first thing to reach for on a phone |
@@ -217,7 +223,33 @@ multisampled buffer instead and resolved to the canvas, which makes the sample c
 runtime value and hands us the intermediate image FXAA and tone mapping need anyway.
 
 See [docs/GRAPHICS.md](./docs/GRAPHICS.md) for the pipeline and the colour-space rules that go
-with it.
+with it, and [docs/LIGHTING.md](./docs/LIGHTING.md) for the light model those settings draw.
+
+## Measuring it
+
+Two panels, answering two different questions.
+
+**Performance** (**F8**) answers *is this frame fast enough*. Median, p95, p99, worst — and the
+1% and 0.1% lows, which are the numbers that decide whether a run *feels* smooth. A scene
+averaging 60 fps whose worst percent drops to 22 stutters several times a second, and no average
+will ever say so. Beside them: a frame-time graph, a hitch count, and a per-system breakdown, so
+"11 of these 14 milliseconds are physics" is a fact rather than something you find by commenting
+systems out. The stress-scene harness and the two strongest quality levers sit in the same panel.
+
+**Statistics** (**F10**) answers *what in here is expensive*. Triangles split by where they come
+from — meshes, scatter instances, hidden geometry, and the shadow pass, which re-submits every
+caster once per shadow-casting light and is routinely the largest of the four. Object counts by
+component type, unique geometries and materials against total draw calls, nesting depth, the light
+census with the shadow budget, and a table of the heaviest objects in the scene that selects one
+when you click it.
+
+`renderer.info` already reported triangles and draw calls, and they were the two least actionable
+numbers available: "1.4M triangles" tells you the scene is heavy, not that 1.1M of them are one
+over-subdivided rock you duplicated forty times.
+
+The fps chip in the status bar toggles a **viewport overlay** with the same headline numbers and
+the frame graph. It is the one thing allowed to sit over the canvas, and it earns it by being
+needed exactly when every dock is either closed or in the way: while you are playing.
 
 ## Scatter
 
@@ -261,26 +293,38 @@ brush deliberately does not do yet.
 
 ## Play mode
 
-**Play** snapshots the scene, renders through the scene's own camera, and runs three systems:
-scripts, the character controller, and the NPC agents. **Stop** (or `Esc`) restores the snapshot
-exactly — positions, spawned entities, health, script state, all of it.
+**Play** snapshots the scene, renders through the scene's own camera, and runs five systems:
+hardware, physics, scripts, the character controller, and the NPC agents — in that order, for
+reasons spelled out in `engine/gameplay/systems.ts`. **Stop** (or `Esc`) restores the snapshot
+exactly — positions, spawned entities, health, velocities, script state, all of it.
 
 | Key | Action |
 | --- | --- |
 | `W` `S` / `↑` `↓` | Walk forward and back |
 | `A` `D` | Strafe |
 | `←` `→` or `Q` `E` | Turn |
+| `Space` | Jump |
 | `Shift` | Sprint |
 | `Esc` | Stop and restore |
 | `F9` | Hardware panel — live channel values, while playing |
 
-**Scripting** — a `Script` component runs JavaScript on its entity, with `start`, `update(dt)`
-and `destroy` hooks and an API for the entity, the scene, input, time, gameplay state and the
-console. Editing the source while playing reloads that behaviour on the next frame. A script
-that throws is reported to the console and parked; the rest keep running. Per-entity tunables
-live in `props`, which is also why twenty entities sharing a script compile it once. Full
-reference in [docs/SCRIPTING.md](./docs/SCRIPTING.md), including an honest account of what the
-sandbox does and does not protect.
+**Physics** — a `Collider` gives an entity a shape the solver sees (box, sphere, capsule or an
+infinite plane) and a `RigidBody` makes it move. Gravity, contacts with friction and restitution,
+triggers, layers, sleeping, raycasts and overlap queries. A scene-wide `Physics` component holds
+gravity and the fixed timestep, and a scene without one simulates with Earth defaults so gravity
+works the moment you add a body. Linear only — contacts never spin anything, which is a choice
+argued out in [docs/PHYSICS.md](./docs/PHYSICS.md).
+
+**Scripting** — a `Script` component runs JavaScript on its entity, and an entity may carry
+several: each is its own behaviour with its own state, running in the order of its **Order**
+field. Eleven hooks — `start`, `update(dt)`, `fixedUpdate(dt)`, `lateUpdate(dt)`, the four
+collision and trigger callbacks, `onMessage`, `destroy` — and an API for the entity, the scene,
+input, time and timers, physics queries, gameplay state, maths helpers, hardware and the console.
+Scripts talk to each other through `scene.send` and `scene.broadcast`, which is what makes several
+behaviours on one object compose rather than merely coexist. Editing the source while playing
+reloads that behaviour on the next frame. A script that throws is reported to the console and
+parked; the rest keep running. Full reference in [docs/SCRIPTING.md](./docs/SCRIPTING.md),
+including an honest account of what the sandbox does and does not protect.
 
 **NPCs** — an `NpcAgent` component gives an entity a faction, senses and speeds; the NpcSystem
 runs the state machine over them: idle → wander → chase → attack, or flee for the things that
@@ -288,17 +332,20 @@ run. Three archetypes (Zombie, Villager, Animal) are presets, not behaviour — 
 editable. Wander is seeded per entity, so a crowd is deterministic and testable rather than
 merely random.
 
-**Characters** — a `CharacterController` is the player-driven entity, kinematic and pinned to a
-ground height. There is no physics yet, so it walks through walls. A Camera parented to it is the
-whole third-person rig; the transform hierarchy does the following.
+**Characters** — a `CharacterController` is the player-driven entity: kinematic, so stopping is
+instant and a jump reaches a chosen height, but collided against the world by depenetration
+rather than by force. It falls, lands, walks up slopes, stops at walls and jumps with coyote time.
+A Camera parented to it is the whole third-person rig; the transform hierarchy does the
+following.
 
 **Console** (**F4**) — script output and combat events, with the entity attached: click a
 message to select whatever produced it. Filter by level, or search the text; an error opens the
 panel if the bottom dock is closed, and otherwise shows as a count on the tab.
 
-Add any of it from the toolbar's **Game ▾** menu: Player, Zombie, Villager, Animal, Camera,
-lights, Environment, a Game Logic object carrying an example spawner script, or a Hardware Rig
-carrying the default bindings.
+Add any of it from the toolbar's **Game ▾** menu: Player, Zombie, Villager, Animal, Camera, the
+five light types, Environment, Physics, a Ground Plane with its collider, a Rigid Box that falls
+and reports its landing, a Trigger Volume with the script that reads it, a Game Logic object
+carrying an example spawner script, or a Hardware Rig carrying the default bindings.
 
 ## AI integration
 
@@ -406,10 +453,13 @@ untouched, so a scene saved by a newer build never loses data in an older one.
 
 ## What's next
 
-Gameplay: collision and gravity, which is the largest gap — agents and the character currently
-walk through walls and each other. Then line-of-sight instead of plain distance for NPC senses,
-navigation around obstacles, and moving scripts into a Worker, which is the same change as
-making the sandbox a real one.
+Gameplay: collision and gravity landed in v0.7.5, and the gaps left around them are narrower —
+NPC agents still steer by distance rather than by the solver, so they walk through each other and
+through walls unless you give them colliders; angular dynamics, joints and continuous collision
+are all deliberately absent (see [docs/PHYSICS.md](./docs/PHYSICS.md)). Then line-of-sight instead
+of plain distance for NPC senses, navigation around obstacles, and moving scripts and the solver
+into a Worker — which for scripts is the same change as making the sandbox a real one, and for
+physics is the reason `engine/physics` imports neither Three.js nor the DOM.
 
 Modelling: edit mode (vertex/edge/face selection, loop cut, and extrude/inset on a *selection*
 rather than on every face), editable Bézier paths so a profile can be drawn rather than picked
@@ -438,6 +488,7 @@ git checkout release/v0.7.0   # Assistant tool layer and MCP server
 git checkout release/v0.7.1   # External hardware over Web Serial and WebSocket
 git checkout release/v0.7.2   # Scatter brush and instancing
 git checkout release/v0.7.3   # Render pipeline rework and graphics settings
+git checkout release/v0.7.4   # Dock layout, status bar and every panel moved
 ```
 
 v0.7.0 added the assistant tool layer and the MCP server. It needed **no schema change and no
@@ -569,12 +620,104 @@ described: adding a panel should mean adding no CSS.
 CI (`.github/workflows/ci.yml`) runs typecheck, tests and build on every push and pull
 request. It needs GitHub Actions enabled on the repository to do anything.
 
+### v0.7.5 — physics, and instruments to watch it with
+
+The largest release since scripting, and the first one that adds a whole subsystem to the engine
+rather than reworking one. **No schema change:** a scene saved by v0.7.4 opens unchanged, and the
+new components are ordinary components — unknown ones already round-trip, so a v0.7.5 scene opened
+in an older build keeps its colliders as data it does not understand rather than losing them.
+
+**Gravity and physics.** `engine/physics` is a hand-rolled solver: sequential impulses over a fixed
+timestep, the same family as Box2D and PhysX. Box, sphere, capsule and infinite-plane colliders with
+a full SAT narrowphase for oriented boxes, a uniform-grid broadphase, friction and restitution,
+positional correction with slop, sleeping, collision layers by name, triggers, and raycast and
+overlap queries. Three components — `Collider`, `RigidBody`, `Physics` — and the smallest useful
+scene needs two of them.
+
+Hand-rolled rather than a dependency, and it is worth saying why: what the engine needs is that
+characters fall, stop on floors, slide along walls and cannot walk through rocks, all of which is
+*linear*. Contacts never spin a body here. Rotational response needs an inertia tensor per shape,
+angular impulses at contact points and a solver that couples the two — roughly three times the
+code — and the payoff is tumbling debris. When tumbling is the feature being asked for, the honest
+move is a real rigid-body library, not a half-solver grown in place. The whole argument, and the
+rest of the limits, are in [docs/PHYSICS.md](./docs/PHYSICS.md).
+
+The `CharacterController` stops being a lie. It was kinematic and pinned to a fixed
+`groundHeight` with no collision at all, which made every scene a flat plane whatever was built in
+it. It now falls, lands on whatever is under it, walks up slopes to a configurable limit, stops at
+walls, and jumps — with coyote time, because players press jump on the last frame of the ledge and
+should not be punished for it. Still kinematic, deliberately: a player driven by forces feels like
+a shopping trolley.
+
+**Several scripts on one object.** Scripts were the one component that could not compose, and it
+distorted scenes: a crate that floats, spins and explodes on contact became three nested entities
+whose transforms had nothing to do with the structure. Each `Script` now carries a stable id and an
+`order`, instances are keyed by entity *and* script, and the frame runs them sorted — because a
+camera script that follows a character has to run after the movement script or it tracks where the
+character was. Getting there meant index-addressed component operations through the whole stack:
+`Scene.getComponents`/`removeComponentAt`, the undo commands, the Inspector, and the assistant's
+`set_script`, which now takes a script *name*. Every one of those was a real bug first: removing
+the second script deleted the first.
+
+**Advanced scripting.** Three hooks became eleven. `fixedUpdate(dt)` fires exactly as often as the
+solver stepped — asked of the physics system rather than guessed from a private accumulator, so the
+two cannot drift out of phase — which is the fix for the most common physics bug there is: a force
+applied once per *frame* is a force whose strength depends on the frame rate. `lateUpdate` for
+follow cameras, four collision and trigger callbacks, and `onMessage` with `scene.send` /
+`scene.broadcast` so behaviours on one object can talk without knowing about each other. New in
+scope: `physics` (raycasts, overlaps, `explode`), `entity.body` for shoving bodies about,
+`entity.grounded` and `entity.jump` that answer for a rigid body *or* a character controller,
+`mathf` for the arithmetic every gameplay script otherwise rewrites, and real timers —
+`time.after` and `time.every`, owned by the script instance so they die with it, which is the
+behaviour people wanted from the `setTimeout` that is deliberately shadowed.
+
+**A better lighting system.** Two new types: `Hemisphere`, which is the cheapest useful light in
+the engine — no shadow pass, and it gives shaded sides a colour instead of black — and `Area`
+(RectAreaLight) for softboxes and windows. Colour temperature in kelvin, normalised so the slider
+changes hue and not brightness. Physical intensity units, where a point light's candela is
+`lumens / 4π` and a spot's divides by its cone's solid angle, so **the same bulb in a tighter cone
+is genuinely brighter** — which is how a torch works and which artistic units cannot express. Per
+light: an `enabled` flag, because lighting is iterative and half of it is turning things off.
+
+And a **shadow budget**. Every shadow-casting light is another render of the whole scene from that
+light's point of view, so four casters is five renders a frame — the fastest way there is to turn a
+comfortable frame into an unplayable one, and the easiest to do by accident because each light looks
+free when you place it. The renderer now caps them and spends the budget per frame on the lights
+that matter: explicit `shadowPriority` first, then brightness, then distance to the camera. A scene
+can hold thirty torches and cost four passes. The Statistics panel reports "3 of 9", so a light
+losing its shadow is visible rather than mysterious.
+
+**An advanced FPS counter.** 1% and 0.1% lows — the average of the slowest frames, which is the
+statistic that distinguishes a smooth run from a stuttering one and which no mean ever will. A
+hitch count with an absolute floor, so a 144 Hz machine is not slandered by frames twice its
+median. A frame-time graph, because the *shape* of a trace is the information: a flat line, a
+sawtooth and a flat line with one spike a second have similar medians and feel nothing alike. And a
+per-system breakdown, from `beginSection`/`endSection` around each system in the loop — "the frame
+costs 14 ms" is a fact you can do nothing with, and "11 of the 14 are physics" is a plan. Plus an
+opt-in viewport overlay, the one thing allowed over the canvas, because the moment you most need the
+frame rate is while playing and that is exactly when every dock is in the way.
+
+**Advanced triangle and object counts.** A new Statistics panel (**F10**) built on
+`engine/perf/SceneStats`, which walks the rendered tree once and attributes every triangle to the
+entity that put it there. Triangles split into meshes, scatter instances, hidden geometry, unique
+triangles in memory, and the shadow pass — routinely the largest of the five, and the number that
+explains why a second shadow light halved the frame rate. Objects by component type, including
+types from a newer build, because a census that quietly omits what it does not recognise is a census
+you cannot trust. And a table of the heaviest objects that selects one when you click it.
+
+Three bugs the new tests found in code written for this release, all in the solver, all of the kind
+only a test finds: a resting body's contact was resetting its own sleep timer so nothing ever slept
+and stacks jittered forever; motion locks held against gravity but not against positional
+correction, which is the less useful half of a lock; and a ray cast straight down at a box came back
+with the far face's normal, pointing down through the geometry it had just hit.
+
 ## Layout
 
 ```
 src/
   engine/    core — scene graph, mesh pipeline, components, render host, serialization,
-             loop, scripting, AI, gameplay, input, hardware (protocol, bus, bindings),
+             loop, physics (solver, shapes, queries), scripting, AI, gameplay, input,
+             hardware (protocol, bus, bindings), perf (frame stats + scene census),
              scatter (packed instances + brush) and the assistant tool layer + MCP
              server. No React, no DOM. This is what the runtime uses.
   editor/    dock layout and panels, gizmo, undo/redo, persistence, console, assistant,

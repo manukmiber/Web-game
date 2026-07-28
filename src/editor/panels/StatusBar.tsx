@@ -13,6 +13,7 @@ const TOGGLES: PanelId[] = [
   'assistant',
   'console',
   'performance',
+  'statistics',
   'graphics',
   'hardware',
 ];
@@ -46,11 +47,18 @@ export function StatusBar({ viewport }: Props) {
     (s) => s.consoleMessages.filter((m) => m.level === 'error').length,
   );
 
+  const hudVisible = useEditorStore((s) => s.hudVisible);
+  const toggleHud = useEditorStore((s) => s.toggleHud);
   const [fps, setFps] = useState(0);
+  const [low1, setLow1] = useState(0);
 
   useEffect(() => {
     if (!viewport) return;
-    const timer = setInterval(() => setFps(viewport.frameReport().fps), FPS_REFRESH_MS);
+    const timer = setInterval(() => {
+      const report = viewport.frameReport();
+      setFps(report.fps);
+      setLow1(report.low1Fps);
+    }, FPS_REFRESH_MS);
     return () => clearInterval(timer);
   }, [viewport]);
 
@@ -94,9 +102,14 @@ export function StatusBar({ viewport }: Props) {
         <span className="status-chip" title="Selected objects">
           {selection.length} sel
         </span>
-        <span className={`status-chip fps ${fpsClass}`} title="Frames per second">
+        <button
+          className={`status-chip fps ${fpsClass} ${hudVisible ? 'active' : ''}`}
+          aria-pressed={hudVisible}
+          title={`Frames per second — 1% low ${low1.toFixed(0)}. Click for the viewport overlay.`}
+          onClick={toggleHud}
+        >
           {fps.toFixed(0)} fps
-        </span>
+        </button>
       </div>
     </footer>
   );

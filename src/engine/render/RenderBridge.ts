@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { RectAreaLightUniformsLib } from 'three/examples/jsm/lights/RectAreaLightUniformsLib.js';
 import type { LightComponent, LightType } from '../components/Light';
 import { createMaterial, type MaterialComponent } from '../components/Material';
 import type { MeshRendererComponent } from '../components/MeshRenderer';
@@ -13,17 +14,16 @@ import {
 import type { Scene } from '../scene/Scene';
 import type { Entity, EntityId, Vec3 } from '../scene/types';
 import { acquireGeometry, geometryCache } from './geometry';
+import {
+  canCastShadow,
+  kelvinToRgb,
+  resolveIntensity,
+  selectShadowCasters,
+  type ShadowCandidate,
+} from './lighting';
 import { materialCache, materialKey } from './material';
 
 const DEG2RAD = Math.PI / 180;
-
-/**
- * Point and spot intensity is candela in Three's physical lighting model, where a value that
- * lights a room is in the tens — while a directional light's is a plain multiplier around 1.
- * Authoring one "intensity" field that means both would make switching a light's type change
- * its brightness by an order of magnitude, so the conversion happens here instead.
- */
-const PUNCTUAL_INTENSITY_SCALE = 12;
 
 /** One prototype's worth of a scatter layer: a single draw call, however many instances. */
 interface ScatterBatch {
@@ -47,6 +47,8 @@ interface EntityNode {
   light: THREE.Light | null;
   /** Which light class `light` is, so a type change rebuilds rather than mis-configures. */
   lightKind: LightType | null;
+  /** False while the shadow budget has this light's map switched off. See `applyShadowBudget`. */
+  shadowAllowed: boolean;
   /** Instanced geometry from a ScatterLayer, if the entity carries one. */
   scatter: ScatterNode | null;
 }
@@ -180,6 +182,7 @@ export class RenderBridge {
       materialKey: null,
       light: null,
       lightKind: null,
+      shadowAllowed: true,
       scatter: null,
     };
     this.nodes.set(entity.id, node);
@@ -348,10 +351,17 @@ export class RenderBridge {
 
     const light = node.light;
     if (!light) return;
-    light.color.set(component.color);
-    light.intensity =
-      component.intensity * (component.lightType === 'Directional' ? 1 : PUNCTUAL_INTENSITY_SCALE);
 
+    // Off means off, not dim: a disabled light still costs a uniform slot and a shader branch
+    // if it stays in the scene, so it is unhooked from the render entirely.
+    light.visible = component.enabled !== false;
+
+    applyLightColor(light.color, component.color, component);
+    light.intensity = resolveIntensity(component);
+
+    if (light instanceof THREE.HemisphereLight) {
+      applyLightColor(light.groundColor, component.groundColor ?? '#3a3630', component);
+    }
     if (light instanceof THREE.PointLight || light instanceof THREE.SpotLight) {
       light.distance = Math.max(0, component.range);
       light.decay = 2;
@@ -360,37 +370,127 @@ export class RenderBridge {
       light.angle = Math.min(Math.max(component.angle, 1), 89) * DEG2RAD;
       light.penumbra = Math.min(Math.max(component.penumbra, 0), 1);
     }
-
-    light.castShadow = component.castShadow;
-    const shadow = shadowOf(light);
-    if (component.castShadow && shadow) {
-      const size = THREE.MathUtils.floorPowerOfTwo(
-        Math.min(Math.max(component.shadowMapSize, 256), 4096),
-      );
-      if (shadow.mapSize.width !== size) {
-        shadow.mapSize.set(size, size);
-        // Three only allocates a shadow map once; dropping it forces the new size.
-        shadow.map?.dispose();
-        shadow.map = null;
-      }
-      shadow.bias = component.shadowBias;
-      // Defaulted rather than read straight through: scenes saved before this field existed
-      // deserialize without it, and an undefined normal bias is a NaN shadow matrix — which
-      // renders as every shadow in the scene disappearing at once.
-      shadow.normalBias = component.shadowNormalBias ?? 0.02;
-      if (shadow.camera instanceof THREE.OrthographicCamera) {
-        const extent = Math.max(1, component.shadowRange);
-        shadow.camera.left = -extent;
-        shadow.camera.right = extent;
-        shadow.camera.top = extent;
-        shadow.camera.bottom = -extent;
-        shadow.camera.near = 0.5;
-        // Far has to reach the ground from wherever the sun entity was placed, and the shadow
-        // range is the only hint of world size available here.
-        shadow.camera.far = Math.max(200, extent * 6);
-        shadow.camera.updateProjectionMatrix();
-      }
+    if (light instanceof THREE.RectAreaLight) {
+      light.width = Math.max(0.01, component.width ?? 2);
+      light.height = Math.max(0.01, component.height ?? 1);
     }
+
+    // Two gates, and both have to pass. The author asked for a shadow, and the renderer's
+    // shadow budget agreed to pay for it — see `applyShadowBudget`.
+    const wants = component.castShadow && canCastShadow(component.lightType);
+    light.castShadow = wants && node.shadowAllowed;
+
+    const shadow = shadowOf(light);
+    if (!light.castShadow || !shadow) return;
+
+    const size = THREE.MathUtils.floorPowerOfTwo(
+      Math.min(Math.max(component.shadowMapSize, 256), 4096),
+    );
+    if (shadow.mapSize.width !== size) {
+      shadow.mapSize.set(size, size);
+      // Three only allocates a shadow map once; dropping it forces the new size.
+      shadow.map?.dispose();
+      shadow.map = null;
+    }
+    shadow.bias = component.shadowBias;
+    // Defaulted rather than read straight through: scenes saved before this field existed
+    // deserialize without it, and an undefined normal bias is a NaN shadow matrix — which
+    // renders as every shadow in the scene disappearing at once.
+    shadow.normalBias = component.shadowNormalBias ?? 0.02;
+    if (shadow.camera instanceof THREE.OrthographicCamera) {
+      const extent = Math.max(1, component.shadowRange);
+      shadow.camera.left = -extent;
+      shadow.camera.right = extent;
+      shadow.camera.top = extent;
+      shadow.camera.bottom = -extent;
+      shadow.camera.near = 0.5;
+      // Far has to reach the ground from wherever the sun entity was placed, and the shadow
+      // range is the only hint of world size available here.
+      shadow.camera.far = Math.max(200, extent * 6);
+      shadow.camera.updateProjectionMatrix();
+    }
+  }
+
+  /**
+   * Decides which lights actually get a shadow map, and returns how many do.
+   *
+   * Every shadow-casting light is an extra render of the scene from that light's point of view.
+   * Ten of them is ten extra passes, which is the fastest way there is to turn a comfortable
+   * frame into an unplayable one — and the easiest to do by accident, because each light looks
+   * free when you place it. Capping the count and spending the budget on the lights that matter
+   * most right now (see `lightImportance`) means a scene can carry as many lights as it likes
+   * and still be predictable to render.
+   *
+   * Called once per frame by the RenderHost, before the draw.
+   */
+  applyShadowBudget(maxCasters: number, cameraPosition: Vec3): number {
+    const candidates: ShadowCandidate<EntityId>[] = [];
+    for (const [id, node] of this.nodes) {
+      if (!node.light) continue;
+      const component = this.scene.getComponent<LightComponent>(id, 'Light');
+      if (!component) continue;
+      node.group.getWorldPosition(SHADOW_WORLD_POSITION);
+      candidates.push({
+        key: id,
+        component,
+        position: [SHADOW_WORLD_POSITION.x, SHADOW_WORLD_POSITION.y, SHADOW_WORLD_POSITION.z],
+      });
+    }
+
+    const chosen = selectShadowCasters(candidates, maxCasters, cameraPosition);
+    let active = 0;
+
+    for (const candidate of candidates) {
+      const node = this.nodes.get(candidate.key);
+      if (!node?.light) continue;
+      const allowed = chosen.has(candidate.key);
+      const wants = candidate.component.castShadow && canCastShadow(candidate.component.lightType);
+      if (node.shadowAllowed !== allowed) {
+        node.shadowAllowed = allowed;
+        // Re-running the full sync rather than poking `castShadow` directly, so a light that
+        // regains its budget also gets its map size and bias re-applied — the map was disposed
+        // when it lost them.
+        const entity = this.scene.get(candidate.key);
+        if (entity) this.syncLight(node, entity);
+      }
+      if (wants && allowed) active += 1;
+    }
+
+    return active;
+  }
+
+  /**
+   * Census of the scene's lights. Read by the Statistics panel and the shadow-budget readout.
+   *
+   * `requestedShadows` counts the lights that *asked* to cast; `activeShadows` counts the ones
+   * the budget actually granted. The gap between the two is the whole point of reporting them.
+   */
+  lightSummary(): {
+    total: number;
+    enabled: number;
+    requestedShadows: number;
+    activeShadows: number;
+    byType: Record<string, number>;
+  } {
+    let total = 0;
+    let enabled = 0;
+    let requestedShadows = 0;
+    let activeShadows = 0;
+    const byType: Record<string, number> = {};
+
+    for (const [id, node] of this.nodes) {
+      if (!node.light) continue;
+      total += 1;
+      const component = this.scene.getComponent<LightComponent>(id, 'Light');
+      const kind = component?.lightType ?? 'Directional';
+      byType[kind] = (byType[kind] ?? 0) + 1;
+      if (component?.enabled === false) continue;
+      enabled += 1;
+      if (component?.castShadow && canCastShadow(kind)) requestedShadows += 1;
+      if (node.light.castShadow) activeShadows += 1;
+    }
+
+    return { total, enabled, requestedShadows, activeShadows, byType };
   }
 
   private releaseLight(node: EntityNode): void {
@@ -554,6 +654,30 @@ const SCATTER_POSITION = new THREE.Vector3();
 const SCATTER_QUATERNION = new THREE.Quaternion();
 const SCATTER_SCALE = new THREE.Vector3();
 
+/** Set once the RectAreaLight lookup tables have been uploaded. */
+let rectAreaReady = false;
+
+/** Scratch for the shadow budget's world-position query — one vector, not one per light. */
+const SHADOW_WORLD_POSITION = new THREE.Vector3();
+
+/**
+ * Applies an author's colour to a Three light, tinted by its colour temperature.
+ *
+ * The tint is built in sRGB and converted on the way in, then multiplied — which is the order
+ * that matters. Multiplying two sRGB values and converting once would darken the result,
+ * because the curve is not linear and the product of two encoded values is not the encoding of
+ * the product.
+ */
+function applyLightColor(target: THREE.Color, hex: string, component: LightComponent): void {
+  target.set(hex);
+  if (!component.useTemperature) return;
+  const [r, g, b] = kelvinToRgb(component.temperature ?? 6500);
+  TEMPERATURE_TINT.setRGB(r, g, b, THREE.SRGBColorSpace);
+  target.multiply(TEMPERATURE_TINT);
+}
+
+const TEMPERATURE_TINT = new THREE.Color();
+
 /** The aim point of a light that has one. Point lights don't. */
 function targetOf(light: THREE.Light): THREE.Object3D | null {
   if (light instanceof THREE.DirectionalLight || light instanceof THREE.SpotLight) {
@@ -579,6 +703,20 @@ function createThreeLight(type: LightType): THREE.Light {
       return new THREE.PointLight(0xffffff, 1);
     case 'Spot':
       return new THREE.SpotLight(0xffffff, 1);
+    case 'Hemisphere':
+      // Sky above, bounce below. The cheapest lighting in the engine that still reads as
+      // outdoors: it costs no shadow pass and gives shaded sides a colour rather than black.
+      return new THREE.HemisphereLight(0xffffff, 0x3a3630, 1);
+    case 'Area': {
+      // RectAreaLight needs its BRDF lookup tables uploaded before it renders as anything but
+      // black. Initialising lazily rather than at module load keeps a headless import — a test,
+      // a worker — from touching WebGL just because it imported the bridge.
+      if (!rectAreaReady) {
+        RectAreaLightUniformsLib.init();
+        rectAreaReady = true;
+      }
+      return new THREE.RectAreaLight(0xffffff, 1, 2, 1);
+    }
     case 'Directional':
     default: {
       const light = new THREE.DirectionalLight(0xffffff, 1);

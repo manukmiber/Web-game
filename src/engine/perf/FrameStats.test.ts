@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { FrameStats, percentile } from './FrameStats';
+import { FrameStats, percentile, slowestMean } from './FrameStats';
 
 describe('percentile', () => {
   it('returns 0 for an empty set', () => {
@@ -13,6 +13,15 @@ describe('percentile', () => {
     expect(percentile(sorted, 0)).toBe(10);
   });
 });
+
+/** Blocks for approximately `ms` so a measured span is non-trivial. */
+function spin(ms: number): void {
+  if (ms <= 0) return;
+  const until = performance.now() + ms;
+  while (performance.now() < until) {
+    /* deliberate busy wait */
+  }
+}
 
 describe('FrameStats', () => {
   /**
@@ -127,5 +136,144 @@ describe('FrameStats', () => {
     for (let i = 0; i < 10; i += 1) frame(stats, 16);
     stats.reset();
     expect(stats.report().sampleCount).toBe(0);
+  });
+});
+
+describe('FrameStats, the advanced readouts', () => {
+  const frame = (stats: FrameStats, frameMs: number) => {
+    stats.beginFrame();
+    stats.endFrame();
+    stats.record(frameMs / 1000);
+  };
+
+  it('reports a 1% low well below the average when a run is spiky', () => {
+    const stats = new FrameStats();
+    for (let i = 0; i < 99; i += 1) frame(stats, 16);
+    frame(stats, 100);
+
+    const report = stats.report();
+    // The average barely notices one bad frame in a hundred; the 1% low is that frame.
+    expect(Math.round(report.averageFps)).toBe(59);
+    expect(Math.round(report.low1Fps)).toBe(10);
+    expect(Math.round(report.fps)).toBe(63);
+  });
+
+  it('agrees with itself on a perfectly steady run', () => {
+    const stats = new FrameStats();
+    for (let i = 0; i < 100; i += 1) frame(stats, 20);
+
+    const report = stats.report();
+    expect(report.fps).toBeCloseTo(50);
+    expect(report.averageFps).toBeCloseTo(50);
+    expect(report.low1Fps).toBeCloseTo(50);
+    expect(report.minFps).toBeCloseTo(50);
+    expect(report.stutterCount).toBe(0);
+  });
+
+  it('counts hitches, with an absolute floor so a fast machine is not slandered', () => {
+    const stats = new FrameStats();
+    // 7ms frames with occasional 13ms ones: nearly double the median, but nobody feels 13ms.
+    for (let i = 0; i < 90; i += 1) frame(stats, 7);
+    for (let i = 0; i < 10; i += 1) frame(stats, 13);
+    expect(stats.report().stutterCount).toBe(0);
+
+    const slow = new FrameStats();
+    for (let i = 0; i < 90; i += 1) frame(slow, 16);
+    for (let i = 0; i < 10; i += 1) frame(slow, 90);
+    expect(slow.report().stutterCount).toBe(10);
+    expect(slow.report().stutterShare).toBeCloseTo(0.1);
+  });
+
+  it('hands back the history the graph plots, oldest first', () => {
+    const stats = new FrameStats(4);
+    for (const ms of [10, 20, 30, 40, 50]) frame(stats, ms);
+    expect(stats.report().history).toEqual([20, 30, 40, 50]);
+  });
+
+  it('counts every frame recorded, not just the ones still in the window', () => {
+    const stats = new FrameStats(10);
+    for (let i = 0; i < 50; i += 1) frame(stats, 16);
+    const report = stats.report();
+    expect(report.sampleCount).toBe(10);
+    expect(report.totalFrames).toBe(50);
+  });
+
+  it('attributes time to named sections, worst first', () => {
+    const stats = new FrameStats();
+    for (let i = 0; i < 10; i += 1) {
+      stats.beginFrame();
+      stats.beginSection('PhysicsSystem');
+      spin(2);
+      stats.endSection('PhysicsSystem');
+      stats.beginSection('ScriptSystem');
+      stats.endSection('ScriptSystem');
+      stats.endFrame();
+      stats.record(0.016);
+    }
+
+    const sections = stats.report().sections;
+    expect(sections.map((s) => s.name)).toEqual(['PhysicsSystem', 'ScriptSystem']);
+    expect(sections[0]!.medianMs).toBeGreaterThan(1);
+    expect(sections[0]!.share).toBeGreaterThan(0);
+    expect(sections[1]!.medianMs).toBeLessThan(1);
+  });
+
+  it('records a zero for a section that stopped running, rather than its last value', () => {
+    const stats = new FrameStats();
+    for (let i = 0; i < 5; i += 1) {
+      stats.beginFrame();
+      stats.beginSection('NpcSystem');
+      spin(2);
+      stats.endSection('NpcSystem');
+      stats.endFrame();
+      stats.record(0.016);
+    }
+    // The system stops ticking — because Play mode ended, say.
+    for (let i = 0; i < 20; i += 1) {
+      stats.beginFrame();
+      stats.endFrame();
+      stats.record(0.016);
+    }
+
+    expect(stats.report().sections[0]!.medianMs).toBe(0);
+  });
+
+  it('ignores an unbalanced endSection rather than recording a bogus span', () => {
+    const stats = new FrameStats();
+    stats.beginFrame();
+    stats.endSection('NeverStarted');
+    stats.endFrame();
+    stats.record(0.016);
+    expect(stats.report().sections).toEqual([]);
+  });
+
+  it('drops section history on reset along with everything else', () => {
+    const stats = new FrameStats();
+    stats.beginFrame();
+    stats.beginSection('A');
+    stats.endSection('A');
+    stats.endFrame();
+    stats.record(0.016);
+    expect(stats.report().sections).toHaveLength(1);
+
+    stats.reset();
+    expect(stats.report().sections).toEqual([]);
+    expect(stats.report().totalFrames).toBe(0);
+  });
+});
+
+describe('slowestMean', () => {
+  it('averages the tail rather than picking one frame out of it', () => {
+    const sorted = [10, 10, 10, 10, 10, 10, 10, 10, 40, 60];
+    // The slowest 20% is the last two: (40 + 60) / 2.
+    expect(slowestMean(sorted, 0.2)).toBe(50);
+  });
+
+  it('always takes at least one sample, however small the fraction', () => {
+    expect(slowestMean([1, 2, 3], 0.0001)).toBe(3);
+  });
+
+  it('is zero for an empty set', () => {
+    expect(slowestMean([], 0.5)).toBe(0);
   });
 });

@@ -85,16 +85,47 @@ export function Inspector() {
     run(new SetTransformCommand(scene, next));
   };
 
-  // Component types shared by the whole selection — editing anything else would silently
-  // apply to only some of the selected objects.
-  const sharedTypes = primary.components
-    .map((c) => c.type)
-    .filter((type) => entities.every((entity) => entity.components.some((c) => c.type === type)));
+  /**
+   * What to draw, in the order the entity stores it.
+   *
+   * Two kinds of entry. A single-instance type is one section shared by the whole selection,
+   * addressed by type — editing it applies to every selected object. A type that allows several
+   * (`Script`) gets one section per component, addressed by its position in the array, and only
+   * on a single selection: "the second Script" is not a thing a multi-selection can agree on
+   * when the objects have different numbers of them.
+   *
+   * Types the whole selection does not share are skipped, since editing one would silently
+   * apply to only some of the selected objects.
+   */
+  const sections: { key: string; type: string; component: Component; index?: number }[] = [];
+  const seenTypes = new Set<string>();
+
+  for (const [index, component] of primary.components.entries()) {
+    const definition = getComponentDefinition(component.type);
+
+    if (definition?.allowMultiple && !multi) {
+      sections.push({
+        key: `${component.type}:${index}`,
+        type: component.type,
+        component,
+        index,
+      });
+      continue;
+    }
+
+    if (seenTypes.has(component.type)) continue;
+    seenTypes.add(component.type);
+    const shared = entities.every((entity) => entity.components.some((c) => c.type === component.type));
+    if (!shared) continue;
+    sections.push({ key: component.type, type: component.type, component });
+  }
 
   const missingDefinitions = listComponentDefinitions().filter(
     (definition) =>
       definition.addable !== false &&
-      !entities.every((entity) => entity.components.some((c) => c.type === definition.type)),
+      // A type that allows several is always offered, however many the entity already has.
+      (definition.allowMultiple ||
+        !entities.every((entity) => entity.components.some((c) => c.type === definition.type))),
   );
 
   return (
@@ -145,13 +176,19 @@ export function Inspector() {
           </Field>
         </Section>
 
-        {sharedTypes.map((type) => (
-          <div key={type}>
+        {sections.map(({ key, type, component, index }) => (
+          <div key={key}>
             <ComponentSection
               type={type}
-              component={primary.components.find((c) => c.type === type)!}
-              entityIds={entities.map((e) => e.id)}
+              component={component}
+              // A named instance is worth labelling: three sections all headed "Script" is
+              // exactly as useless as it sounds.
+              title={index !== undefined ? instanceTitle(type, component) : undefined}
               onRemove={() => {
+                if (index !== undefined) {
+                  run(new RemoveComponentCommand(scene, primary.id, type, index));
+                  return;
+                }
                 for (const entity of entities) {
                   run(new RemoveComponentCommand(scene, entity.id, type));
                 }
@@ -160,10 +197,11 @@ export function Inspector() {
                 run(
                   new SetComponentPropertyCommand(
                     scene,
-                    entities.map((e) => e.id),
+                    index !== undefined ? [primary.id] : entities.map((e) => e.id),
                     type,
                     path,
                     value,
+                    index,
                   ),
                 );
               }}
@@ -172,31 +210,26 @@ export function Inspector() {
                 Single selection only: reordering a stack across several objects at once has
                 no unambiguous meaning. */}
             {type === 'MeshRenderer' && !multi && (
-              <ModifierStack
-                entityId={primary.id}
-                renderer={primary.components.find((c) => c.type === 'MeshRenderer')! as never}
-              />
+              <ModifierStack entityId={primary.id} renderer={component as never} />
             )}
             {/* Same reasoning as the modifier stack: the source belongs directly under its
                 component, and editing one across a multi-selection has no clear meaning. */}
-            {type === 'Script' && !multi && (
+            {type === 'Script' && index !== undefined && (
               <ScriptEditor
                 entityId={primary.id}
-                script={primary.components.find((c) => c.type === 'Script')! as never}
+                componentIndex={index}
+                script={component as never}
               />
             )}
             {/* The brush belongs with the layer it fills, and its prototype list names entities
                 in this scene — neither survives being applied across a multi-selection. */}
             {type === 'ScatterLayer' && !multi && (
-              <ScatterEditor
-                entityId={primary.id}
-                layer={primary.components.find((c) => c.type === 'ScatterLayer')! as never}
-              />
+              <ScatterEditor entityId={primary.id} layer={component as never} />
             )}
           </div>
         ))}
 
-        {multi && sharedTypes.length < primary.components.length && (
+        {multi && sections.length < primary.components.length && (
           <div className="mixed-note">
             Only components shared by all {entities.length} selected objects are shown.
           </div>
@@ -210,7 +243,15 @@ export function Inspector() {
                 const definition = getComponentDefinition(event.currentTarget.value);
                 if (!definition) return;
                 for (const entity of entities) {
-                  if (entity.components.some((c) => c.type === definition.type)) continue;
+                  // A repeatable type always adds another; anything else is skipped on the
+                  // entities that already have one, so one pick across a mixed selection tops
+                  // everyone up rather than doubling up on some of them.
+                  if (
+                    !definition.allowMultiple &&
+                    entity.components.some((c) => c.type === definition.type)
+                  ) {
+                    continue;
+                  }
                   run(new AddComponentCommand(scene, entity.id, definition.create()));
                 }
                 event.currentTarget.value = '';
@@ -232,15 +273,24 @@ export function Inspector() {
   );
 }
 
+/** "Script — Zombie AI", so three sections headed "Script" are told apart at a glance. */
+function instanceTitle(type: string, component: Component): string | undefined {
+  const definition = getComponentDefinition(type);
+  const name = typeof component.name === 'string' ? component.name.trim() : '';
+  if (!definition) return undefined;
+  return name ? `${definition.label} — ${name}` : definition.label;
+}
+
 interface ComponentSectionProps {
   type: string;
   component: Component;
-  entityIds: EntityId[];
+  /** Overrides the registry label. Used to name one instance of a repeatable component. */
+  title?: string;
   onRemove(): void;
   onChange(path: string, value: unknown): void;
 }
 
-function ComponentSection({ type, component, onRemove, onChange }: ComponentSectionProps) {
+function ComponentSection({ type, component, title, onRemove, onChange }: ComponentSectionProps) {
   const definition = getComponentDefinition(type);
 
   // An unregistered type is still valid data (a scene from a newer build). Show it read-only
@@ -255,7 +305,7 @@ function ComponentSection({ type, component, onRemove, onChange }: ComponentSect
 
   return (
     <Section
-      title={definition.label}
+      title={title ?? definition.label}
       actions={
         <button onClick={onRemove} title={`Remove ${definition.label}`}>
           ✕

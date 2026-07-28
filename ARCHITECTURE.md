@@ -319,7 +319,12 @@ class Engine {
   mode: 'edit' | 'play';
   systems: System[];          // each declares runsIn: ('edit'|'play')[]
   tick(dt) {
-    for (const s of this.systems) if (s.runsIn.includes(this.mode)) s.update(dt, this);
+    for (const s of this.systems) {
+      if (!s.runsIn.includes(this.mode)) continue;
+      this.stats.beginSection(s.name);        // per-system timing, §9.7
+      s.update(dt, this);
+      this.stats.endSection(s.name);
+    }
     this.scene.flushTransforms();   // one event per moved entity, not one per axis
     this.events.emit('afterUpdate', { dt });   // rendering happens in here
     this.input.endFrame();          // press/release edges last exactly one tick
@@ -332,7 +337,14 @@ render through the scene's own camera entity instead of the editor camera. Exiti
 snapshot. **No engine rewrite, no second renderer, no second scene graph.**
 
 The seam held. Adding scripting, agents and a character controller took no change to this file
-beyond three lines: `input`, `game`, and a `reset` hook on `System`.
+beyond three lines: `input`, `game`, and a `reset` hook on `System`. Adding **physics** in v0.7.5
+took two more: a `PhysicsWorld` beside `input` and `game`, and a `physics.clear()` in `setMode`.
+
+**Why the world hangs off the Engine and not off the PhysicsSystem.** Three things need it and only
+one of them ticks it: the CharacterSystem casts against it to find the floor, scripts raycast and
+shove bodies through it, and the PhysicsSystem is simply whoever calls `step`. A world hidden inside
+that system would have to be reached through `engine.systems.find(s => s.name === 'PhysicsSystem')`,
+which is how a clean seam turns into a service locator. Same argument as `input` and `hardware`.
 
 **What "restored" has to cover.** The scene snapshot is only half of a play session's state.
 Health, script instances, agent state machines and held keys live outside the scene, so they are
@@ -520,6 +532,33 @@ share of the frame is JavaScript: mostly JS means fewer draw calls and less per-
 mostly *not* JS means the frame is waiting on the GPU, so resolution scale, overdraw and
 shader cost are the levers.
 
+**Two additions in v0.7.5, both because the existing numbers stopped being enough.**
+
+*The 1% low.* `FrameStats` now reports the mean of the slowest 1% and 0.1% of frames as fps, plus
+a hitch count. Averaged rather than read off as a single percentile, which is the difference
+between the two numbers people both call "1% low": the percentile is one frame and jumps around,
+while the mean of the tail is stable enough to compare two builds by. The hitch threshold has an
+absolute floor of 8 ms over the median as well as a 2× multiplier, because at 144 Hz twice the
+median is 14 ms and nobody notices that — without the floor a fast machine reports constant
+stutter.
+
+*Per-system timing.* `beginSection`/`endSection` bracket each system in the loop, keyed by name
+rather than pushed onto a stack (the caller is a `for` loop, and a stack would silently
+mis-attribute if a system ever nested). "The frame costs 14 ms" is a fact you can do nothing with.
+"11 of the 14 are in the PhysicsSystem" is a plan, and it is the difference between the panel being
+a readout and being an instrument. A section that stops running records zeroes rather than holding
+its last value, so a system that stopped ticking visibly falls to zero.
+
+**And a second instrument, answering a different question.** `engine/perf/SceneStats.ts` walks the
+rendered tree once and attributes every triangle to the entity that put it there — split into
+meshes, scatter instances, hidden geometry, unique triangles in memory, and the shadow pass
+(casters × shadow-casting lights, routinely the largest of the five). `renderer.info` already
+reported triangles and draw calls, and they are the two least actionable numbers available: "1.4M
+triangles" says the scene is heavy, not that 1.1M of them are one over-subdivided rock duplicated
+forty times. It counts what *exists* rather than what was drawn, so the gap between it and
+`renderer.info` is itself informative — a scene where the two agree is a scene where frustum
+culling is doing nothing.
+
 **One honest limitation.** There is no synchronous way to read GPU time from JavaScript —
 `renderer.render()` queues commands and returns. So `submit` is the CPU cost of *issuing*
 draw calls, not how long the GPU took. That number is still worth having (in Three.js it is
@@ -628,11 +667,16 @@ at 60 fps and very visible at 20.
 
 ### 10.4 What is deliberately missing
 
-No physics, no collision, no navigation mesh, and sight is distance rather than line of sight.
-Agents and the character walk through walls. This is the largest remaining gap and it is left
-open on purpose: a hand-rolled half-physics would be harder to remove later than a real one is to
-add now, and the state machine is shaped so line of sight and pathfinding slot into `findTarget`
-and the movement step rather than needing a rewrite.
+Physics arrived in v0.7.5 — see §15. What is still open: no navigation mesh, and NPC sight is
+distance rather than line of sight, so agents steer past each other by luck rather than by the
+solver. The state machine is shaped so line of sight and pathfinding slot into `findTarget` and the
+movement step rather than needing a rewrite.
+
+The note that used to stand here said a hand-rolled half-physics would be harder to remove later
+than a real one is to add now. That judgement is worth revisiting rather than quietly dropping,
+because v0.7.5 hand-rolled one anyway. What changed is the scope: §15 explains why a *linear*
+solver is a different proposition from a partial one, and what the honest exit is if angular
+dynamics ever becomes the requirement.
 
 ---
 
@@ -961,3 +1005,137 @@ came forward, leaving its device in the bus with nothing draining its outbound q
 
 The same reasoning constrains anything added later: a panel may own draft text and scroll
 position, but not a connection, a subscription or a queue.
+
+---
+
+## 15. Physics
+
+Added in v0.7.5. `src/engine/physics/` is a self-contained simulation: bodies, contacts, a solver,
+and the spatial queries built on them. It imports neither Three.js nor the DOM.
+
+### 15.1 Hand-rolled, and the scope is the justification
+
+The note in §10.4 said for two releases that a hand-rolled half-physics would be harder to remove
+later than a real one is to add now. v0.7.5 wrote one anyway, so the reasoning has to be better
+than "we wanted physics".
+
+What the engine actually needs is that characters fall, stop on floors, slide along walls, and
+cannot walk through rocks. Every one of those is *linear*. **This solver has no angular velocity:
+contacts never spin a body.** That is the line, and it is what makes the thing tractable —
+rotational response needs an inertia tensor per shape, angular impulses at contact points and a
+solver that couples the two, which is roughly three times the code here, and the payoff is tumbling
+debris.
+
+A dependency was the alternative. `cannon-es` or Rapier would both work, and both cost: a WASM blob
+or 150 kB of JavaScript, a second world to keep in sync with the scene, a second set of shapes to
+author, and — the part that matters most for §9.5 — someone else's decisions about threading. What
+was written instead is about 1,200 lines that read the components directly, run in a Worker without
+a single import changing, and can be deleted wholesale if the requirement grows past them. If
+angular dynamics ever becomes the requirement, the honest move is a real rigid-body library, not
+this file grown by half.
+
+Stated plainly so it is not discovered later: no joints, no continuous collision (a fast body can
+tunnel through a thin wall between two steps), and capsule-versus-box is two refinement passes
+rather than a full GJK query.
+
+### 15.2 Fixed timestep, and the spiral of death
+
+Physics runs on a fixed step out of an accumulator, never on the frame's `dt`. A variable step makes
+the simulation depend on frame rate: the same jump reaches a different height on a 144 Hz monitor
+than on a 30 fps laptop, penetration recovery oscillates whenever a frame stutters, and no run ever
+reproduces another.
+
+`maxSubsteps` is the consequence you can see. A 400 ms frame owes twenty-four steps; running them
+all makes the *next* frame worse, which makes the next one worse again. Hitting the cap discards the
+backlog, so the simulation runs slow rather than locking the tab — and reports `throttled` so the
+Performance panel can say which happened.
+
+This is also why `ScriptHooks` gained `fixedUpdate`, and why the ScriptSystem asks the PhysicsSystem
+how many steps it just ran rather than keeping its own accumulator. Two accumulators with the same
+period and different phases would fire `fixedUpdate` twice between some pairs of steps and not at
+all between others.
+
+### 15.3 The Collider is not the mesh
+
+Colliding against rendered triangles means a broadphase over a hundred thousand of them, no reliable
+inside/outside test for an open mesh, and a collision shape whose cost changes silently every time
+someone raises a segment count in the Inspector. Every engine that ships separates the two, and the
+cheap primitive is what makes a thousand bodies affordable.
+
+Two consequences worth writing down. **A Collider with no RigidBody is static** — the world rather
+than a thing in it — which is the common case and means the simple scene needs one component instead
+of two. And the `Plane` collider is an infinite half-space, which is the right shape for the ground
+even when the visible mesh is 40 m across: nothing falls off the edge of the world, and it costs
+four numbers and no broadphase cell.
+
+### 15.4 Two sources of truth, resolved per field
+
+The solver owns a falling crate's position. The Inspector owns its collider radius, its mass, and
+whether someone just dragged it somewhere with the gizmo. Both are genuinely authoritative, over
+different fields.
+
+`PhysicsSystem.syncBodies` re-describes every body from the scene each frame and substitutes the
+solver's origin for the authored one where the solver owns it. Rebuilding rather than maintaining
+through events costs a handful of microseconds per body and removes an entire class of "the collider
+did not follow the entity" bug. Velocities and sleep state survive the re-description, because a
+body that forgot its velocity every frame would never fall.
+
+Write-back goes the other way: world positions converted back into local space through the parent
+chain. `Scene.worldPositionOf` deliberately ignores parent rotation — it only ever needed a chunk
+bucket — so `worldTransformOf` in the physics layer does the full composition.
+
+### 15.5 Layers are names
+
+`layer` and `mask` are strings, not a bitmask. A scene file that says `layer: "player"` survives
+someone inserting a layer above it, and a bitmask in a text field is unreadable in an Inspector.
+
+Both sides must accept the other before a pair interacts. The asymmetric reading — bullets hit walls
+but walls do not hit bullets — produces contacts that resolve on one body and not the other, which
+looks exactly like tunnelling.
+
+### 15.6 Sleeping is not an optimisation
+
+Without it a stack of crates jitters forever: the solver's positional correction and gravity trade a
+fraction of a millimetre back and forth every step and never agree. So a body that has been still
+for `sleepDelay` stops being simulated.
+
+Getting it right needed one distinction that is easy to miss, and did not survive the first draft: a
+**moving** body wakes a sleeping one, a resting one does not. Waking both sides of every contact —
+the obvious reading of "a contact wakes things up" — resets the sleep timer of a body whose only
+contact is the floor it is resting on, so nothing ever sleeps. Meanwhile a sleeper that is never
+woken is a ghost: something lands on it and falls straight through, because nothing asked it to push
+back. Asking whether the *other* body is actually going anywhere avoids both.
+
+### 15.7 The character controller is kinematic on purpose
+
+A `CharacterController` writes its transform directly and resolves collisions by depenetration:
+place the capsule where the input asked, discover what it is now inside, push back out along each
+contact normal. It is never a dynamic body, which is the same choice Unity's `CharacterController`
+and Godot's `CharacterBody3D` make. A player driven by forces feels like a shopping trolley —
+instant stops, air control and a jump that reaches a chosen height are all things a dynamic body
+actively fights.
+
+Horizontal and vertical motion are resolved in **one** pass, not two. Two passes is the textbook
+arrangement and it produces a character who can climb walls by jumping into them: the vertical pass
+sees a wall contact with an upward component and reads it as ground. One pass with an explicit slope
+test does not.
+
+The ground probe below the feet is not redundant with the depenetration. A character resting exactly
+on a surface produces no overlap at all, so the resolution pass sees nothing and reports airborne —
+which becomes a fall, a landing, and a fall again, sixty times a second. The same probe doubles as
+the downhill snap, without which walking off the top of a ramp is a series of small hops.
+
+### 15.8 What the tests found
+
+Three bugs in this release's own code, all in the solver, all of the kind only a test finds:
+
+- a resting body's contact reset its own sleep timer, so nothing ever slept (§15.6);
+- motion locks held against gravity but not against positional correction — a lock that holds for
+  the floor and not for gravity is the less useful half of one;
+- a ray cast straight down at a box returned the *far* face's normal, because the swap that orders
+  the slab interval was also flipping the entry sign. The entry face is decided by the sign of the
+  direction alone.
+
+They are listed because they are the argument for the test suite being integration-level in
+`gameplay/physicsScripting.test.ts`: each is about two parts agreeing, and no unit test of either
+half can see it.

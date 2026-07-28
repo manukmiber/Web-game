@@ -129,9 +129,24 @@ export function GraphicsPanel() {
                 cm per texel. Halving the distance sharpens shadows exactly as much as doubling
                 the map, and costs no memory at all.
               </p>
+              <Slider
+                label="Shadow lights"
+                value={graphics.maxShadowLights}
+                min={-1}
+                max={12}
+                step={1}
+                format={(v) => (v < 0 ? 'No limit' : v === 0 ? 'None' : `${v} at once`)}
+                onChange={(maxShadowLights) => patch({ maxShadowLights })}
+              />
               <p className="note">
-                Applies to the built-in lighting. A scene with its own Light components sets
-                range, map size and bias per light in the Inspector.
+                Each shadow-casting light re-renders the scene from its own point of view, so
+                this cap is a multiplier on the whole frame — four lights is five renders. Which
+                lights get the budget is decided per frame by brightness, distance and each
+                light's Shadow Priority, so a scene can hold thirty torches and still cost four.
+              </p>
+              <p className="note">
+                Distance applies to the built-in lighting. A scene with its own Light components
+                sets range, map size and bias per light in the Inspector.
               </p>
             </>
           )}
