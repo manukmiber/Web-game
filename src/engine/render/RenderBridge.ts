@@ -16,10 +16,12 @@ import type { Entity, EntityId, Vec3 } from '../scene/types';
 import { acquireGeometry, geometryCache } from './geometry';
 import {
   canCastShadow,
+  directionalShadowFrame,
   kelvinToRgb,
   resolveIntensity,
   selectShadowCasters,
   type ShadowCandidate,
+  type ShadowView,
 } from './lighting';
 import { materialCache, materialKey, needsSecondUv } from './material';
 
@@ -404,11 +406,61 @@ export class RenderBridge {
       shadow.camera.right = extent;
       shadow.camera.top = extent;
       shadow.camera.bottom = -extent;
-      shadow.camera.near = 0.5;
-      // Far has to reach the ground from wherever the sun entity was placed, and the shadow
-      // range is the only hint of world size available here.
-      shadow.camera.far = Math.max(200, extent * 6);
+      // Near and far are set by `focusDirectionalShadow`, which is the only thing that knows
+      // how far back the shadow camera ended up.
       shadow.camera.updateProjectionMatrix();
+    }
+  }
+
+  /**
+   * Parks a directional light so its shadow map covers what the camera is looking at.
+   *
+   * A directional light's *direction* is the entity's rotation and nothing else — moving the
+   * light does not change how the scene is lit. But the shadow frustum used to be centred on
+   * the light entity's position, which meant dragging the sun thirty metres sideways silently
+   * took every shadow in the scene with it. So the light and its aim point are placed from the
+   * view each frame, and only their difference — the direction — comes from the entity.
+   *
+   * Written to the light's *local* transform rather than the group's, because the group is the
+   * entity's Transform and the bridge never writes back into scene data (§ the class comment).
+   */
+  private focusDirectionalShadow(
+    node: EntityNode,
+    component: LightComponent,
+    view: ShadowView,
+  ): void {
+    const light = node.light;
+    if (!(light instanceof THREE.DirectionalLight) || !light.castShadow) return;
+    const target = light.target;
+
+    // The direction the light travels: the entity's local -Z, in world space.
+    node.group.updateMatrixWorld(true);
+    LIGHT_DIRECTION.set(0, 0, -1).applyQuaternion(
+      node.group.getWorldQuaternion(LIGHT_QUATERNION),
+    );
+
+    const frame = directionalShadowFrame(
+      view,
+      [LIGHT_DIRECTION.x, LIGHT_DIRECTION.y, LIGHT_DIRECTION.z],
+      component.shadowRange,
+      light.shadow.mapSize.width,
+    );
+
+    light.position.copy(
+      node.group.worldToLocal(SHADOW_SCRATCH.set(...frame.position)),
+    );
+    target.position.copy(node.group.worldToLocal(SHADOW_SCRATCH.set(...frame.target)));
+    // The target is a child of the same group, so it moves with the entity — but its matrix is
+    // only recomputed on the next traversal, and the shadow camera reads it during this frame's
+    // draw. Updating both now is what keeps the shadow one frame ahead of nothing.
+    light.updateMatrixWorld(true);
+    target.updateMatrixWorld(true);
+
+    const camera = light.shadow.camera;
+    if (camera.near !== frame.near || camera.far !== frame.far) {
+      camera.near = frame.near;
+      camera.far = frame.far;
+      camera.updateProjectionMatrix();
     }
   }
 
@@ -422,9 +474,12 @@ export class RenderBridge {
    * most right now (see `lightImportance`) means a scene can carry as many lights as it likes
    * and still be predictable to render.
    *
-   * Called once per frame by the RenderHost, before the draw.
+   * Called once per frame by the RenderHost, before the draw. The view comes in because the
+   * directional lights that win a map then have their frustum focused on it — see
+   * `focusDirectionalShadow`.
    */
-  applyShadowBudget(maxCasters: number, cameraPosition: Vec3): number {
+  applyShadowBudget(maxCasters: number, view: ShadowView): number {
+    const cameraPosition = view.position;
     const candidates: ShadowCandidate<EntityId>[] = [];
     for (const [id, node] of this.nodes) {
       if (!node.light) continue;
@@ -454,7 +509,10 @@ export class RenderBridge {
         const entity = this.scene.get(candidate.key);
         if (entity) this.syncLight(node, entity);
       }
-      if (wants && allowed) active += 1;
+      if (wants && allowed) {
+        active += 1;
+        this.focusDirectionalShadow(node, candidate.component, view);
+      }
     }
 
     return active;
@@ -660,6 +718,11 @@ let rectAreaReady = false;
 
 /** Scratch for the shadow budget's world-position query — one vector, not one per light. */
 const SHADOW_WORLD_POSITION = new THREE.Vector3();
+
+/** Scratch for focusing a directional shadow. Reused across lights and across frames. */
+const SHADOW_SCRATCH = new THREE.Vector3();
+const LIGHT_DIRECTION = new THREE.Vector3();
+const LIGHT_QUATERNION = new THREE.Quaternion();
 
 /**
  * Applies an author's colour to a Three light, tinted by its colour temperature.

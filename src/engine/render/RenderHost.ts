@@ -4,7 +4,7 @@ import type { CameraComponent } from '../components/Camera';
 import type { EnvironmentComponent } from '../components/Environment';
 import type { FrameStats } from '../perf/FrameStats';
 import type { Scene } from '../scene/Scene';
-import type { EntityId } from '../scene/types';
+import type { EntityId, Vec3 } from '../scene/types';
 import {
   DEFAULT_GRAPHICS,
   needsPostProcessing,
@@ -22,6 +22,7 @@ import { PostProcess } from './PostProcess';
 import { RenderBridge } from './RenderBridge';
 import { SkyDome, applyFog } from './environment';
 import { EnvironmentProbe } from './ibl';
+import { directionalShadowFrame, type ShadowView } from './lighting';
 
 export const SHADING_MODES = ['shaded', 'wireframe', 'shadedWireframe'] as const;
 export type ShadingMode = (typeof SHADING_MODES)[number];
@@ -78,6 +79,8 @@ export class RenderHost {
   private basePixelRatio: number;
   private resolutionScale = 1;
   private keyLight: THREE.DirectionalLight | null = null;
+  /** The rig sun's travel direction, fixed at build time. See `focusDefaultShadow`. */
+  private keyLightDirection: Vec3 = [0, -1, 0];
   private stats: FrameStats | null;
   private shading: ShadingMode = 'shaded';
   private wireframeOverlay = new THREE.Group();
@@ -489,14 +492,13 @@ export class RenderHost {
 
     // Spent per frame rather than once, because which lights matter is a function of where the
     // camera is: walking towards a torch should let it take a shadow map from one behind you.
+    // The same view also decides where every directional shadow frustum sits.
+    const view = this.shadowView(camera);
     this.activeShadowCasters =
       this.graphics.shadowQuality === 'off'
         ? 0
-        : this.bridge.applyShadowBudget(this.graphics.maxShadowLights, [
-            camera.position.x,
-            camera.position.y,
-            camera.position.z,
-          ]);
+        : this.bridge.applyShadowBudget(this.graphics.maxShadowLights, view);
+    if (this.defaultLights.visible) this.focusDefaultShadow(view);
 
     // Restored before binding a target, so `setRenderTarget(null)` at the end of the resolve
     // chain comes back to a full-size viewport rather than to whatever the last extra pass left.
@@ -536,6 +538,11 @@ export class RenderHost {
 
     const key = new THREE.DirectionalLight(0xffffff, 1.6);
     key.position.set(12, 20, 8);
+    // Recorded once, because `focusDefaultShadow` rewrites the light's position every frame to
+    // follow the view. Re-deriving the direction from the position it had just written would be
+    // a feedback loop waiting for a rounding error.
+    KEY_DIRECTION.copy(key.position).negate().normalize();
+    this.keyLightDirection = [KEY_DIRECTION.x, KEY_DIRECTION.y, KEY_DIRECTION.z];
     key.castShadow = true;
     key.shadow.bias = -0.0005;
     // Offsets the shadow lookup along the surface normal, which is what removes the acne on
@@ -547,6 +554,45 @@ export class RenderHost {
     const fill = new THREE.DirectionalLight(0x8fb3ff, 0.3);
     fill.position.set(-10, 8, -12);
     this.defaultLights.add(fill);
+  }
+
+  /** Where the camera is and what it looks along, for the shadow budget and the frusta. */
+  private shadowView(camera: THREE.PerspectiveCamera): ShadowView {
+    camera.getWorldDirection(SHADOW_FORWARD);
+    return {
+      position: [camera.position.x, camera.position.y, camera.position.z],
+      forward: [SHADOW_FORWARD.x, SHADOW_FORWARD.y, SHADOW_FORWARD.z],
+    };
+  }
+
+  /**
+   * Keeps the placeholder sun's shadow over the view, the same way scene lights are handled.
+   *
+   * Without this the rig's frustum sat at its hard-coded (12, 20, 8) with a ±`shadowDistance`
+   * box, so an unlit scene had shadows near the origin and none anywhere else — and the further
+   * you flew, the more it looked like shadows had simply stopped working.
+   */
+  private focusDefaultShadow(view: ShadowView): void {
+    const key = this.keyLight;
+    if (!key?.castShadow) return;
+
+    const frame = directionalShadowFrame(
+      view,
+      this.keyLightDirection,
+      this.graphics.shadowDistance,
+      key.shadow.mapSize.width,
+    );
+    key.position.set(...frame.position);
+    key.target.position.set(...frame.target);
+    key.updateMatrixWorld(true);
+    key.target.updateMatrixWorld(true);
+
+    const camera = key.shadow.camera;
+    if (camera.near !== frame.near || camera.far !== frame.far) {
+      camera.near = frame.near;
+      camera.far = frame.far;
+      camera.updateProjectionMatrix();
+    }
   }
 
   /** Pushes the shadow settings onto the placeholder sun. Scene lights carry their own. */
@@ -579,9 +625,8 @@ export class RenderHost {
       camera.right = extent;
       camera.top = extent;
       camera.bottom = -extent;
-      // Far has to reach the ground from wherever the rig's sun sits, and the shadow distance
-      // is the only hint of world scale available here.
-      camera.far = Math.max(120, extent * 6);
+      // Near and far belong to `focusDefaultShadow`, which is the only thing that knows how far
+      // back along the light the camera was placed this frame.
       camera.updateProjectionMatrix();
     }
   }
@@ -673,6 +718,10 @@ export class RenderHost {
 
 /** Scratch for matrix decomposition — the scale component is read and thrown away. */
 const SCRATCH = new THREE.Vector3();
+
+/** Scratch for the shadow view and the rig sun's direction. */
+const SHADOW_FORWARD = new THREE.Vector3();
+const KEY_DIRECTION = new THREE.Vector3();
 
 function findEnvironment(scene: Scene): EnvironmentComponent | null {
   for (const entity of scene.all()) {

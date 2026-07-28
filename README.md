@@ -510,6 +510,7 @@ git checkout release/v0.7.2   # Scatter brush and instancing
 git checkout release/v0.7.3   # Render pipeline rework and graphics settings
 git checkout release/v0.7.4   # Dock layout, status bar and every panel moved
 git checkout release/v0.7.5   # Physics, multi-script objects, better lights
+git checkout release/v0.7.6   # ECS, one solver for two dimensions, real PBR
 ```
 
 v0.7.0 added the assistant tool layer and the MCP server. It needed **no schema change and no
@@ -865,6 +866,90 @@ out wearing another material's roughness.
 
 Seventy-four new tests, and one of them is the reason the corner case above is documented rather
 than discovered later.
+
+### v0.7.8 — mobile control, and four things that were quietly wrong
+
+**No schema change.** Nothing here touches the scene format; a v0.7.6 scene opens unchanged.
+
+**The editor works on a phone.** Not "renders on a phone" — it did that already, which was the
+problem. Three separate dead ends had to be cleared, and none of them was in the same place.
+
+The layout was the visible one. Both side docks are laid out beside the viewport, and at their
+default widths they are 580px between them: on a phone in landscape, which is 844px and sounds
+roomy, that leaves a 264px viewport. The editor rendered as three panels with a postage stamp of
+scene between them. Below `DRAWER_BREAKPOINT` — derived, not chosen: it is the narrowest window
+that fits both docks and a minimum viewport — the docks come out of flow and float over the scene
+instead, and start closed. The stylesheet's mobile block and that constant make the same decision
+from opposite sides and are documented to stay in step.
+
+The gizmo was the invisible one, and it is the bug that got reported as "move, rotate and scale do
+not work with the arrows". The handles were there and they were live; at the default size the
+translate arrows are about 3mm wide on a phone, under half of what a fingertip can reliably hit, so
+a drag aimed at the X arrow landed on the free-move handle in the middle and the object slid across
+the ground plane instead of along the axis. `TransformControls.size` scales the picker geometry
+along with the arrows, so a coarse pointer now gets handles it can actually hold. Tap-to-select had
+the same shape of problem from the other end — the click threshold that separates a click from an
+orbit drag was 4px, which a tap on glass routinely exceeds while the finger flattens — and picking
+now fires a small cross of rays rather than one, because a ray through the centre of a contact patch
+misses anything thin even when you are plainly touching it.
+
+Orbit also used to yield to the gizmo one frame late. It was set once per frame in `render()`, so
+the first frame of every drag had both controls live and the camera swung as the handle was picked
+up; on a touch screen, where one finger drives both, that was enough to throw the whole drag off its
+axis. It is set synchronously from `dragging-changed` now, with the per-frame line kept only as a
+safety net for the one path that never fires it.
+
+**Play mode has controls.** It reads WASD, the arrows, Shift and Space, none of which a phone has —
+so pressing Play gave you a scene you could look at and a character you could not move. Two relative
+thumb pads and two buttons now write the named analog axes (`move`, `strafe`, `turn`) that
+`CharacterSystem` already read alongside the keys. **No engine code changed for this**, which is the
+§9.5 boundary earning its keep: the engine never listens to the DOM, input arrives as data, and a
+thumb on glass and a gamepad on the hardware bus come through the same door. A script reading
+`input.getAxis('move')` cannot tell which one it got. The pads are relative — the centre is wherever
+the thumb lands — because a fixed centre asks you to look at your thumb, and in a game you are
+looking at the screen.
+
+### The four bugs
+
+- **The Statistics panel did not count most of what the frame drew.** The stress harness is added to
+  the render host's scene rather than to the render bridge, and the census walked the bridge. So
+  loading the Forest preset put 4,045 cones and 62,170 triangles in front of the camera and every
+  number in the panel — objects, visible, unique, triangles — stayed exactly where it was. Ramping
+  the density changed nothing, which is how it was found. The census takes extra roots now and
+  counts them into every render-tree total, while the entity counts stay what they always were,
+  because the harness owns no entities: the two halves of the panel now answer "what does this frame
+  cost" and "what is in this scene", which are different questions and were being conflated. Harness
+  rows are named in the heaviest table with their own flag, and are not clickable — there is nothing
+  to select.
+
+- **Moving a directional light took every shadow in the scene with it.** The shadow frustum was a
+  ±`shadowRange` box centred on the *light entity's position*. A directional light has no position,
+  only a direction, so dragging the sun sideways changed the shading not at all and silently walked
+  the shadowed area off the geometry — shadows simply stopped existing, with no control anywhere
+  that looked responsible. This is the same reason an unlit scene had shadows near the origin and
+  none further out: the placeholder rig's sun had the bug too. The frustum is placed from the view
+  now, pushed `range` ahead of the camera so the covered slab is not half behind the viewer, with
+  only the rotation coming from the entity. The centre is quantised to whole shadow-map texels,
+  without which a map that slides continuously resamples every edge every frame and the shadows
+  crawl as you orbit.
+
+- **The stress harness z-fought with authored ground.** Its ground plane sat at exactly y=0, and so
+  does the ground plane of every scene authored in this editor. Two coplanar shadow-receiving
+  surfaces interpenetrate, which on a shadowed surface reads as a second flickering copy of every
+  shadow. The harness ground is 2mm lower now.
+
+- **Panels could not be scrolled with a finger.** Latent rather than observed, and introduced by the
+  first attempt at the fix above: `touch-action: none` on the body stops the browser claiming canvas
+  drags, and also stops every dock scrolling. The canvas asks for it specifically; the scroll
+  containers ask for `pan-y`.
+
+One report is **not** fixed, because it could not be reproduced: a doubled shadow from a single
+object under a single light. Two mechanisms that produce something that looks like it are fixed
+above (the z-fighting ground, and the harness geometry that casts shadows no Inspector checkbox
+governs). A scene file or a screenshot showing it would settle what the third is.
+
+Thirty-eight new tests, covering the shadow frame's placement and texel snapping, the census with
+geometry that belongs to no entity, the drawer breakpoint, and the stick response curve.
 
 ## Layout
 

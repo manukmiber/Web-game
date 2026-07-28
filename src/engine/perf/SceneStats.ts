@@ -19,7 +19,8 @@ import type { EntityId } from '../scene/types';
  */
 
 export interface EntityCost {
-  id: EntityId;
+  /** Empty for `external` rows — there is no entity to select. */
+  id: EntityId | '';
   name: string;
   /** Triangles this entity contributes, instances included. */
   triangles: number;
@@ -29,7 +30,12 @@ export interface EntityCost {
   drawCalls: number;
   visible: boolean;
   castsShadow: boolean;
-  kind: 'mesh' | 'scatter';
+  /**
+   * `external` is geometry the frame draws that no entity owns — the stress harness. It costs
+   * exactly as much as authored geometry does, so it belongs in the table; it just cannot be
+   * clicked, because there is nothing to select.
+   */
+  kind: 'mesh' | 'scatter' | 'external';
 }
 
 export interface TriangleBreakdown {
@@ -78,6 +84,14 @@ export interface ObjectCensus {
   /** Draw calls the scene should cost before culling — one per mesh, one per scatter batch. */
   drawCallEstimate: number;
   vertices: number;
+  /**
+   * Meshes the frame draws that belong to no entity — currently the stress harness.
+   *
+   * They are already inside `meshes`, `drawCallEstimate` and every triangle count, because the
+   * GPU does not care who put them there. This is the one number that explains why those totals
+   * are larger than `entities` can account for.
+   */
+  externalMeshes: number;
   /** Every component type in the scene and how many there are. */
   components: Record<string, number>;
 }
@@ -103,6 +117,16 @@ export interface SceneStatsOptions {
   topCount?: number;
   /** Shadow-casting lights the budget granted, for the shadow-pass estimate. */
   activeShadowCasters?: number;
+  /**
+   * Object trees the frame draws that the render bridge does not own — the stress harness.
+   *
+   * Without this the panel measured the wrong thing entirely: the harness is added straight to
+   * the render host's scene, so loading the Forest preset put four thousand cones and sixty
+   * thousand triangles in front of the camera and every number here stayed exactly where it
+   * was. A census of "what this frame costs" that ignores most of what the frame draws is worse
+   * than no census, because it reads as a fact.
+   */
+  extraRoots?: THREE.Object3D[];
 }
 
 const DEFAULT_TOP_COUNT = 8;
@@ -122,7 +146,7 @@ export function collectSceneStats(
   const topCount = options.topCount ?? DEFAULT_TOP_COUNT;
   const shadowLights = Math.max(0, options.activeShadowCasters ?? 0);
 
-  const costs = new Map<EntityId, EntityCost>();
+  const costs = new Map<string, EntityCost>();
   const geometries = new Set<THREE.BufferGeometry>();
   const materials = new Set<THREE.Material>();
 
@@ -137,64 +161,85 @@ export function collectSceneStats(
   let scatterBatches = 0;
   let scatterInstances = 0;
   let drawCalls = 0;
+  let externalMeshes = 0;
 
-  bridge.root.traverse((object) => {
-    const mesh = object as THREE.Mesh;
-    if (!mesh.isMesh || !mesh.geometry) return;
+  /**
+   * One root's worth of the walk.
+   *
+   * `external` roots are counted into every total exactly the way the bridge's own are — a
+   * triangle costs the same whoever put it there — but they are attributed to the root itself
+   * rather than to an entity, because they have none.
+   */
+  const walk = (root: THREE.Object3D, external: boolean) => {
+    root.traverse((object) => {
+      const mesh = object as THREE.Mesh;
+      if (!mesh.isMesh || !mesh.geometry) return;
 
-    const instanced = mesh as THREE.InstancedMesh;
-    const isScatter = instanced.isInstancedMesh === true;
-    const count = isScatter ? instanced.count : 1;
-    const perInstance = geometryTriangles(mesh.geometry);
-    const total = perInstance * count;
+      const instanced = mesh as THREE.InstancedMesh;
+      const isScatter = instanced.isInstancedMesh === true;
+      const count = isScatter ? instanced.count : 1;
+      const perInstance = geometryTriangles(mesh.geometry);
+      const total = perInstance * count;
 
-    // `entityVisible` is what the bridge records when an entity is hidden on purpose; `visible`
-    // alone is unreliable here because the shading pass rewrites it for wireframe modes.
-    const visible = mesh.userData.entityVisible !== false;
+      // `entityVisible` is what the bridge records when an entity is hidden on purpose; `visible`
+      // alone is unreliable here because the shading pass rewrites it for wireframe modes.
+      // External roots never go through that pass, so their own flag is the honest answer.
+      const visible = external ? mesh.visible : mesh.userData.entityVisible !== false;
 
-    if (!geometries.has(mesh.geometry)) {
-      geometries.add(mesh.geometry);
-      uniqueTriangles += perInstance;
-      vertices += geometryVertices(mesh.geometry);
-    }
-    for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
-      if (material) materials.add(material);
-    }
+      if (!geometries.has(mesh.geometry)) {
+        geometries.add(mesh.geometry);
+        uniqueTriangles += perInstance;
+        vertices += geometryVertices(mesh.geometry);
+      }
+      for (const material of Array.isArray(mesh.material) ? mesh.material : [mesh.material]) {
+        if (material) materials.add(material);
+      }
 
-    if (isScatter) {
-      scatterTriangles += total;
-      scatterBatches += 1;
-      scatterInstances += count;
-    } else {
-      meshTriangles += total;
-      meshes += 1;
-      if (!visible) hiddenMeshes += 1;
-    }
+      if (isScatter) {
+        scatterTriangles += total;
+        scatterBatches += 1;
+        scatterInstances += count;
+      } else {
+        meshTriangles += total;
+        meshes += 1;
+        if (!visible) hiddenMeshes += 1;
+      }
+      if (external) externalMeshes += 1;
 
-    if (!visible) hiddenTriangles += total;
-    if (mesh.castShadow && visible) shadowTriangles += total;
-    drawCalls += 1;
+      if (!visible) hiddenTriangles += total;
+      if (mesh.castShadow && visible) shadowTriangles += total;
+      drawCalls += 1;
 
-    const id = mesh.userData.entityId as EntityId | undefined;
-    if (!id) return;
-    const existing = costs.get(id);
-    if (existing) {
-      existing.triangles += total;
-      existing.instances += count;
-      existing.drawCalls += 1;
-      return;
-    }
-    costs.set(id, {
-      id,
-      name: scene.get(id)?.name ?? id,
-      triangles: total,
-      instances: count,
-      drawCalls: 1,
-      visible,
-      castsShadow: mesh.castShadow,
-      kind: isScatter ? 'scatter' : 'mesh',
+      const id = mesh.userData.entityId as EntityId | undefined;
+      // External geometry collapses to one row per root: four thousand harness cones listed
+      // individually would push every authored object out of a table that exists to name the
+      // authored object you should go and fix.
+      const key = id ?? (external ? `external:${root.uuid}` : null);
+      if (!key) return;
+
+      const existing = costs.get(key);
+      if (existing) {
+        existing.triangles += total;
+        existing.instances += count;
+        existing.drawCalls += 1;
+        existing.castsShadow ||= mesh.castShadow;
+        return;
+      }
+      costs.set(key, {
+        id: id ?? '',
+        name: id ? (scene.get(id)?.name ?? id) : (root.name || 'External geometry'),
+        triangles: total,
+        instances: count,
+        drawCalls: 1,
+        visible,
+        castsShadow: mesh.castShadow,
+        kind: external && !id ? 'external' : isScatter ? 'scatter' : 'mesh',
+      });
     });
-  });
+  };
+
+  walk(bridge.root, false);
+  for (const root of options.extraRoots ?? []) walk(root, true);
 
   const totalTriangles = meshTriangles + scatterTriangles;
 
@@ -218,6 +263,7 @@ export function collectSceneStats(
       uniqueMaterials: materials.size,
       drawCallEstimate: drawCalls,
       vertices,
+      externalMeshes,
       components: countComponents(scene),
     },
     lights: bridge.lightSummary(),

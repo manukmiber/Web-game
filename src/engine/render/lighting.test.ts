@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createLight } from '../components/Light';
+import type { Vec3 } from '../scene/types';
 import {
   canCastShadow,
+  directionalShadowFrame,
   kelvinToRgb,
   lightImportance,
   MAX_KELVIN,
@@ -159,5 +161,95 @@ describe('selectShadowCasters', () => {
 
   it('grants none at zero', () => {
     expect(selectShadowCasters([candidate('a')], 0, [0, 0, 0]).size).toBe(0);
+  });
+});
+
+/**
+ * Covers the bug that made shadows look broken: the frustum used to be anchored to the light
+ * entity's position, so dragging a directional light sideways carried the whole shadowed area
+ * off the scene while the shading — which depends only on the rotation — did not move at all.
+ */
+describe('directionalShadowFrame', () => {
+  const straightDown: Vec3 = [0, -1, 0];
+  const looking = (position: Vec3, forward: Vec3) => ({ position, forward });
+
+  it('centres the covered area on the view, not on the light', () => {
+    const frame = directionalShadowFrame(
+      looking([100, 2, 0], [0, 0, -1]),
+      straightDown,
+      30,
+      2048,
+    );
+    // The camera is at x = 100 looking down -Z, so the shadow map has to be over there too.
+    expect(frame.target[0]).toBeCloseTo(100, 0);
+    expect(frame.target[2]).toBeCloseTo(-30, 0);
+  });
+
+  it('pushes the centre ahead of the camera, so the slab is not half behind the viewer', () => {
+    const range = 30;
+    const frame = directionalShadowFrame(looking([0, 5, 0], [0, 0, -1]), straightDown, range, 2048);
+    expect(frame.target[2]).toBeCloseTo(-range, 0);
+  });
+
+  it('places the camera back along the light, so the direction survives the move', () => {
+    const frame = directionalShadowFrame(looking([0, 0, 0], [0, 0, -1]), straightDown, 30, 2048);
+    // Position minus target is what Three reads as the light direction. Straight down in means
+    // straight down out, whatever the frustum did with the position.
+    const direction = [
+      frame.target[0] - frame.position[0],
+      frame.target[1] - frame.position[1],
+      frame.target[2] - frame.position[2],
+    ];
+    const length = Math.hypot(...direction);
+    expect(direction.map((v) => v / length)).toEqual([0, -1, 0]);
+    expect(frame.position[1]).toBeGreaterThan(frame.target[1]);
+  });
+
+  it('reaches past the centre, so geometry below the focus still receives', () => {
+    const frame = directionalShadowFrame(looking([0, 0, 0], [0, 0, -1]), straightDown, 30, 2048);
+    const distance = Math.hypot(
+      frame.target[0] - frame.position[0],
+      frame.target[1] - frame.position[1],
+      frame.target[2] - frame.position[2],
+    );
+    expect(frame.far).toBeGreaterThan(distance);
+    expect(frame.near).toBeLessThan(distance);
+  });
+
+  it('snaps the centre to whole shadow-map texels, so edges do not crawl', () => {
+    const range = 32;
+    const mapSize = 1024;
+    const texel = (range * 2) / mapSize;
+
+    // Two camera positions a small fraction of a texel apart must produce the same frame — that
+    // is the whole point: a map that slides continuously resamples every edge every frame.
+    const a = directionalShadowFrame(looking([0, 4, 0], [0, 0, -1]), straightDown, range, mapSize);
+    const b = directionalShadowFrame(
+      looking([texel / 100, 4, 0], [0, 0, -1]),
+      straightDown,
+      range,
+      mapSize,
+    );
+    expect(b.target).toEqual(a.target);
+
+    // A whole texel of travel does move it, by exactly one texel.
+    const c = directionalShadowFrame(
+      looking([texel, 4, 0], [0, 0, -1]),
+      straightDown,
+      range,
+      mapSize,
+    );
+    expect(c.target[0] - a.target[0]).toBeCloseTo(texel, 6);
+  });
+
+  it('survives a light pointing straight down the axis its basis is seeded from', () => {
+    // The perpendicular basis is seeded from a fixed vector, which is degenerate when the light
+    // is parallel to it. Both poles have to come out finite.
+    for (const direction of [[0, -1, 0], [0, 1, 0]] as Vec3[]) {
+      const frame = directionalShadowFrame(looking([3, 9, 3], [1, 0, 0]), direction, 25, 512);
+      for (const value of [...frame.position, ...frame.target]) {
+        expect(Number.isFinite(value)).toBe(true);
+      }
+    }
   });
 });

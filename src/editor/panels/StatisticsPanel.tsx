@@ -7,6 +7,13 @@ import type { ViewportController } from '../viewport/ViewportController';
 /** Polled rather than per frame, for the same reason the Performance panel is. */
 const REFRESH_MS = 400;
 
+const HARNESS_NOTE =
+  'Drawn by the stress-scene harness, which owns no entities. Counted in every total above, ' +
+  'because the GPU charges for them the same way.';
+
+const HARNESS_ROW_NOTE =
+  'Stress-scene harness — not part of the scene, so there is nothing to select';
+
 interface Props {
   viewport: ViewportController | null;
 }
@@ -104,6 +111,13 @@ export function StatisticsPanel({ viewport }: Props) {
           <StatRow label="Deepest nesting" value={String(objects.maxDepth)} />
           <StatRow label="Meshes" value={objects.meshes.toLocaleString()} />
           <StatRow label="Hidden meshes" value={objects.hiddenMeshes.toLocaleString()} />
+          {objects.externalMeshes > 0 && (
+            <StatRow
+              label="Harness meshes"
+              value={objects.externalMeshes.toLocaleString()}
+              title={HARNESS_NOTE}
+            />
+          )}
           <StatRow label="Scatter batches" value={objects.scatterLayers.toLocaleString()} />
           <StatRow label="Unique geometries" value={objects.uniqueGeometries.toLocaleString()} />
           <StatRow label="Unique materials" value={objects.uniqueMaterials.toLocaleString()} />
@@ -158,25 +172,43 @@ export function StatisticsPanel({ viewport }: Props) {
               </tr>
             </thead>
             <tbody>
-              {heaviest.map((entry) => (
-                <tr
-                  key={entry.id}
-                  onClick={() => setSelection([entry.id])}
-                  title={`Select ${entry.name}`}
-                >
-                  <td>{entry.name}</td>
-                  <td className="numeric">{compact(entry.triangles)}</td>
-                  <td className="numeric">{entry.instances.toLocaleString()}</td>
-                  <td className="numeric">{entry.drawCalls.toLocaleString()}</td>
-                  <td className="flags">
-                    {entry.kind === 'scatter' && <span title="Instanced scatter layer">inst</span>}
-                    {!entry.visible && (
-                      <span title="Hidden — costs memory, not frame time">hidden</span>
-                    )}
-                    {entry.castsShadow && <span title="Re-drawn for every shadow map">shadow</span>}
-                  </td>
-                </tr>
-              ))}
+              {heaviest.map((entry, index) => {
+                // Harness rows carry no entity, so they are listed but not clickable — a row
+                // that looks selectable and silently does nothing is worse than one that does
+                // not offer.
+                const selectable = entry.kind !== 'external' && entry.id !== '';
+                return (
+                  <tr
+                    key={entry.id || `external-${index}`}
+                    className={selectable ? '' : 'unselectable'}
+                    onClick={selectable ? () => setSelection([entry.id]) : undefined}
+                    title={
+                      selectable
+                        ? `Select ${entry.name}`
+                        : HARNESS_ROW_NOTE
+                    }
+                  >
+                    <td>{entry.name}</td>
+                    <td className="numeric">{compact(entry.triangles)}</td>
+                    <td className="numeric">{entry.instances.toLocaleString()}</td>
+                    <td className="numeric">{entry.drawCalls.toLocaleString()}</td>
+                    <td className="flags">
+                      {entry.kind === 'scatter' && (
+                        <span title="Instanced scatter layer">inst</span>
+                      )}
+                      {entry.kind === 'external' && (
+                        <span title="Stress-scene harness, not authored content">harness</span>
+                      )}
+                      {!entry.visible && (
+                        <span title="Hidden — costs memory, not frame time">hidden</span>
+                      )}
+                      {entry.castsShadow && (
+                        <span title="Re-drawn for every shadow map">shadow</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
               {heaviest.length === 0 && (
                 <tr>
                   <td colSpan={5} className="empty-note">
@@ -192,9 +224,9 @@ export function StatisticsPanel({ viewport }: Props) {
   );
 }
 
-function StatRow({ label, value }: { label: string; value: string }) {
+function StatRow({ label, value, title }: { label: string; value: string; title?: string }) {
   return (
-    <div className="control-row stat-row">
+    <div className="control-row stat-row" title={title}>
       <label>{label}</label>
       <span className="control-value">{value}</span>
     </div>

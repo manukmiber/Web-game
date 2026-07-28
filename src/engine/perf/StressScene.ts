@@ -38,6 +38,9 @@ export const CITY_PRESET: StressParams = {
   seed: 2,
 };
 
+/** How far under y = 0 the harness ground sits, in metres. See where it is built. */
+const HARNESS_GROUND_DROP = 0.002;
+
 export interface StressStats {
   objects: number;
   instances: number;
@@ -152,9 +155,17 @@ export class StressScene {
       triangles += trianglesEach * matrices.length;
     }
 
-    // Ground, so shadows land on something and fill rate is realistic.
+    /**
+     * Ground, so shadows land on something and fill rate is realistic.
+     *
+     * Sunk just below y = 0 rather than sitting on it. Scenes authored in this editor put their
+     * own ground plane at exactly zero, and two coplanar shadow-receiving planes z-fight — which
+     * on a shadowed surface reads as a second, flickering copy of every shadow. A millimetre of
+     * separation is invisible and settles the depth test.
+     */
     const groundGeometry = new THREE.PlaneGeometry(params.extent * 2, params.extent * 2);
     groundGeometry.rotateX(-Math.PI / 2);
+    groundGeometry.translate(0, -HARNESS_GROUND_DROP, 0);
     const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x4a5548, roughness: 1 });
     const ground = new THREE.Mesh(groundGeometry, groundMaterial);
     ground.receiveShadow = true;

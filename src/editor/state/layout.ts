@@ -162,6 +162,29 @@ export const DOCK_LIMITS = {
 const MIN_VIEWPORT_WIDTH = 320;
 const MIN_VIEWPORT_HEIGHT = 220;
 
+/**
+ * Below this the docks stop being columns and become drawers over the viewport.
+ *
+ * Not a round number picked for the feel of it: it is the narrowest window that can hold both
+ * side docks at their default widths and still leave `MIN_VIEWPORT_WIDTH` of 3D between them.
+ * Under it, laying the docks out in flow does not fail gracefully — it fails silently, by
+ * handing the viewport whatever is left. A phone in landscape is 844px, which sounds roomy and
+ * is not: 260 + 320 of dock leaves a 264px viewport, and the editor renders as three panels
+ * with a postage stamp of scene between them.
+ *
+ * Must match the `max-width` of the mobile block in `theme.css`, which takes the docks out of
+ * flow — the same decision, from the CSS side.
+ */
+export const DRAWER_BREAKPOINT =
+  DEFAULT_LAYOUT.leftWidth + DEFAULT_LAYOUT.rightWidth + MIN_VIEWPORT_WIDTH;
+
+/** True when the docks float over the viewport rather than taking space from it. */
+export function usesDrawers(width: number): boolean {
+  // Strictly below: at exactly the breakpoint the in-flow layout still leaves a full
+  // `MIN_VIEWPORT_WIDTH`, which is the width the constant is built from.
+  return width < DRAWER_BREAKPOINT;
+}
+
 /** Chrome that is never part of a dock: toolbar plus status bar, near enough. */
 const FIXED_CHROME_HEIGHT = 88;
 
@@ -185,6 +208,22 @@ function clampRange(value: number, min: number, max: number): number {
  */
 export function clampLayout(layout: LayoutState, window: Viewportish): LayoutState {
   const next = { ...layout };
+
+  // Drawers float, so they cost the viewport nothing and there is no width to negotiate. Only
+  // the bottom dock still takes space, and it is clamped below with everything else.
+  if (usesDrawers(window.width)) {
+    next.leftWidth = clampRange(
+      next.leftWidth,
+      DOCK_LIMITS.leftWidth.min,
+      DOCK_LIMITS.leftWidth.max,
+    );
+    next.rightWidth = clampRange(
+      next.rightWidth,
+      DOCK_LIMITS.rightWidth.min,
+      DOCK_LIMITS.rightWidth.max,
+    );
+    return clampBottom(next, window);
+  }
 
   next.leftWidth = clampRange(next.leftWidth, DOCK_LIMITS.leftWidth.min, DOCK_LIMITS.leftWidth.max);
   next.rightWidth = clampRange(
@@ -212,6 +251,11 @@ export function clampLayout(layout: LayoutState, window: Viewportish): LayoutSta
     }
   }
 
+  return clampBottom(next, window);
+}
+
+/** The bottom dock takes space from the viewport in every layout, drawers included. */
+function clampBottom(next: LayoutState, window: Viewportish): LayoutState {
   if (next.bottomOpen) {
     const maxBottom = window.height - FIXED_CHROME_HEIGHT - MIN_VIEWPORT_HEIGHT;
     next.bottomHeight = Math.max(
@@ -232,9 +276,9 @@ const STORAGE = 'web3d-editor.layout';
 export function loadLayout(): LayoutState {
   try {
     const raw = window.localStorage.getItem(STORAGE);
-    if (!raw) return { ...DEFAULT_LAYOUT };
+    if (!raw) return openable({ ...DEFAULT_LAYOUT }, window.innerWidth);
     const stored = JSON.parse(raw) as Partial<LayoutState>;
-    const merged: LayoutState = { ...DEFAULT_LAYOUT, ...stored };
+    const merged: LayoutState = openable({ ...DEFAULT_LAYOUT, ...stored }, window.innerWidth);
     // A panel id from a newer build — or a hand-edited value — must not leave a dock rendering
     // nothing, so anything unrecognised falls back to that dock's first tab.
     if (!DOCK_PANELS.right.includes(merged.rightPanel)) merged.rightPanel = DEFAULT_LAYOUT.rightPanel;
@@ -243,8 +287,24 @@ export function loadLayout(): LayoutState {
     }
     return clampLayout(merged, { width: window.innerWidth, height: window.innerHeight });
   } catch {
+    // No storage, or no `window` at all — this module is imported by headless tests. A layout
+    // with no screen to fit is the default one.
     return { ...DEFAULT_LAYOUT };
   }
+}
+
+/**
+ * Side docks start closed on a screen where they would be drawers.
+ *
+ * Only at startup, and only for the side docks. Two drawers open at once on a phone cover the
+ * whole viewport and each other, which is not a state anyone would choose to open the editor
+ * in — but it *is* a state you might deliberately reach afterwards, so nothing here runs on
+ * resize. A layout carried over from a desktop session is treated the same way as a fresh one:
+ * the dock widths are remembered, the fact that they were open is not.
+ */
+function openable(layout: LayoutState, width: number): LayoutState {
+  if (!usesDrawers(width)) return layout;
+  return { ...layout, leftOpen: false, rightOpen: false };
 }
 
 export function saveLayout(layout: LayoutState): void {

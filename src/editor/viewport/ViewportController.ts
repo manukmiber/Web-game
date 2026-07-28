@@ -14,7 +14,7 @@ import {
 } from '@engine/perf/StressScene';
 import type { EntityId } from '@engine/scene/types';
 import type { CommandHistory } from '../commands/Command';
-import { isTextEntry } from '../dom';
+import { isCoarsePointer, isTextEntry } from '../dom';
 import { editorState, useEditorStore } from '../state/editorStore';
 import { GizmoController } from './GizmoController';
 import { GroundGrid } from './GroundGrid';
@@ -24,6 +24,25 @@ import { SelectionOutline } from './SelectionOutline';
 const AXIS_INDICATOR_PX = 96;
 /** Pointer travel beyond this is treated as an orbit drag, not a click-to-select. */
 const CLICK_SLOP_PX = 4;
+/**
+ * The same threshold for a finger.
+ *
+ * A mouse click moves a pixel or two; a tap on glass routinely moves ten while the finger
+ * flattens and rolls. At the mouse threshold roughly half of all taps were read as tiny orbit
+ * drags and selected nothing, which is indistinguishable from picking being broken.
+ */
+const TOUCH_CLICK_SLOP_PX = 14;
+/**
+ * How much bigger the transform gizmo is drawn when the pointer is a finger.
+ *
+ * At size 1 the translate arrows are about 3 mm wide on a phone — under half the ~9 mm that a
+ * fingertip can reliably hit — so a drag on an arrow landed on the centre free-move handle, or
+ * on nothing. This is the whole of "the gizmo does not work on mobile": the handles were there,
+ * they were simply too small to touch.
+ */
+const TOUCH_GIZMO_SCALE = 1.9;
+/** How far off a tap's centre the extra picking rays are fired. See `pick`. */
+const TOUCH_PICK_SPREAD_PX = 11;
 
 /**
  * The editor's viewport: a RenderHost plus the tools that only the editor has.
@@ -50,7 +69,9 @@ export class ViewportController {
   private axisCamera: THREE.PerspectiveCamera;
 
   private raycaster = new THREE.Raycaster();
-  private pointerDownAt: { x: number; y: number } | null = null;
+  private pointerDownAt: { x: number; y: number; touch: boolean } | null = null;
+  /** True when the primary pointer is a finger. Decides hit-target sizes, nothing else. */
+  private coarsePointer = false;
   private canvas: HTMLCanvasElement;
   private resizeObserver: ResizeObserver;
   private unsubscribes: (() => void)[] = [];
@@ -74,11 +95,18 @@ export class ViewportController {
     this.host.overlay = this.overlay;
     this.host.onAfterRender = () => this.renderAxisIndicator();
 
+    this.coarsePointer = isCoarsePointer();
+
     this.orbit = new OrbitControls(this.host.camera, this.canvas);
     this.orbit.enableDamping = true;
     this.orbit.dampingFactor = 0.12;
     this.orbit.screenSpacePanning = false;
     this.orbit.maxPolarAngle = Math.PI * 0.98;
+    // One finger orbits, two pinch to zoom and drag to pan — the gesture set every 3D app on a
+    // phone uses. Spelled out rather than left to the default because the default one-finger
+    // gesture changed between Three releases, and orbit-on-one-finger is what the viewport hint
+    // promises.
+    this.orbit.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
 
     this.gizmo = new GizmoController(
       this.host.camera,
@@ -88,6 +116,18 @@ export class ViewportController {
       history,
       this.overlay,
     );
+    if (this.coarsePointer) this.gizmo.setHandleScale(TOUCH_GIZMO_SCALE);
+    /**
+     * Orbit yields to the gizmo the instant a handle is grabbed.
+     *
+     * This used to be done once per frame in `render()`, which left the first frame of every
+     * drag with both controls live: the camera swung as the handle was picked up, and on a
+     * touch screen — where the same one-finger gesture drives both — that was enough to throw
+     * the drag off the axis entirely.
+     */
+    this.gizmo.controls.addEventListener('dragging-changed', (event) => {
+      this.orbit.enabled = !event.value;
+    });
     this.outline = new SelectionOutline(this.host.bridge);
     this.sceneGizmos = new SceneGizmos(engine.scene, this.host.bridge);
     this.sceneGizmos.rebuild();
@@ -159,6 +199,11 @@ export class ViewportController {
     return collectSceneStats(this.engine.scene, this.bridge, {
       ...(topCount === undefined ? {} : { topCount }),
       activeShadowCasters: this.host.shadowBudget().active,
+      // The harness lives in the render host's scene rather than in the bridge, because it is
+      // not authored content and must never appear in the Hierarchy. It is still geometry this
+      // frame draws, so a census that left it out reported a 900-triangle scene while sixty
+      // thousand harness triangles were on screen.
+      extraRoots: this.stress ? [this.stress.root] : [],
     });
   }
 
@@ -366,7 +411,11 @@ export class ViewportController {
       this.engine.input.setButtons(event.buttons);
       return;
     }
-    this.pointerDownAt = { x: event.clientX, y: event.clientY };
+    this.pointerDownAt = {
+      x: event.clientX,
+      y: event.clientY,
+      touch: event.pointerType === 'touch',
+    };
   };
 
   private onPointerUp = (event: PointerEvent): void => {
@@ -380,7 +429,7 @@ export class ViewportController {
     // Suppress selection when the pointer was orbiting or driving the gizmo.
     if (this.gizmo.isDragging) return;
     const travelled = Math.hypot(event.clientX - down.x, event.clientY - down.y);
-    if (travelled > CLICK_SLOP_PX) return;
+    if (travelled > (down.touch ? TOUCH_CLICK_SLOP_PX : CLICK_SLOP_PX)) return;
 
     const hit = this.pick(event);
     const store = editorState();
@@ -394,19 +443,40 @@ export class ViewportController {
     else store.setSelection([hit]);
   };
 
+  /**
+   * What is under the pointer, if anything.
+   *
+   * A finger gets more than one ray. A tap reports a single point at the centre of a contact
+   * patch the better part of a centimetre across, so a ray through that point misses anything
+   * thin — a lamp post, a fence, a light gizmo — even when the user is plainly touching it. The
+   * extra samples cost four raycasts against a handful of objects, and only when the first one
+   * finds nothing.
+   */
   private pick(event: PointerEvent): EntityId | null {
+    const targets = [...this.bridge.pickables(), ...this.sceneGizmos.pickables()];
+    const spread = event.pointerType === 'touch' ? TOUCH_PICK_SPREAD_PX : 0;
+    const offsets: [number, number][] =
+      spread > 0
+        ? [[0, 0], [-spread, 0], [spread, 0], [0, -spread], [0, spread]]
+        : [[0, 0]];
+
+    for (const [dx, dy] of offsets) {
+      const id = this.pickAt(event.clientX + dx, event.clientY + dy, targets);
+      if (id) return id;
+    }
+    return null;
+  }
+
+  private pickAt(clientX: number, clientY: number, targets: THREE.Object3D[]): EntityId | null {
     const rect = this.canvas.getBoundingClientRect();
     const pointer = new THREE.Vector2(
-      ((event.clientX - rect.left) / rect.width) * 2 - 1,
-      -((event.clientY - rect.top) / rect.height) * 2 + 1,
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
     );
     this.raycaster.setFromCamera(pointer, this.camera);
     // Light and camera handles are pickable too — they are the only way to click an entity
     // that renders no geometry.
-    const hits = this.raycaster.intersectObjects(
-      [...this.bridge.pickables(), ...this.sceneGizmos.pickables()],
-      false,
-    );
+    const hits = this.raycaster.intersectObjects(targets, false);
     for (const hit of hits) {
       const id =
         (hit.object.userData.entityId as EntityId | undefined) ??
@@ -463,7 +533,10 @@ export class ViewportController {
 
   private render(): void {
     if (!this.playing) {
-      this.orbit.enabled = !this.gizmo.isDragging;
+      // A safety net, not the mechanism: `dragging-changed` disables orbit the moment a handle
+      // is grabbed. This catches the one path that never fires it — the gizmo being detached
+      // mid-drag, by a tool shortcut — which would otherwise leave the camera locked for good.
+      if (!this.gizmo.isDragging) this.orbit.enabled = true;
       this.orbit.update();
       this.grid.update(this.camera);
       if (this.gizmosDirty) {
