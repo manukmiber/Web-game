@@ -1,4 +1,5 @@
 import { NpcSystem } from '../ai/NpcSystem';
+import { AudioSystem } from '../audio/AudioSystem';
 import { HardwareSystem } from '../hardware/HardwareSystem';
 import type { Engine } from '../loop/Engine';
 import { PhysicsSystem } from '../physics/PhysicsSystem';
@@ -11,6 +12,7 @@ export interface GameplaySystems {
   scripts: ScriptSystem;
   characters: CharacterSystem;
   npcs: NpcSystem;
+  audio: AudioSystem;
 }
 
 /**
@@ -40,6 +42,9 @@ export interface GameplaySystems {
  *    frame ago — a one-frame lag that is invisible at 60 fps and very visible at 20.
  * 5. **NPCs** last, `after: ['CharacterSystem']` — the one constraint the stages cannot express,
  *    because both belong in `resolve`.
+ * 6. **Audio**, `present`-staged so it always ends the frame: listener transform and autoplay
+ *    positions are read off wherever the character and the agents ended up, not where they were
+ *    a stage ago.
  */
 export function installGameplaySystems(engine: Engine): GameplaySystems {
   const hardware = new HardwareSystem();
@@ -47,12 +52,14 @@ export function installGameplaySystems(engine: Engine): GameplaySystems {
   const characters = new CharacterSystem();
   const scripts = new ScriptSystem({ physics, characters });
   const npcs = new NpcSystem();
+  const audio = new AudioSystem();
 
   engine.addSystem(hardware);
   engine.addSystem(physics);
   engine.addSystem(scripts);
   engine.addSystem(characters);
   engine.addSystem(npcs);
+  engine.addSystem(audio);
 
-  return { hardware, physics, scripts, characters, npcs };
+  return { hardware, physics, scripts, characters, npcs, audio };
 }

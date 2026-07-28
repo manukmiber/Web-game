@@ -86,4 +86,56 @@ describe('GameState', () => {
     expect(game.getVar('wave', 0)).toBe(0);
     expect(resets).toBe(1);
   });
+
+  it('round-trips actors and vars through toJSON/fromJSON', () => {
+    const game = new GameState();
+    game.register('e1', 'survivor', 100);
+    game.damage('e1', 35, 'zombie-1');
+    game.setVar('wave', 4);
+    game.setVar('gateOpen', true);
+
+    const snapshot = game.toJSON();
+    const loaded = new GameState();
+    loaded.fromJSON(snapshot);
+
+    expect(loaded.get('e1')).toEqual(game.get('e1'));
+    expect(loaded.getVar('wave')).toBe(4);
+    expect(loaded.getVar('gateOpen')).toBe(true);
+  });
+
+  it('fromJSON replaces the registry wholesale rather than merging', () => {
+    const game = new GameState();
+    game.register('stale', 'survivor', 10);
+    game.setVar('old', 1);
+
+    game.fromJSON({ actors: [{ id: 'e1', faction: 'survivor', health: 40, maxHealth: 100, alive: true }], vars: [['wave', 2]] });
+
+    expect(game.get('stale')).toBeUndefined();
+    expect(game.getVar('old')).toBeUndefined();
+    expect(game.get('e1')).toEqual({ id: 'e1', faction: 'survivor', health: 40, maxHealth: 100, alive: true });
+    expect(game.getVar('wave')).toBe(2);
+  });
+
+  it('fires restored, not reset, so per-listener state survives a load', () => {
+    const game = new GameState();
+    let resets = 0;
+    let restores = 0;
+    game.events.on('reset', () => (resets += 1));
+    game.events.on('restored', () => (restores += 1));
+
+    game.fromJSON({ actors: [], vars: [] });
+
+    expect(resets).toBe(0);
+    expect(restores).toBe(1);
+  });
+
+  it('toJSON snapshots values rather than sharing references with live state', () => {
+    const game = new GameState();
+    const actor = game.register('e1', 'survivor', 100);
+    const snapshot = game.toJSON();
+
+    game.damage('e1', 40);
+    expect(snapshot.actors[0]!.health).toBe(100);
+    expect(actor.health).toBe(60);
+  });
 });

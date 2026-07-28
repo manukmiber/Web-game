@@ -17,6 +17,7 @@ import './NpcAgent';
 import './CharacterController';
 import './HardwareInput';
 import './HardwareOutput';
+import './AudioSource';
 
 export * from './registry';
 export * from './MeshRenderer';
@@ -33,3 +34,4 @@ export * from './NpcAgent';
 export * from './CharacterController';
 export * from './HardwareInput';
 export * from './HardwareOutput';
+export * from './AudioSource';

@@ -16,6 +16,7 @@ import {
   loadScene,
   saveScene,
 } from '../state/persistence';
+import { loadGame, QUICKSAVE_KEY, saveGame } from '../state/saveGamePersistence';
 
 const TOOLS: { tool: TransformTool; label: string; hint: string; title: string }[] = [
   { tool: 'select', label: '✥', hint: 'Q', title: 'Select / Pan (Q)' },
@@ -30,7 +31,7 @@ interface Props {
 }
 
 export function Toolbar({ spawnPoint }: Props) {
-  const { engine, history, storage, run } = useEditor();
+  const { engine, history, storage, saveStorage, run } = useEditor();
   const fileInput = useRef<HTMLInputElement>(null);
 
   const tool = useEditorStore((s) => s.tool);
@@ -69,6 +70,14 @@ export function Toolbar({ spawnPoint }: Props) {
    */
   const persistenceTitle = (title: string) =>
     playing ? `${title} — stop playing first, the scene is running` : title;
+
+  /**
+   * The inverse gate: a save game is a snapshot of a *running* session — health, positions,
+   * script variables mid-story. There is nothing to save before Play has started, and "load"
+   * outside Play has nowhere to put a GameState the engine has not created yet.
+   */
+  const saveGameTitle = (title: string) =>
+    playing ? title : `${title} — press Play first, there is no session to save`;
 
   const addPrimitive = (kind: PrimitiveKind) => {
     const command = new AddEntityCommand(
@@ -116,6 +125,24 @@ export function Toolbar({ spawnPoint }: Props) {
       status(`Imported ${file.name}.`);
     } catch (error) {
       status(`Import failed: ${(error as Error).message}`);
+    }
+  };
+
+  const onSaveGame = async () => {
+    try {
+      await saveGame(saveStorage, engine, QUICKSAVE_KEY);
+      status('Game saved.');
+    } catch (error) {
+      status((error as Error).message);
+    }
+  };
+
+  const onLoadGame = async () => {
+    try {
+      const loaded = await loadGame(saveStorage, engine, QUICKSAVE_KEY);
+      status(loaded ? 'Game loaded.' : 'No saved game found.');
+    } catch (error) {
+      status(`Load failed: ${(error as Error).message}`);
     }
   };
 
@@ -302,6 +329,15 @@ export function Toolbar({ spawnPoint }: Props) {
       </div>
 
       <div className="toolbar-spacer" />
+
+      <div className="toolbar-group">
+        <button onClick={onSaveGame} disabled={!playing} title={saveGameTitle('Save game (quicksave)')}>
+          Save Game
+        </button>
+        <button onClick={onLoadGame} disabled={!playing} title={saveGameTitle('Load game (quickload)')}>
+          Load Game
+        </button>
+      </div>
 
       <div className="toolbar-group">
         {/*

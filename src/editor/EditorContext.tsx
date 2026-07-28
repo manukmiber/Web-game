@@ -11,12 +11,15 @@ import type { Command } from './commands/Command';
 import { CommandHistory } from './commands/Command';
 import { SimulatedRig } from './hardware/simulated';
 import { LocalStorageAdapter, type ScenePersistence } from './state/persistence';
+import { SaveGameStorage } from './state/saveGamePersistence';
 import { useEditorStore } from './state/editorStore';
 
 export interface EditorContextValue {
   engine: Engine;
   history: CommandHistory;
   storage: ScenePersistence;
+  /** A save-game slot store — a different keyspace from `storage`, see `saveGamePersistence.ts`. */
+  saveStorage: ScenePersistence;
   /** The Play-mode systems, kept for their diagnostics — script messages, agent states. */
   systems: GameplaySystems;
   /** Runs a command through the history so it lands on the undo stack. */
@@ -79,6 +82,7 @@ export function EditorProvider({ children }: { children: ReactNode }) {
       history,
       systems: systemsRef.current!,
       storage: new LocalStorageAdapter(),
+      saveStorage: new SaveGameStorage(),
       run: (command) => history.execute(command),
       toolContext,
       setSpawnPoint: (resolve) => {
@@ -163,6 +167,24 @@ export function EditorProvider({ children }: { children: ReactNode }) {
           source: 'Combat',
           text: sourceId ? `${nameOf(id)} was killed by ${nameOf(sourceId)}` : `${nameOf(id)} died`,
           entityId: id,
+        }),
+      ),
+      engine.game.events.on('restored', () =>
+        useEditorStore.getState().pushConsole({
+          level: 'log',
+          source: 'Save',
+          text: 'Game loaded.',
+          entityId: null,
+        }),
+      ),
+      // A clip that 404s or fails to decode should not fail silently — it is the audio
+      // equivalent of the "textures work sometimes" bug v0.7.6 fixed for materials.
+      engine.audio.events.on('loadError', ({ url, message }) =>
+        useEditorStore.getState().pushConsole({
+          level: 'error',
+          source: 'Audio',
+          text: `Could not load "${url}": ${message}`,
+          entityId: null,
         }),
       ),
       history.events.on('changed', ({ canUndo, canRedo }) =>

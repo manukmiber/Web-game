@@ -1,4 +1,5 @@
 import { forwardFromYaw, yawTowards } from '../ai/steering';
+import type { AudioBus, MusicOptions, PlayOptions } from '../audio/AudioEngine';
 import { DEFAULT_PHYSICS_SETTINGS } from '../components/Physics';
 import { getComponentDefinition } from '../components/registry';
 import type { Engine } from '../loop/Engine';
@@ -360,6 +361,13 @@ export class EntityHandle {
 
   heal(amount: number): number {
     return this.engine.game.heal(this.id, amount);
+  }
+
+  // ------------------------------------------------------------------- audio
+
+  /** A one-shot sound at this entity's current position — a hit, a footstep, a pickup chime. */
+  playSound(clip: string, options: Omit<PlayOptions, 'position'> = {}): void {
+    this.engine.audio.play(clip, { ...options, position: this.position.toArray() });
   }
 
   destroy(): void {
@@ -893,5 +901,60 @@ export class ScriptHardware {
   /** Named analog axis, whether it came from a binding or from another script. */
   axis(name: string): number {
     return this.engine.input.getAxis(name);
+  }
+}
+
+/**
+ * Web Audio, exposed to scripts as `audio`.
+ *
+ * Every method is safe with nothing loaded and nothing plugged in — the same contract
+ * `ScriptHardware` keeps: a scene played headless, or before a clip has finished decoding, just
+ * plays no sound rather than throwing. `entity.playSound` covers the common "at this object's
+ * position" case; this is for everything else — UI feedback with no entity behind it, and music.
+ */
+export class ScriptAudio {
+  constructor(private readonly engine: Engine) {}
+
+  /** A one-shot or looping sound. `options.position` makes it spatial; omit it for a 2D sound. */
+  play(clip: string, options: PlayOptions = {}): void {
+    this.engine.audio.play(clip, options);
+  }
+
+  /** Replaces whatever is on the music bus, crossfading over `options.fadeSeconds`. */
+  music(clip: string, options: MusicOptions = {}): void {
+    this.engine.audio.playMusic(clip, options);
+  }
+
+  stopMusic(fadeSeconds = 0): void {
+    this.engine.audio.stopMusic(fadeSeconds);
+  }
+
+  /** Every playing sound, gone — a scene transition, a game-over screen. */
+  stopAll(): void {
+    this.engine.audio.stopAll();
+  }
+
+  busVolume(bus: AudioBus): number {
+    return this.engine.audio.getBusVolume(bus);
+  }
+
+  setBusVolume(bus: AudioBus, volume: number): void {
+    this.engine.audio.setBusVolume(bus, volume);
+  }
+
+  get masterVolume(): number {
+    return this.engine.audio.getMasterVolume();
+  }
+
+  set masterVolume(value: number) {
+    this.engine.audio.setMasterVolume(value);
+  }
+
+  get muted(): boolean {
+    return this.engine.audio.isMuted();
+  }
+
+  set muted(value: boolean) {
+    this.engine.audio.setMuted(value);
   }
 }

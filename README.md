@@ -333,7 +333,8 @@ argued out in [docs/PHYSICS.md](./docs/PHYSICS.md).
 several: each is its own behaviour with its own state, running in the order of its **Order**
 field. Eleven hooks — `start`, `update(dt)`, `fixedUpdate(dt)`, `lateUpdate(dt)`, the four
 collision and trigger callbacks, `onMessage`, `destroy` — and an API for the entity, the scene,
-input, time and timers, physics queries, gameplay state, maths helpers, hardware and the console.
+input, time and timers, physics queries, gameplay state, maths helpers, hardware, audio and the
+console.
 Scripts talk to each other through `scene.send` and `scene.broadcast`, which is what makes several
 behaviours on one object compose rather than merely coexist. Editing the source while playing
 reloads that behaviour on the next frame. A script that throws is reported to the console and
@@ -351,6 +352,23 @@ instant and a jump reaches a chosen height, but collided against the world by de
 rather than by force. It falls, lands, walks up slopes, stops at walls and jumps with coyote time.
 A Camera parented to it is the whole third-person rig; the transform hierarchy does the
 following.
+
+**Audio** — an `AudioSource` component plays ambience tied to an object: autoplay starts it the
+moment Play begins, and it stops itself when the component is disabled, removed, or the entity is
+deleted, so nothing outlives its object by accident. `spatial` panners and attenuates it from the
+object's position; turn it off for a sound that should read the same everywhere, like a piece of
+score. Everything more particular — a hit, a footstep, a game-over sting — goes through the
+script API instead: `audio.play(clip, { position, loop, bus })`, `audio.music(clip, { fadeSeconds
+})` for a crossfading track, or `entity.playSound(clip)` for the common case of "at this object".
+Three buses (`music`, `sfx`, `ambient`) each fade independently, under one master volume and mute.
+Every voice — component-driven or script-started — goes silent the moment Play stops, the same
+promise §6 makes for everything else a session accumulates.
+
+**Save games** — the toolbar's *Save Game* and *Load Game* buttons, live only while playing. This
+is not the scene *Save*/*Load* pair from the Authoring section above — that autosaves what you
+*authored*; this remembers what you were *playing*: health, factions, script variables, and every
+entity exactly where it stood. Loading does not change whether you are in Play or Edit mode, and
+it does not restart NPC or script behaviour — a loaded save resumes, it does not reboot.
 
 **Console** (**F4**) — script output and combat events, with the entity attached: click a
 message to select whatever produced it. Filter by level, or search the text; an error opens the
@@ -490,6 +508,11 @@ before it is the next thing to build ([docs/ECS.md](./docs/ECS.md) says why in m
 Materials: an asset browser, so the seven texture slots can be filled by clicking rather than by
 editing a scene file. Everything under them is in place; the browser is the missing half.
 
+Audio: the same asset-browser gap, one level down — `AudioSource.clip` is a URL because there is
+no audio entry in `AssetStore` yet, the way there already is for textures. And a mixer panel: the
+buses, master volume and mute all exist and are driven from scripts today, with no UI in front of
+them yet.
+
 Hardware: the Gamepad API as a third device kind — the same channel model, a different pipe —
 and a serial-to-WebSocket bridge for browsers without Web Serial.
 
@@ -511,6 +534,7 @@ git checkout release/v0.7.3   # Render pipeline rework and graphics settings
 git checkout release/v0.7.4   # Dock layout, status bar and every panel moved
 git checkout release/v0.7.5   # Physics, multi-script objects, better lights
 git checkout release/v0.7.6   # ECS, one solver for two dimensions, real PBR
+git checkout release/v0.7.7   # Save-game system and a Web Audio engine
 ```
 
 v0.7.0 added the assistant tool layer and the MCP server. It needed **no schema change and no
@@ -866,6 +890,58 @@ out wearing another material's roughness.
 
 Seventy-four new tests, and one of them is the reason the corner case above is documented rather
 than discovered later.
+
+### v0.7.7 — a save-game system, and the engine can make noise
+
+**No schema change.** `AudioSource` is one more additive component, like every one before it; a
+v0.7.6 scene opens unchanged, and playing it in an older build just leaves it silent.
+
+**Audio.** `engine/audio/AudioEngine` wraps Web Audio behind the same seam `physics` and
+`hardware` already sit behind on the `Engine`: three buses (`music`, `sfx`, `ambient`) each with
+their own fader, plus a master volume and mute above all three; spatial sounds panned and
+attenuated from a `PannerNode`, with the listener moved every frame off the primary camera's
+*world* transform, not its local one; and a clip cache keyed by URL, decoded once and reused by
+every subsequent `play()` for it. The `AudioContext` itself is built lazily on first use rather
+than in the constructor — a browser refuses to run one until a user gesture has reached the page,
+and `AudioContext` does not exist in Vitest's Node environment at all, so building it eagerly
+would fail every test that touches an `Engine`, not only the audio ones. A `contextFactory`
+constructor argument is the fix, the same dependency-injection seam `HardwareTransport` and
+`ScenePersistence` use elsewhere, and it is what lets `AudioEngine.test.ts` drive real playback
+logic — bus routing, crossfades, cancelling a sound that was stopped before it finished decoding —
+against a fake Web Audio graph with no browser involved.
+
+Scripts get it as `audio` — `audio.play(clip, { position, loop, bus })`, `audio.music(clip,
+{ fadeSeconds })` for a crossfading score, `entity.playSound(clip)` for the common "at this
+object's position" case — and `AudioSource` is a component for the other half: ambience that
+belongs to an object for as long as the object exists, autoplaying when Play mode starts and
+stopped automatically when it is disabled, removed, or the entity is deleted. Sounds are session
+state exactly the way a zombie's health is (§6), so every voice — component-driven or
+script-started — is silenced in `Engine.setMode` along with everything else a Play session
+accumulates; leaving one playing across Stop would be the audio equivalent of the bug `GameState`
+already guards health against.
+
+**A save-game system**, and it is a genuinely different thing from the scene Save button that has
+been in the toolbar since Phase 1. That one remembers what someone was *authoring*; this one
+remembers what someone was *playing* — which is exactly the health, factions and script variables
+`GameState` deliberately keeps outside the scene so that stopping Play can restore the authored
+scene exactly (§6's "what restored has to cover"). `GameState.toJSON`/`fromJSON` serialise that
+half; `gameplay/SaveGame.captureSaveGame` pairs it with a scene snapshot — `snapshotScene`, now
+exported from `loop/Engine` for exactly this reuse — into one JSON-safe record, and
+`restoreSaveGame` loads it back in without touching whichever mode the engine is already in,
+because "load, then press Play" from a title screen is two actions, not one.
+
+The one subtlety worth being explicit about: `fromJSON` fires a `restored` event, not `reset`.
+Those have to mean different things. `reset` tells every listener — an NPC's wander state, a
+script's own closures — to drop what it was doing, because Stop means the simulation is over. A
+save load means the opposite: positions and health jump to the saved moment, but *behaviour*
+keeps running, so a loaded save does not open with every zombie standing still for a frame while
+it re-decides what to do. Getting this backwards is the kind of bug that only shows up once, on
+the one save file that mattered.
+
+The toolbar's *Save Game*/*Load Game* buttons are the mirror image of *Save*/*Load*: greyed out
+in Edit mode instead of Play mode, because there is no running session to snapshot before Play
+has started, and their local-storage keys live under a different prefix than the scene autosave's
+so the two can never collide.
 
 ### v0.7.8 — mobile control, and four things that were quietly wrong
 

@@ -9,6 +9,7 @@ import type { EntityId } from '../scene/types';
 import {
   EntityHandle,
   mathf,
+  ScriptAudio,
   ScriptClock,
   ScriptGame,
   ScriptHardware,
@@ -388,6 +389,7 @@ export class ScriptSystem implements System {
         game: new ScriptGame(env.engine),
         physics: new ScriptPhysics(env),
         hardware: new ScriptHardware(env.engine),
+        audio: new ScriptAudio(env.engine),
         mathf,
         console: {
           log: (...args) => this.emit('log', instance, format(args)),
