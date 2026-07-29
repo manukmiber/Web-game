@@ -252,4 +252,90 @@ describe('AudioEngine', () => {
     const { engine } = engineWithFakeContext();
     await expect(engine.resume()).resolves.toBeUndefined();
   });
+
+  /**
+   * Everything a caller says between `play` returning and the clip decoding has to survive the
+   * gap. It did for volume and not for the other two, which made both bugs invisible on any
+   * clip that had been played once already — the worst possible failure mode for a fade.
+   */
+  describe('state held across the decode gap', () => {
+    it('crossfades a music track that has never been played before', async () => {
+      const { engine, ctx } = engineWithFakeContext();
+      engine.playMusic('theme.mp3', { fadeSeconds: 2, volume: 0.8 });
+
+      await vi.waitFor(() => expect(ctx.sources).toHaveLength(1));
+      // The fade is a ramp scheduled on the voice's own gain, from silence up to its volume.
+      const faded = ctx.gains.find((g) => g.gain.linearRampToValueAtTime.mock.calls.length > 0);
+      expect(faded).toBeDefined();
+      expect(faded!.gain.setValueAtTime).toHaveBeenCalledWith(0, 0);
+      expect(faded!.gain.linearRampToValueAtTime).toHaveBeenCalledWith(0.8, 2);
+    });
+
+    it('still crossfades on a second play, when the clip is already decoded', async () => {
+      const { engine, ctx } = engineWithFakeContext();
+      await engine.loadClip('theme.mp3');
+      engine.playMusic('theme.mp3', { fadeSeconds: 1.5 });
+
+      const faded = ctx.gains.find((g) => g.gain.linearRampToValueAtTime.mock.calls.length > 0);
+      expect(faded!.gain.linearRampToValueAtTime).toHaveBeenCalledWith(1, 1.5);
+    });
+
+    it('honours a position set before the clip finishes decoding', async () => {
+      const { engine, ctx } = engineWithFakeContext();
+      const handle = engine.play('step.mp3', { position: [0, 0, 0] });
+      handle.setPosition([4, 1, -2]);
+
+      await vi.waitFor(() => expect(ctx.panners).toHaveLength(1));
+      const panner = ctx.panners[0]!;
+      expect([panner.positionX.value, panner.positionY.value, panner.positionZ.value]).toEqual([
+        4, 1, -2,
+      ]);
+    });
+
+    it('leaves a 2D sound 2D, however many times it is told to move', async () => {
+      const { engine, ctx } = engineWithFakeContext();
+      const handle = engine.play('blip.mp3');
+      handle.setPosition([9, 9, 9]);
+
+      await vi.waitFor(() => expect(ctx.sources).toHaveLength(1));
+      expect(ctx.panners).toHaveLength(0);
+    });
+
+    it('holds a volume set before decoding, as it always did', async () => {
+      const { engine, ctx } = engineWithFakeContext();
+      const handle = engine.play('lazy.mp3');
+      handle.setVolume(0.25);
+
+      await vi.waitFor(() => expect(ctx.sources).toHaveLength(1));
+      expect(ctx.gains.some((g) => g.gain.value === 0.25)).toBe(true);
+    });
+  });
+
+  it('reports a snapshot the mixer can render', async () => {
+    const { engine } = engineWithFakeContext();
+    expect(engine.snapshot().state).toBe('idle');
+
+    await engine.loadClip('theme.mp3');
+    engine.playMusic('theme.mp3');
+    engine.setBusVolume('ambient', 0.3);
+    engine.setMuted(true);
+
+    const snapshot = engine.snapshot();
+    expect(snapshot).toMatchObject({
+      voices: 1,
+      musicPlaying: true,
+      clipsLoaded: 1,
+      muted: true,
+      state: 'running',
+    });
+    expect(snapshot.busVolumes.ambient).toBe(0.3);
+  });
+
+  it('reports unavailable rather than idle when there is no Web Audio', () => {
+    const engine = new AudioEngine(() => {
+      throw new Error('no Web Audio here');
+    });
+    expect(engine.available).toBe(false);
+    expect(engine.snapshot().state).toBe('unavailable');
+  });
 });

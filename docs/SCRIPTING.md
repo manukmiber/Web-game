@@ -138,7 +138,36 @@ value until something writes another one.
 ### `time` — the clock, and timers
 
 `time.dt` (the same value `update` receives), `time.elapsed` (seconds since Play started),
-`time.frame`, `time.fixedDt` (the physics step).
+`time.frame`, `time.fixedDt` (the physics step), and `time.smoothDt` — `dt` with frame-to-frame
+jitter filtered out, for anything that would rather be smooth than exact. A follow camera reads
+it; a timer or a physics impulse must not, because they have to be faithful to real elapsed time.
+
+`time.scale` and `time.paused` are the two you can also **write**.
+
+```js
+function update() {
+  if (input.wasPressed('p')) time.paused = !time.paused;
+  // Bullet time while the player is nearly dead.
+  time.scale = game.health(entity) < 20 ? 0.4 : 1;
+}
+```
+
+`time.scale` multiplies every subsequent `dt`: physics, scripts and animation all slow down
+together, which is what makes bullet time one line rather than a per-system speed field. It is
+clamped to `0..8` — a negative scale would run the solver backwards through collision responses
+that assume time moves forward, and past 8 a single step at the frame cap is large enough to
+tunnel a body straight through a wall.
+
+`time.paused` freezes the world without stopping the frame. Rendering, input and the hardware
+pump all keep running and scripts keep ticking with a `dt` of zero, so the script that paused
+the game is still there to watch for the key that unpauses it — which is why a pause menu needs
+nothing from the engine beyond this flag. Note what does *not* stop: `time.every` and
+`time.after` are driven by `dt`, so they hold still too, and a sound already playing keeps
+playing (stop it yourself if a paused game should be silent).
+
+Both are shared with the editor — the toolbar's pause button and speed menu read and write the
+same values — and both are reset to `false` and `1` when Play mode ends, so a session that
+finished in slow motion does not hand a slowed editor back to whoever pressed Stop.
 
 ```js
 function start() {

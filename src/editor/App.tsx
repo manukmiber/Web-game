@@ -4,6 +4,7 @@ import { EditorProvider, useEditor } from './EditorContext';
 import { Dock } from './layout/Dock';
 import { Splitter } from './layout/Splitter';
 import { AssistantPanel } from './panels/AssistantPanel';
+import { AudioPanel } from './panels/AudioPanel';
 import { Console } from './panels/Console';
 import { FpsOverlay } from './panels/FpsOverlay';
 import { GraphicsPanel } from './panels/GraphicsPanel';
@@ -155,6 +156,8 @@ function BottomPanel({ panel, viewport }: { panel: PanelId; viewport: ViewportCo
       return <StatisticsPanel viewport={viewport} />;
     case 'graphics':
       return <GraphicsPanel />;
+    case 'audio':
+      return <AudioPanel />;
     case 'hardware':
       return <HardwarePanel />;
     default:

@@ -152,6 +152,12 @@ export class ScriptSystem implements System {
     this.time.dt = dt;
     this.time.elapsed += dt;
     this.time.frame += 1;
+    // Read from the engine each tick rather than mirrored on write, so a script that reads
+    // `time.scale` sees the toolbar's slider and the toolbar sees another script's assignment.
+    // One source of truth, sampled once, shared by every instance through `this.time`.
+    this.time.smoothDt = engine.smoothDelta;
+    this.time.scale = engine.getTimeScale();
+    this.time.paused = engine.paused;
 
     const env = this.environment(engine);
     this.syncInstances(engine, env);
@@ -368,7 +374,10 @@ export class ScriptSystem implements System {
     script: ScriptComponent,
   ): Instance {
     const compiled = compileScript(script.source);
-    const clock = new ScriptClock(this.time);
+    const clock = new ScriptClock(this.time, {
+      setScale: (scale) => env.engine.setTimeScale(scale),
+      setPaused: (paused) => env.engine.setPaused(paused),
+    });
 
     const instance: Instance = {
       key,
@@ -511,7 +520,15 @@ export class ScriptSystem implements System {
 }
 
 function freshTime(): TimeSource {
-  return { dt: 0, elapsed: 0, frame: 0, fixedDt: DEFAULT_PHYSICS_SETTINGS.fixedTimestep };
+  return {
+    dt: 0,
+    elapsed: 0,
+    frame: 0,
+    fixedDt: DEFAULT_PHYSICS_SETTINGS.fixedTimestep,
+    smoothDt: 0,
+    scale: 1,
+    paused: false,
+  };
 }
 
 /** The contact as the entity on one side of it experiences it. */

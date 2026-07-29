@@ -1,22 +1,21 @@
 import { useEffect, useState } from 'react';
 import { useEditor } from '../EditorContext';
 import { isPanelVisible, useEditorStore } from '../state/editorStore';
-import { PANELS, type PanelId } from '../state/layout';
+import { DOCK_ORDER, DOCK_PANELS, PANELS } from '../state/layout';
 import type { ViewportController } from '../viewport/ViewportController';
 
 /** Slow enough not to matter, fast enough that the number feels live. */
 const FPS_REFRESH_MS = 500;
 
-const TOGGLES: PanelId[] = [
-  'hierarchy',
-  'inspector',
-  'assistant',
-  'console',
-  'performance',
-  'statistics',
-  'graphics',
-  'hardware',
-];
+/**
+ * Every panel, in dock order — derived, not listed.
+ *
+ * This used to be a hand-written array beside the one in `layout.ts`, which made §14.2's claim
+ * that "adding a panel is one entry plus a render case" quietly false: a new panel appeared in
+ * its tab strip and under its function key, and was missing from the one row whose whole job is
+ * to be the index of what exists.
+ */
+const TOGGLES = DOCK_ORDER.flatMap((dock) => DOCK_PANELS[dock]);
 
 interface Props {
   viewport: ViewportController | null;
@@ -42,6 +41,8 @@ export function StatusBar({ viewport }: Props) {
   const selection = useEditorStore((s) => s.selection);
   const sceneRevision = useEditorStore((s) => s.sceneRevision);
   const playing = useEditorStore((s) => s.playing);
+  const paused = useEditorStore((s) => s.paused);
+  const timeScale = useEditorStore((s) => s.timeScale);
   const statusMessage = useEditorStore((s) => s.statusMessage);
   const errors = useEditorStore(
     (s) => s.consoleMessages.filter((m) => m.level === 'error').length,
@@ -95,7 +96,18 @@ export function StatusBar({ viewport }: Props) {
       </div>
 
       <div className="status-readouts">
-        {playing && <span className="status-chip playing">▶ Playing</span>}
+        {/*
+          One chip for the whole clock, because "playing", "paused" and "at a fifth speed" are
+          three states of one thing and three chips for them would leave the reader assembling
+          the sentence. A frame rate that looks wrong is almost always a time scale nobody
+          remembered setting, so the scale is shown wherever it is not 1.
+        */}
+        {playing && (
+          <span className={`status-chip playing ${paused ? 'paused' : ''}`}>
+            {paused ? '❚❚ Paused' : '▶ Playing'}
+            {timeScale !== 1 && ` · ${timeScale}×`}
+          </span>
+        )}
         <span className="status-chip" title="Objects in the scene">
           {entities} obj
         </span>

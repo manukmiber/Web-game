@@ -73,4 +73,31 @@ describe('Clock', () => {
     clock.reset(9000);
     expect(clock.tick(9010)).toBeCloseTo(0.01, 5);
   });
+
+  describe('rawDelta', () => {
+    it('reports the wall clock past the clamp the simulation gets', () => {
+      const clock = new Clock();
+      clock.tick(0);
+      // A 250ms stall: the world may only advance by the cap, but the frame really took 250ms
+      // and a frame counter fed the capped number would report a floor rather than a hitch.
+      expect(clock.tick(250)).toBe(MAX_FRAME_DELTA);
+      expect(clock.rawDelta).toBeCloseTo(0.25, 5);
+    });
+
+    it('is unaffected by the time scale', () => {
+      const clock = new Clock();
+      clock.timeScale = 0.25;
+      clock.tick(0);
+      expect(clock.tick(16)).toBeCloseTo(0.004, 5);
+      expect(clock.rawDelta).toBeCloseTo(0.016, 5);
+    });
+
+    it('keeps running while paused', () => {
+      const clock = new Clock();
+      clock.tick(0);
+      clock.pause();
+      expect(clock.tick(16)).toBe(0);
+      expect(clock.rawDelta).toBeCloseTo(0.016, 5);
+    });
+  });
 });

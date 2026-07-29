@@ -25,6 +25,16 @@ const TOOLS: { tool: TransformTool; label: string; hint: string; title: string }
   { tool: 'scale', label: '⤢', hint: 'R', title: 'Scale (R)' },
 ];
 
+/**
+ * The speeds worth one click, not a free-text field.
+ *
+ * A slider over a continuous range sounds more capable and is worse to use: the only values
+ * anyone reaches for while debugging are "slow enough to watch a frame go wrong" and "fast
+ * enough to skip the boring part", and a fixed list makes returning to exactly 1x a click rather
+ * than an aim. Scripts get the continuous range through `time.scale`.
+ */
+const TIME_SCALES = [0.1, 0.25, 0.5, 1, 2, 4] as const;
+
 interface Props {
   /** Supplied by the viewport so new objects appear where the camera is looking. */
   spawnPoint(): [number, number, number];
@@ -42,6 +52,8 @@ export function Toolbar({ spawnPoint }: Props) {
   const canUndo = useEditorStore((s) => s.canUndo);
   const canRedo = useEditorStore((s) => s.canRedo);
   const playing = useEditorStore((s) => s.playing);
+  const paused = useEditorStore((s) => s.paused);
+  const timeScale = useEditorStore((s) => s.timeScale);
   const shading = useEditorStore((s) => s.shading);
   const setShading = useEditorStore((s) => s.setShading);
   const setTool = useEditorStore((s) => s.setTool);
@@ -352,6 +364,46 @@ export function Toolbar({ spawnPoint }: Props) {
         >
           {playing ? '■ Stop' : '▶ Play'}
         </button>
+        {/*
+          Pause and speed only exist while playing, because that is the only mode with a clock
+          worth arguing with. Both write to the Engine and read back from the store, so a script
+          that slows time down moves these controls too — see `EditorContext`'s `timeChanged`.
+        */}
+        <button
+          className={`play-pause ${paused ? 'active' : ''}`}
+          disabled={!playing}
+          aria-pressed={paused}
+          onClick={() => engine.setPaused(!paused)}
+          title={
+            playing
+              ? 'Freeze the clock — the frame keeps rendering and scripts keep ticking with dt 0 (Ctrl+P)'
+              : 'Pause — press Play first'
+          }
+        >
+          {paused ? '▶︎' : '❚❚'}
+        </button>
+        <select
+          className="time-scale"
+          value={timeScale}
+          disabled={!playing}
+          onChange={(event) => engine.setTimeScale(Number(event.currentTarget.value))}
+          title="Simulation speed. Physics, scripts and animation all follow it; the frame counter does not."
+          aria-label="Time scale"
+        >
+          {/*
+            A scale a script chose that is not on the list still has to be displayable, or the
+            select would silently snap the engine's real value back to one of these on the next
+            render and the readout would be a lie.
+          */}
+          {(TIME_SCALES as readonly number[]).includes(timeScale)
+            ? null
+            : <option value={timeScale}>{timeScale}×</option>}
+          {TIME_SCALES.map((scale) => (
+            <option key={scale} value={scale}>
+              {scale}×
+            </option>
+          ))}
+        </select>
       </div>
     </div>
   );

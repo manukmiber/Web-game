@@ -24,6 +24,7 @@ export type PanelId =
   | 'performance'
   | 'statistics'
   | 'graphics'
+  | 'audio'
   | 'hardware';
 
 export interface PanelMeta {
@@ -94,6 +95,22 @@ export const PANELS: Record<PanelId, PanelMeta> = {
     shortcut: 'F7',
     title: 'Antialiasing, shadows, tone mapping and resolution (F7)',
   },
+  /**
+   * F1 rather than the next free function key.
+   *
+   * F5, F11 and F12 are reload, fullscreen and devtools, and the shortcut handler calls
+   * `preventDefault` — so binding a panel to one of them would quietly take a browser control
+   * away from the user inside a 3D editor, where fullscreen in particular is a thing they want.
+   * F1 is browser help, which no one reaches for in an application and which is nothing to lose.
+   */
+  audio: {
+    id: 'audio',
+    label: 'Audio',
+    icon: '♪',
+    dock: 'bottom',
+    shortcut: 'F1',
+    title: 'Master and bus levels, and what the engine is playing (F1)',
+  },
   hardware: {
     id: 'hardware',
     label: 'Hardware',
@@ -104,11 +121,19 @@ export const PANELS: Record<PanelId, PanelMeta> = {
   },
 };
 
+/**
+ * The docks, left to right as they sit on screen.
+ *
+ * Exported so the status bar can list every panel in the order the eye already reads them,
+ * without keeping a second copy of what panels there are.
+ */
+export const DOCK_ORDER: readonly DockId[] = ['left', 'right', 'bottom'];
+
 /** Tab order within each dock. The left dock has one panel, and so has no tab strip. */
 export const DOCK_PANELS: Record<DockId, PanelId[]> = {
   left: ['hierarchy'],
   right: ['inspector', 'assistant'],
-  bottom: ['console', 'performance', 'statistics', 'graphics', 'hardware'],
+  bottom: ['console', 'performance', 'statistics', 'graphics', 'audio', 'hardware'],
 };
 
 /**

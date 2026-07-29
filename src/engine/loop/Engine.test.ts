@@ -161,6 +161,35 @@ describe('Engine', () => {
   });
 });
 
+describe('frame measurement', () => {
+  it('records the real frame length, not the simulated one', () => {
+    const engine = new Engine();
+    // What the rAF loop does on a stalled frame: the world advances by the clamp, the counter
+    // is told what actually elapsed. Fed the simulated number instead, a 250ms frame would
+    // report as the 100ms cap and the hitch would vanish from every statistic below.
+    engine.tick(0.1, 0.25);
+
+    const report = engine.stats.report();
+    expect(report.worstMs).toBeCloseTo(250, 5);
+    expect(report.minFps).toBeCloseTo(4, 5);
+  });
+
+  it('keeps measuring frames the simulation is not advancing through', () => {
+    const engine = new Engine();
+    // Paused: dt is zero by design, and a counter reading it would show 0 fps on a viewport
+    // that is still rendering perfectly happily at 60.
+    for (let i = 0; i < 10; i += 1) engine.tick(0, 1 / 60);
+
+    expect(engine.stats.report().fps).toBeCloseTo(60, 1);
+  });
+
+  it('defaults the real delta to the simulated one for hand-driven loops', () => {
+    const engine = new Engine();
+    engine.tick(0.02);
+    expect(engine.stats.report().medianMs).toBeCloseTo(20, 5);
+  });
+});
+
 describe('system scheduling', () => {
   it('ticks systems in stage order, not the order they were added', () => {
     const engine = new Engine();

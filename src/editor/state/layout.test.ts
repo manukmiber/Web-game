@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_LAYOUT,
   DOCK_LIMITS,
+  DOCK_ORDER,
   DOCK_PANELS,
   PANELS,
   PANEL_SHORTCUTS,
@@ -9,6 +10,7 @@ import {
   clampLayout,
   dockKeys,
   usesDrawers,
+  type DockId,
   type LayoutState,
   type PanelId,
 } from './layout';
@@ -30,6 +32,30 @@ describe('panel description', () => {
     const listed = Object.values(DOCK_PANELS).flat();
     expect(new Set(listed).size).toBe(listed.length);
     expect(listed.sort()).toEqual((Object.keys(PANELS) as PanelId[]).sort());
+  });
+
+  /**
+   * Every dock is walked by `DOCK_ORDER`, so a dock added without an entry there would leave
+   * its panels out of the status bar — which is built by flattening the two together, and is
+   * the one row whose job is to be a complete index of what exists.
+   */
+  it('walks every dock in a defined order', () => {
+    expect([...DOCK_ORDER].sort()).toEqual((Object.keys(DOCK_PANELS) as DockId[]).sort());
+    expect(DOCK_ORDER.flatMap((dock) => DOCK_PANELS[dock]).length).toBe(
+      Object.keys(PANELS).length,
+    );
+  });
+
+  /**
+   * A browser key the shortcut handler would take away by calling `preventDefault`. Reload,
+   * fullscreen and devtools are all things a user in a 3D editor wants more than they want one
+   * fewer keystroke to a panel.
+   */
+  it('binds no panel to a key the browser needs', () => {
+    const reserved = ['F5', 'F11', 'F12'];
+    for (const panel of Object.values(PANELS)) {
+      expect(reserved).not.toContain(panel.shortcut);
+    }
   });
 
   /**

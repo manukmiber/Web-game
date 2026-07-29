@@ -167,10 +167,17 @@ export class FrameStats {
   }
 
   /**
-   * Records the frame, given the loop's delta in seconds.
+   * Records the frame, given how long it really took in seconds.
    *
-   * Frames longer than a second are dropped: they are almost always a backgrounded tab or a
-   * devtools pause, and one 4000ms sample poisons the p95 for the rest of the window.
+   * "Really" is load-bearing, and is why `Engine.tick` takes a second delta to pass here. The
+   * simulation's dt is clamped and time-scaled on purpose (`Clock`), and a counter fed that
+   * number reports the clamp rather than the machine: every frame slower than `MAX_FRAME_DELTA`
+   * lands on exactly `MAX_FRAME_DELTA`, so `minFps` cannot go below 10, `stutterCount` misses
+   * the hitches it exists to count, and the 1% low — the one statistic here that justifies the
+   * rest — is bounded away from the truth precisely when there is something to find.
+   *
+   * Frames longer than a second are still dropped: they are almost always a backgrounded tab or
+   * a devtools pause, and one 4000ms sample poisons the p95 for the rest of the window.
    */
   record(dt: number): void {
     const frameMs = dt * 1000;
