@@ -360,7 +360,11 @@ export class Scene {
   load(data: {
     name: string;
     world: WorldSettings;
-    entities: Entity[];
+    /**
+     * `order`, where present, is the entity's index among its siblings — see
+     * `serialization/schema`. Entities without one keep the order they arrive in.
+     */
+    entities: (Entity & { order?: number })[];
     assets: AssetRecord[];
   }): void {
     this.entities.clear();
@@ -380,14 +384,59 @@ export class Scene {
       // A parent that didn't survive the load would orphan the child; promote it to root
       // rather than dropping it, so no data is silently lost.
       if (entity.parentId !== null && !this.entities.has(entity.parentId)) entity.parentId = null;
+      // Same policy, for the one malformation that is worse than missing data: a parent chain
+      // that loops. `reparent` refuses to create one, so a cycle can only arrive through a
+      // file — and every walk up the tree here (`ancestorsOf`, `worldPositionOf`, and so the
+      // chunk key the serializer asks for) follows `parentId` until it reaches null. A cycle
+      // never does, which turned "import this scene and press Ctrl+S" into a hung tab.
+      if (entity.parentId !== null && this.loadWouldCycle(entity)) entity.parentId = null;
       this.childIds.get(entity.parentId)!.push(entity.id);
     }
+
+    /**
+     * Put every child list back into the order it was authored in.
+     *
+     * The document arrives bucketed by chunk, which is a spatial fact and says nothing about
+     * where a row sat in the Hierarchy — so without this, organising a tree and saving it gave
+     * you a differently ordered tree back, and moving one object across a chunk boundary was
+     * enough to shuffle it again. Sorting the child lists rather than the entity list keeps the
+     * document's own order intact, so a scene still serializes byte-identically twice running.
+     */
+    const orderOf = new Map<EntityId, number>();
+    for (const entity of data.entities) {
+      if (typeof entity.order === 'number') orderOf.set(entity.id, entity.order);
+    }
+    if (orderOf.size > 0) {
+      for (const siblings of this.childIds.values()) {
+        // Stable, so anything the file gave no `order` keeps its relative position at the end.
+        siblings.sort((a, b) => (orderOf.get(a) ?? Infinity) - (orderOf.get(b) ?? Infinity));
+      }
+    }
+
     for (const asset of data.assets) this.assets.set(asset.id, asset);
 
     this.events.emit('sceneReplaced', {});
   }
 
   // --------------------------------------------------------------- internal
+
+  /**
+   * Whether `entity`'s parent chain loops back to it rather than reaching a root.
+   *
+   * Walks the raw `parentId` links rather than `ancestorsOf`, because during `load` that is the
+   * only structure there is — `childIds` is still being filled — and because `ancestorsOf` is
+   * itself one of the walks a cycle would hang. Bounded by the entity count, so it terminates
+   * whatever the file contains.
+   */
+  private loadWouldCycle(entity: Entity): boolean {
+    let current = entity.parentId;
+    for (let steps = this.entities.size; current !== null && steps > 0; steps -= 1) {
+      if (current === entity.id) return true;
+      current = this.entities.get(current)?.parentId ?? null;
+    }
+    // Ran out of steps without reaching a root: the chain loops somewhere further up.
+    return current !== null;
+  }
 
   private insertChild(parentId: EntityId | null, childId: EntityId, index?: number): void {
     let siblings = this.childIds.get(parentId);

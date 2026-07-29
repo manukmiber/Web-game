@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { isTextEntry } from './dom';
+import { consumesKey } from './dom';
 import { useEditor } from './EditorContext';
 import { useEditorStore } from './state/editorStore';
 import {
@@ -17,7 +17,7 @@ export function useShortcuts(viewport: ViewportController | null): void {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (isTextEntry(event.target)) return;
+      if (consumesKey(event.target, event)) return;
 
       const store = useEditorStore.getState();
       const selection = store.selection;

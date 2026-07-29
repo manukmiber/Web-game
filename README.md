@@ -1148,6 +1148,70 @@ including the clamp and the reset on Stop, the four things a voice has to rememb
 between `play` returning and a clip decoding, and two invariants over the panel description — that
 every dock is walked, and that no panel is bound to a key the browser needs.
 
+### Four bugs found by using it rather than by testing it
+
+The whole suite was green and the typechecker was clean for all four of these. They were found by
+driving the editor in a browser and doing ordinary things in an ordinary order — which is the only
+way any of them show up, because each one needs a *sequence* rather than a state.
+
+**Saving a scene rearranged the Hierarchy.** Sibling order is authored — rows are dragged into
+place — and it did not survive a round trip. The serializer files each entity under the chunk its
+world position falls in, which is a spatial fact and correct; the loader then rebuilt the tree from
+the flattened document, so the order you got back was the order the chunks happened to sort in. The
+default scene came back as *Zombie 2, Crate 2, Crate 1, Zombie, Environment…* after nothing more
+than Export followed by Import, and moving one object across a chunk boundary was enough to reshuffle
+it again. Play mode already knew about this — `snapshotScene` deep-clones precisely so Stop does not
+reorder the tree, and says so in a comment — but the fix never reached the path that writes files.
+
+Each entity now carries its sibling index as `order`, and `Scene.load` sorts the child lists by it.
+Sorting the *child lists* rather than the entity list is deliberate: the document keeps its chunk
+order, so a scene still serializes byte-identically twice running. The field is additive and
+optional, so there is **no schema change** — an older build ignores it, and a hand-written flat
+scene that omits it still loads exactly as written.
+
+**A parent cycle in a scene file hung the tab, permanently.** `reparent` refuses to build a cycle,
+so one can only arrive through a file — and `load` checked that a parent *existed* without checking
+that following parents ever reached a root. Every walk up the tree (`ancestorsOf`, `worldPositionOf`,
+and so the chunk key the serializer asks for) loops on `parentId` until it hits null, which a cycle
+never does. Importing such a file gave you a scene whose entities were counted in the status bar and
+absent from the Hierarchy, and the next `Ctrl+S` spun the main thread forever: no error, no recovery,
+the tab gone. The loader is documented as tolerant so a partly corrupt autosave still opens, and this
+was the one malformation it let through that could not be survived. Cycles are now broken at load by
+promoting the offending entity to root — the same policy an orphan already got.
+
+**Every shortcut died after using a menu.** `isTextEntry` counted a `<select>` as typing, and the
+shortcut layer bailed on it outright. The Add and Game menus *are* selects, and a native select keeps
+focus after a pick — so the most ordinary loop in the editor, "add a Box, then press W, then Ctrl+Z",
+left W and Ctrl+Z doing nothing. So did every panel key, so did Delete, and so did `Ctrl+S` — which,
+because the handler returned before `preventDefault`, fell through to the browser's own Save Page
+dialog. Worst of it: **Escape could not leave Play mode**, so touching the shading menu mid-session
+left the toolbar's Stop button as the only way out of a running scene.
+
+`isTextEntry` keeps its meaning — a select really does own the character you just typed, or "w" in
+the Add menu would walk the character forward instead of jumping to Wedge. Shortcuts now ask the
+narrower question through `consumesKey`: a focused select keeps type-ahead and its option keys, and
+everything it cannot use — Escape, the function keys, Delete, any Ctrl/Cmd chord — belongs to the
+editor.
+
+**A rigid body ignored anything that moved it.** `syncBodies` re-describes every body from the scene
+each frame and keeps the solver's position for a dynamic one, which is what stops a falling crate
+being pinned in mid-air. It kept it unconditionally. So a gizmo drag, an Inspector edit or a script
+assigning `entity.position` on anything with a `RigidBody` was overwritten before the next frame drew
+— silently, with the field snapping back and no message to say why. The comment above the function
+already claimed the Inspector owned "whether someone just dragged it somewhere with the gizmo"; the
+code did not implement it, and `teleport()` existed as the way around it.
+
+The system now records what `writeBack` last put on each entity, which is what lets it tell its own
+writes from everyone else's: a transform that still reads as last frame's is the solver's, and one
+that does not is an instruction. Re-seeding routes through the same `PhysicsWorld.setPosition` that
+`teleport()` uses, because re-describing a body places it without waking it — and a crate that had
+settled and gone to sleep would otherwise sit exactly where you put it, never falling. `teleport()`
+is now the explicit spelling rather than the only one that works.
+
+Twelve new tests: sibling order across chunk boundaries and through nesting, a scene that serializes
+identically twice, two shapes of parent cycle, the keys a focused select may and may not swallow, and
+a body that is moved mid-simulation and goes on falling from where it was put.
+
 ## Layout
 
 ```

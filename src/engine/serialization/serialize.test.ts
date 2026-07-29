@@ -54,6 +54,64 @@ describe('serializeScene', () => {
     sceneFromJSON(restored, JSON.stringify(data));
     expect(restored.childrenOf(parent.id)).toEqual([child.id]);
   });
+
+  /**
+   * The Hierarchy's order is authored — rows are dragged into it — so it has to survive a save.
+   * Chunk bucketing is what threatens it: entities are filed by position, so the document comes
+   * back grouped spatially, and a scene reopened after a save used to list its objects in an
+   * order nobody chose. One object sitting at a negative coordinate was enough to trigger it.
+   */
+  it('restores sibling order across a save, whatever chunks the entities fall in', () => {
+    const scene = new Scene();
+    const names = ['Sky', 'Ground', 'West Tower', 'Crate', 'East Tower'];
+    // Positions chosen to scatter these across four chunks in an order unrelated to the tree.
+    const positions: [number, number, number][] = [
+      [0, 0, 0],
+      [-400, 0, -400],
+      [-400, 0, 0],
+      [0, 0, -400],
+      [400, 0, 400],
+    ];
+    names.forEach((name, index) =>
+      scene.add(createPrimitiveEntity('Box', { name, position: positions[index] })),
+    );
+
+    const data = serializeScene(scene);
+    expect(data.chunks.length).toBeGreaterThan(1);
+
+    const restored = new Scene();
+    sceneFromJSON(restored, JSON.stringify(data));
+    expect(restored.rootIds().map((id) => restored.expect(id).name)).toEqual(names);
+  });
+
+  it('restores the order of nested children too', () => {
+    const scene = new Scene();
+    const parent = scene.add(createPrimitiveEntity('Empty', { name: 'Rig' }));
+    const children = ['Head', 'Torso', 'Legs'].map((name, index) =>
+      // Spread far enough apart that each child lands in its own chunk.
+      scene.add(createPrimitiveEntity('Box', { name, position: [index * 500, 0, 0] })),
+    );
+    for (const child of children) scene.reparent(child.id, parent.id);
+
+    const restored = new Scene();
+    sceneFromJSON(restored, sceneToJSON(scene));
+    expect(restored.childrenOf(parent.id).map((id) => restored.expect(id).name)).toEqual([
+      'Head',
+      'Torso',
+      'Legs',
+    ]);
+  });
+
+  it('serializes identically twice, so a save is stable across reopening', () => {
+    const scene = new Scene();
+    scene.add(createPrimitiveEntity('Box', { name: 'A', position: [-400, 0, 0] }));
+    scene.add(createPrimitiveEntity('Box', { name: 'B', position: [400, 0, 0] }));
+
+    const first = sceneToJSON(scene);
+    const reloaded = new Scene();
+    sceneFromJSON(reloaded, first);
+    expect(sceneToJSON(reloaded)).toBe(first);
+  });
 });
 
 describe('parseScene', () => {
@@ -117,6 +175,71 @@ describe('parseScene', () => {
       rotation: [0, 0, 0],
       scale: [1, 1, 1],
     });
+  });
+
+  /**
+   * A parent chain that loops cannot be built through `reparent`, so it only ever arrives in a
+   * file — and every walk up the tree (`ancestorsOf`, and the world position the serializer asks
+   * for to pick a chunk) follows `parentId` until it reaches null. A cycle never does. Left
+   * alone, importing such a file gave you entities that no longer appeared in the Hierarchy at
+   * all, and the next Ctrl+S hung the tab for good.
+   */
+  it('breaks a parent cycle rather than loading an unreachable, unsaveable scene', () => {
+    const scene = new Scene();
+    sceneFromJSON(
+      scene,
+      JSON.stringify({
+        version: 2,
+        name: 'Looped',
+        world: { chunkSize: 256 },
+        assets: [],
+        chunks: [
+          {
+            key: '0,0',
+            entities: [
+              { id: 'a', name: 'A', parentId: 'b', transform: {}, components: [] },
+              { id: 'b', name: 'B', parentId: 'a', transform: {}, components: [] },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(scene.size).toBe(2);
+    // Both survive, and both are reachable from a root — the same "promote rather than drop"
+    // policy an orphan gets.
+    expect(scene.rootIds().length).toBeGreaterThan(0);
+    for (const entity of scene.all()) expect(scene.ancestorsOf(entity.id)).not.toContain(entity.id);
+    // The walks that used to spin now terminate, so the scene can be saved again.
+    expect(() => sceneToJSON(scene)).not.toThrow();
+  });
+
+  it('breaks a longer cycle that closes further up the chain', () => {
+    const scene = new Scene();
+    sceneFromJSON(
+      scene,
+      JSON.stringify({
+        version: 2,
+        name: 'Ring',
+        world: { chunkSize: 256 },
+        assets: [],
+        chunks: [
+          {
+            key: '0,0',
+            entities: [
+              { id: 'a', name: 'A', parentId: 'c', transform: {}, components: [] },
+              { id: 'b', name: 'B', parentId: 'a', transform: {}, components: [] },
+              { id: 'c', name: 'C', parentId: 'b', transform: {}, components: [] },
+            ],
+          },
+        ],
+      }),
+    );
+
+    expect(scene.size).toBe(3);
+    expect(scene.rootIds().length).toBeGreaterThan(0);
+    for (const entity of scene.all()) expect(scene.ancestorsOf(entity.id)).not.toContain(entity.id);
+    expect(() => sceneToJSON(scene)).not.toThrow();
   });
 
   it('promotes an orphaned child to root rather than dropping it', () => {
