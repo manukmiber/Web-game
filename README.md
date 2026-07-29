@@ -1148,6 +1148,42 @@ including the clamp and the reset on Stop, the four things a voice has to rememb
 between `play` returning and a clip decoding, and two invariants over the panel description — that
 every dock is walked, and that no panel is bound to a key the browser needs.
 
+### v0.7.9.6 — the gizmo let go of the mouse
+
+Reported as "you can't use the gizmo with a mouse, only by touch", which is an odd enough shape of
+bug to be worth writing down: the same handles, the same code, and the pointer that is *better* at
+hitting them was the one that could not use them.
+
+Both halves of the answer are in `ViewportController.onPointerUp`, which decides whether a release
+was a click on the scene or the end of a drag of something else. It asked `gizmo.isDragging`, and
+that flag is false by the time it looks. TransformControls listens on the same canvas and was
+connected first, so its own handler has already ended the drag and cleared the flag — the guard had
+never fired once. All that was left was the distance test, and a press that travelled less than the
+click threshold went on to pick. A ray fired down the length of an arrow leaves the object behind at
+the first millimetre and hits nothing, and clicking nothing is how you clear the selection. So the
+selection went, and the gizmo went with it, because a gizmo with nothing selected is not drawn.
+
+Which is why it looked like a mouse problem. The threshold is 4px for a mouse and 14px for a finger,
+and a nudge under 4px is not an accident with a mouse — it is what precise positioning *is*. A
+finger drags in tens of pixels and sailed past both thresholds, so touch mostly escaped a bug that
+was never really about touch. Grab an arrow, move it a hair, and the object jumped back to
+unselected: three times in a row and the reasonable conclusion is that the gizmo does not take mouse
+input.
+
+The fix is to record the claim when the drag *starts*, where the ordering cannot get in the way:
+`beginDrag` sets it, the viewport consumes it on release, and a press the gizmo took is never a
+click no matter how short it was. The rule itself moved out to `viewport/pointerGesture` so it could
+be tested without a WebGL context, the way `panels/touchStick` did for the thumb pads. `pointercancel`
+now clears the record too — a press the browser takes back never delivers a release, and the claim
+would otherwise have been answered by the following click.
+
+**No schema change**, and no new behaviour: gizmo handles that were too small for a fingertip were
+v0.7.8's bug, and this is the other end of the same seam. Ordinary picking is untouched — clicking
+an object selects it, shift adds to the selection, clicking empty space still clears it, and an
+orbit that happens to end over an object still does not select it.
+
+Five new tests over the click-versus-drag rule, one of them the regression itself.
+
 ## Layout
 
 ```

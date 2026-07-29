@@ -32,6 +32,7 @@ export class GizmoController {
   private pivotStartWorldInverse = new THREE.Matrix4();
   private records: DragRecord[] = [];
   private dragging = false;
+  private pressClaimed = false;
   private selection: EntityId[] = [];
 
   constructor(
@@ -61,6 +62,24 @@ export class GizmoController {
   /** True while a gizmo handle is held — the viewport uses this to suspend orbit controls. */
   get isDragging(): boolean {
     return this.dragging;
+  }
+
+  /**
+   * Whether the press now ending was the gizmo's, forgetting it in the same breath.
+   *
+   * The viewport needs this at `pointerup` to tell a handle drag from a click on the scene, and
+   * `isDragging` cannot answer: TransformControls listens on the same canvas and was connected
+   * first, so its own handler has already ended the drag and cleared the flag before the
+   * viewport's handler runs. It read false on every release, which is why a short drag on a
+   * handle went on to pick, hit nothing behind the arrow, and cleared the selection.
+   *
+   * Recording it when the drag *starts* takes listener order out of it altogether: whoever sees
+   * the pointerdown first, `beginDrag` has run by the time the pointer comes back up.
+   */
+  claimedPress(): boolean {
+    const claimed = this.pressClaimed;
+    this.pressClaimed = false;
+    return claimed;
   }
 
   setTool(tool: TransformTool): void {
@@ -152,6 +171,7 @@ export class GizmoController {
 
   private beginDrag(): void {
     this.dragging = true;
+    this.pressClaimed = true;
     // The drag is one user action, however long it takes and however sparse the events.
     this.history.beginInteraction();
     this.pivot.updateMatrixWorld(true);

@@ -18,20 +18,11 @@ import { isCoarsePointer, isTextEntry } from '../dom';
 import { editorState, useEditorStore } from '../state/editorStore';
 import { GizmoController } from './GizmoController';
 import { GroundGrid } from './GroundGrid';
+import { isSelectionClick, type Press } from './pointerGesture';
 import { SceneGizmos } from './SceneGizmos';
 import { SelectionOutline } from './SelectionOutline';
 
 const AXIS_INDICATOR_PX = 96;
-/** Pointer travel beyond this is treated as an orbit drag, not a click-to-select. */
-const CLICK_SLOP_PX = 4;
-/**
- * The same threshold for a finger.
- *
- * A mouse click moves a pixel or two; a tap on glass routinely moves ten while the finger
- * flattens and rolls. At the mouse threshold roughly half of all taps were read as tiny orbit
- * drags and selected nothing, which is indistinguishable from picking being broken.
- */
-const TOUCH_CLICK_SLOP_PX = 14;
 /**
  * How much bigger the transform gizmo is drawn when the pointer is a finger.
  *
@@ -69,7 +60,7 @@ export class ViewportController {
   private axisCamera: THREE.PerspectiveCamera;
 
   private raycaster = new THREE.Raycaster();
-  private pointerDownAt: { x: number; y: number; touch: boolean } | null = null;
+  private pointerDownAt: Press | null = null;
   /** True when the primary pointer is a finger. Decides hit-target sizes, nothing else. */
   private coarsePointer = false;
   private canvas: HTMLCanvasElement;
@@ -249,6 +240,7 @@ export class ViewportController {
   private bindEvents(): void {
     this.canvas.addEventListener('pointerdown', this.onPointerDown);
     this.canvas.addEventListener('pointerup', this.onPointerUp);
+    this.canvas.addEventListener('pointercancel', this.onPointerCancel);
     this.canvas.addEventListener('contextmenu', (event) => event.preventDefault());
     // Input for Play mode. Bound once and gated on `playing` rather than added and removed,
     // so a key held as Play starts cannot be missed between the two.
@@ -418,6 +410,16 @@ export class ViewportController {
     };
   };
 
+  /**
+   * A pointer the browser took back — a system gesture, a window switch, a palm the touch stack
+   * decided against. No pointerup follows one, so without this the press record and the gizmo's
+   * claim would both outlive the press and be answered by the next one.
+   */
+  private onPointerCancel = (): void => {
+    this.pointerDownAt = null;
+    this.gizmo.claimedPress();
+  };
+
   private onPointerUp = (event: PointerEvent): void => {
     if (this.playing) {
       this.engine.input.setButtons(event.buttons);
@@ -425,11 +427,11 @@ export class ViewportController {
     }
     const down = this.pointerDownAt;
     this.pointerDownAt = null;
+    // Consumed before any early return: a claim left lying around would swallow the next click.
+    const claimedByGizmo = this.gizmo.claimedPress();
     if (!down || event.button !== 0) return;
     // Suppress selection when the pointer was orbiting or driving the gizmo.
-    if (this.gizmo.isDragging) return;
-    const travelled = Math.hypot(event.clientX - down.x, event.clientY - down.y);
-    if (travelled > (down.touch ? TOUCH_CLICK_SLOP_PX : CLICK_SLOP_PX)) return;
+    if (!isSelectionClick(down, { x: event.clientX, y: event.clientY }, claimedByGizmo)) return;
 
     const hit = this.pick(event);
     const store = editorState();
@@ -567,6 +569,7 @@ export class ViewportController {
     this.resizeObserver.disconnect();
     this.canvas.removeEventListener('pointerdown', this.onPointerDown);
     this.canvas.removeEventListener('pointerup', this.onPointerUp);
+    this.canvas.removeEventListener('pointercancel', this.onPointerCancel);
     this.canvas.removeEventListener('pointermove', this.onPointerMove);
     this.canvas.removeEventListener('wheel', this.onWheel);
     window.removeEventListener('keydown', this.onKeyDown);
