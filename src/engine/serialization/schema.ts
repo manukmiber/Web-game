@@ -2,10 +2,27 @@ import type { AssetRecord, Component, Entity, Vec3, WorldSettings } from '../sce
 
 export const SCENE_SCHEMA_VERSION = 2;
 
+/**
+ * An entity on disk: the runtime entity plus where it sat among its siblings.
+ *
+ * `order` exists because chunk membership is spatial and sibling order is not. Entities are
+ * filed under the chunk their position falls in, so the flattened document comes back in chunk
+ * order — which is how a scene that was saved with the Hierarchy in one order opened with it in
+ * another. `Engine.snapshotScene` already sidesteps this by deep-cloning rather than
+ * round-tripping; a file has no such luxury, so the order is written down.
+ *
+ * Additive and optional: an older build ignores it, and a hand-written flat scene that omits it
+ * still loads in the order it was written.
+ */
+export interface SerializedEntity extends Entity {
+  /** Index among the entity's siblings when it was saved. */
+  order?: number;
+}
+
 export interface SerializedChunk {
   /** "cx,cz" — derived from entity world position, never authored. */
   key: string;
-  entities: Entity[];
+  entities: SerializedEntity[];
 }
 
 export interface SerializedScene {
@@ -82,7 +99,7 @@ function parseComponent(value: unknown): Component | null {
   return value as Component;
 }
 
-function parseEntity(value: unknown): Entity | null {
+function parseEntity(value: unknown): SerializedEntity | null {
   if (!isRecord(value)) return null;
   if (typeof value.id !== 'string' || value.id === '') return null;
 
@@ -101,6 +118,9 @@ function parseEntity(value: unknown): Entity | null {
       scale: parseVec3(transform.scale, [1, 1, 1]),
     },
     components,
+    ...(typeof value.order === 'number' && Number.isFinite(value.order)
+      ? { order: value.order }
+      : {}),
   };
 }
 
@@ -149,11 +169,15 @@ export function parseScene(raw: unknown): SerializedScene {
   if (Array.isArray(data.chunks)) {
     for (const rawChunk of data.chunks) {
       if (!isRecord(rawChunk) || !Array.isArray(rawChunk.entities)) continue;
-      const entities = rawChunk.entities.map(parseEntity).filter((e): e is Entity => e !== null);
+      const entities = rawChunk.entities
+        .map(parseEntity)
+        .filter((e): e is SerializedEntity => e !== null);
       chunks.push({ key: typeof rawChunk.key === 'string' ? rawChunk.key : '0,0', entities });
     }
   } else if (Array.isArray(data.entities)) {
-    const entities = data.entities.map(parseEntity).filter((e): e is Entity => e !== null);
+    const entities = data.entities
+      .map(parseEntity)
+      .filter((e): e is SerializedEntity => e !== null);
     chunks.push({ key: '0,0', entities });
   }
 
@@ -170,7 +194,14 @@ export function parseScene(raw: unknown): SerializedScene {
   };
 }
 
-/** Flattens chunk buckets back into a single entity list. */
-export function entitiesOf(scene: SerializedScene): Entity[] {
+/**
+ * Flattens chunk buckets back into a single entity list.
+ *
+ * Deliberately in document order rather than sorted by `order`: this list becomes the Scene's
+ * own entity order, and reordering it here would make a scene serialize differently the second
+ * time round for no gain. `Scene.load` reads `order` off the entities to sort the child lists,
+ * which is the only place sibling order is actually observable.
+ */
+export function entitiesOf(scene: SerializedScene): SerializedEntity[] {
   return scene.chunks.flatMap((chunk) => chunk.entities);
 }

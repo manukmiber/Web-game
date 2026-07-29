@@ -93,6 +93,16 @@ export class PhysicsSystem implements System {
   private settings: PhysicsComponent = DEFAULT_PHYSICS_SETTINGS;
   /** 3D, or the 2D plane the scene asked for. Refreshed with `settings`. */
   private dimensionality: Dimensionality = DEFAULT_DIMENSIONALITY;
+  /**
+   * The local position `writeBack` last put on each dynamic body's entity.
+   *
+   * This is how the system tells its own writes apart from everyone else's, which is the whole
+   * question `syncBodies` has to answer for a dynamic body: the solver owns the position of a
+   * falling crate, but not when something has just moved it. If the transform still reads as
+   * whatever was written last frame, nobody touched it and the solver keeps it; if it differs,
+   * the scene was told to put the body somewhere and that instruction wins.
+   */
+  private lastWritten = new Map<EntityId, Vec3>();
 
   update(dt: number, engine: Engine): void {
     this.world = engine.physics;
@@ -185,6 +195,9 @@ export class PhysicsSystem implements System {
     (engine?.physics ?? this.world).clear();
     this.accumulator = 0;
     this.diagnostics = emptyDiagnostics();
+    // The scene is about to be restored from a snapshot, so every remembered position describes
+    // a body that no longer exists at that place. Kept, they would read as "someone moved it".
+    this.lastWritten.clear();
   }
 
   dispose(): void {
@@ -232,18 +245,50 @@ export class PhysicsSystem implements System {
       // Keep the solver's position for a body it owns; take everything else from the scene.
       // The shape then has to be re-placed at the body's own origin rather than the entity's,
       // which is what `originOverride` is for.
+      //
+      // "Owns" ends the moment something else writes the transform. Without that exception the
+      // solver's origin was simply copied back over every frame, so a gizmo drag, an Inspector
+      // edit or a script assigning `entity.position` on anything with a RigidBody was undone
+      // before the next frame drew — silently, since the field snapped back with no message.
+      // `teleport()` existed as the way around it; now it is the explicit spelling rather than
+      // the only one that works.
       const existing = this.world.get(entity.id);
+      const dynamic = existing !== undefined && existing.invMass > 0;
+      const moved = dynamic && this.movedOutsideSolver(entity);
       const transform = worldTransformOf(
         scene,
         entity,
-        existing && existing.invMass > 0 ? existing.origin : undefined,
+        dynamic && !moved ? existing.origin : undefined,
       );
       this.world.upsert(
         describeBody(entity.id, collider, body ?? null, transform, this.dimensionality),
       );
+      if (moved) {
+        // The same call `ScriptApi.teleport` makes, and for the same reason: re-describing a
+        // body puts it in the right place but leaves it however it was, and a crate that had
+        // settled and gone to sleep would sit exactly where it was dropped, never falling.
+        this.world.setPosition(entity.id, transform.position);
+        this.lastWritten.delete(entity.id);
+      }
     }
 
     this.world.prune(alive);
+    for (const id of this.lastWritten.keys()) if (!alive.has(id)) this.lastWritten.delete(id);
+  }
+
+  /**
+   * Whether the entity's position differs from the one this system last wrote there.
+   *
+   * A body with no record yet has never been written back — it was only just described — so
+   * there is nothing to have overridden, and the solver is left to place it.
+   */
+  private movedOutsideSolver(entity: Entity): boolean {
+    const written = this.lastWritten.get(entity.id);
+    if (!written) return false;
+    const position = entity.transform.position;
+    return (
+      position[0] !== written[0] || position[1] !== written[1] || position[2] !== written[2]
+    );
   }
 
   /** Copies solver positions back onto the scene, converting world space into local. */
@@ -259,6 +304,10 @@ export class PhysicsSystem implements System {
         : body.origin;
 
       const position = entity.transform.position;
+      // Recorded whether or not anything changed: this is the value the *next* frame compares
+      // against to decide whether someone else moved the body, and a sleeping body that skips
+      // the write below still has to be recognised as untouched.
+      this.lastWritten.set(body.id, [local[0]!, local[1]!, local[2]!]);
       if (position[0] === local[0] && position[1] === local[1] && position[2] === local[2]) {
         continue;
       }

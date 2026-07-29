@@ -56,6 +56,52 @@ describe('PhysicsSystem', () => {
     expect(crate.transform.position[1]).toBeLessThan(0.52);
   });
 
+  /**
+   * The solver owns a falling crate's position — but only until something else writes one.
+   * It used to own it unconditionally, copying its own origin back over the transform every
+   * frame, so a gizmo drag, an Inspector edit or `entity.position = …` on anything with a
+   * RigidBody was undone before the next frame drew, with no message to say why.
+   */
+  it('honours a position written from outside while the body is simulating', () => {
+    engine.scene.add(floor());
+    const crate = boxBody('Crate', [0, 5, 0]);
+    engine.scene.add(crate);
+    engine.setMode('play');
+
+    run(engine, 3);
+    expect(crate.transform.position[1]).toBeLessThan(1);
+
+    // What the Inspector and the gizmo both do: write the transform and let physics catch up.
+    engine.scene.setTransform(crate.id, { position: [2, 8, -3] });
+    engine.tick(STEP);
+
+    // The body moved to where it was put, rather than being dragged back by the solver — and
+    // it is a step into falling from there, not pinned at the height it was dropped at. A crate
+    // that had already settled and gone to sleep is the case that catches the difference.
+    expect(crate.transform.position[0]).toBeCloseTo(2, 5);
+    expect(crate.transform.position[2]).toBeCloseTo(-3, 5);
+    expect(crate.transform.position[1]).toBeCloseTo(8, 2);
+    expect(crate.transform.position[1]).toBeLessThan(8);
+
+    run(engine, 0.5);
+    expect(crate.transform.position[1]).toBeLessThan(7);
+    expect(crate.transform.position[0]).toBeCloseTo(2, 5);
+    expect(crate.transform.position[2]).toBeCloseTo(-3, 5);
+  });
+
+  it('still lets the solver own the position nobody else touched', () => {
+    engine.scene.add(floor());
+    const crate = boxBody('Crate', [0, 5, 0]);
+    engine.scene.add(crate);
+    engine.setMode('play');
+
+    // Falls the whole way and settles: the frame-by-frame write-back is not mistaken for an
+    // outside edit and does not re-seed the body from a stale transform.
+    run(engine, 3);
+    expect(crate.transform.position[1]).toBeGreaterThan(0.48);
+    expect(crate.transform.position[1]).toBeLessThan(0.52);
+  });
+
   it('leaves a collider with no RigidBody exactly where it is', () => {
     const wall = boxBody('Wall', [0, 5, 0], false);
     engine.scene.add(wall);
