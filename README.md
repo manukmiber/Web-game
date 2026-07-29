@@ -111,8 +111,8 @@ it.
 see what subdivision did to the topology.
 
 **Layout** — three docks around the viewport, nothing floating over it. Hierarchy on the left,
-Inspector and Assistant sharing a tabbed dock on the right, and Console, Performance, Graphics
-and Hardware sharing a tabbed dock along the bottom. Every dock is resizable by dragging the
+Inspector and Assistant sharing a tabbed dock on the right, and Console, Performance, Statistics,
+Graphics, Audio and Hardware sharing a tabbed dock along the bottom. Every dock is resizable by dragging the
 divider — or by focusing it and using the arrow keys — collapsible from the arrow in its tab
 strip, and remembered per browser. Widths are re-fitted whenever the window changes size, so a
 layout saved on a large monitor opens on a laptop with the docks shrunk rather than with no
@@ -142,7 +142,12 @@ it again collapses its dock.
 | `F3` | Hierarchy | | `F7` | Graphics |
 | `F6` | Inspector | | `F8` | Performance |
 | `F2` | Assistant | | `F9` | Hardware |
-| `F4` | Console | | | |
+| `F4` | Console | | `F10` | Statistics |
+| `F1` | Audio | | | |
+
+`F1` rather than the next free function key: `F5`, `F11` and `F12` are reload, fullscreen and
+devtools, and the handler calls `preventDefault`. Taking fullscreen away from a 3D editor to
+save a keystroke is a bad trade; browser help is not.
 
 Coloured axis handles (X red, Y green, Z blue), rotation rings, scale boxes with a centre
 handle for uniform scale. Local/Global space toggle. Grid snapping for move and angle snapping
@@ -253,6 +258,15 @@ when you click it.
 numbers available: "1.4M triangles" tells you the scene is heavy, not that 1.1M of them are one
 over-subdivided rock you duplicated forty times.
 
+Every number in both panels is measured against the **wall clock**, not against the delta the
+simulation was handed. That is a distinction with teeth, and until v0.7.9.5 it was the wrong way
+round: the loop clamps its own delta at 100 ms so a backgrounded tab cannot teleport the physics,
+and it scales that delta for slow motion — so a counter reading it reported the clamp instead of
+the machine. A 250 ms hitch arrived as exactly 100 ms, which put a floor of 10 fps under the "min"
+and the 1% low and hid the hitch from the count that exists to find it. The two deltas are now
+separate all the way from `Clock` to `FrameStats`, which is also why the counter keeps reading 60
+while the game is paused and does not double when you halve the time scale.
+
 The fps chip in the status bar toggles a **viewport overlay** with the same headline numbers and
 the frame graph. It is the one thing allowed to sit over the canvas, and it earns it by being
 needed exactly when every dock is either closed or in the way: while you are playing.
@@ -314,7 +328,18 @@ of it.
 | `Space` | Jump |
 | `Shift` | Sprint |
 | `Esc` | Stop and restore |
+| `Ctrl+P` | Pause — freeze the clock without leaving Play |
 | `F9` | Hardware panel — live channel values, while playing |
+
+**Pause and time scale** sit next to the Play button and only exist while playing. Pause
+(`Ctrl+P`) freezes the clock without stopping the frame: the viewport keeps rendering, input and
+the hardware pump keep running, and scripts keep ticking with a `dt` of zero — which is what
+makes a pause menu something a script can write rather than something the engine has to provide.
+The speed menu runs the simulation between a tenth and four times real time; physics, scripts and
+animation all follow it, and the frame counter deliberately does not (see below). Both are
+readable and writable from a script as `time.paused` and `time.scale`, both are shown in the
+status bar whenever they are not at rest, and both are reset when a play session ends — a script
+that dropped into slow motion for a death animation must not follow you back into edit mode.
 
 In an **XY 2D** scene there is no forward and no yaw, so the controls collapse to one axis:
 `←`/`→` and `A`/`D` both walk, W and S do nothing, `Space` still jumps, and the character faces
@@ -363,6 +388,14 @@ script API instead: `audio.play(clip, { position, loop, bus })`, `audio.music(cl
 Three buses (`music`, `sfx`, `ambient`) each fade independently, under one master volume and mute.
 Every voice — component-driven or script-started — goes silent the moment Play stops, the same
 promise §6 makes for everything else a session accumulates.
+
+The **Audio panel** (`F1`) is the mixer in front of all that: master volume, mute, a fader per
+bus, and what the engine is actually doing — voices in flight, clips decoded, whether the browser
+is holding the context suspended until someone clicks, and every `AudioSource` in the scene with
+the entity it belongs to. Levels are not persisted, because how loud the score sits under the
+effects is a property of the game and not of the machine you are building it on. Balancing a mix
+by editing a script and pressing Play was the only way to do it until v0.7.9.5, and mixing is the
+most iterative thing in a game.
 
 **Save games** — the toolbar's *Save Game* and *Load Game* buttons, live only while playing. This
 is not the scene *Save*/*Load* pair from the Authoring section above — that autosaves what you
@@ -420,9 +453,17 @@ Full reference, including how to add a tool and what the sandbox does *not* prot
 
 An Arduino can drive a scene, and a scene can drive it back. Press **F9** for the hardware panel.
 
-**Connecting** — **USB Serial** over Web Serial (Chrome and Edge, from a click), **WebSocket**
-for a networked board or a bridge process, or **Simulated**: a board made of sliders, so the
-bindings can be built and tested before any hardware arrives.
+**Connecting** — **USB Serial** over Web Serial (Chrome and Edge, from a click), **Bluetooth** over
+Web Bluetooth for a board with no cable, **WebSocket** for a networked board or a bridge process,
+or **Simulated**: a board made of sliders, so the bindings can be built and tested before any
+hardware arrives. The simulated boards come in profiles — a 10-bit Uno, a 12-bit ESP32, one that
+is all buttons — because a binding written against a 1023-scale ADC is not the binding an ESP32
+needs, and finding that out when the post arrives is the wrong time.
+
+**Watching it** — the panel carries a serial monitor and a plotter. The monitor is the raw line
+traffic in both directions, which is the first thing you want when a rig has gone quiet and the
+second thing you want when a binding is firing and nothing is moving. The plotter graphs any
+channel over time, which is how you see that a stick is noisy rather than mis-scaled.
 
 **The protocol** is lines of ASCII, both directions — `A0=512 D2=1` in, `D13=255` out — which is
 a protocol you can debug with the Arduino IDE's own serial monitor and type by hand to test a
@@ -509,9 +550,9 @@ Materials: an asset browser, so the seven texture slots can be filled by clickin
 editing a scene file. Everything under them is in place; the browser is the missing half.
 
 Audio: the same asset-browser gap, one level down — `AudioSource.clip` is a URL because there is
-no audio entry in `AssetStore` yet, the way there already is for textures. And a mixer panel: the
-buses, master volume and mute all exist and are driven from scripts today, with no UI in front of
-them yet.
+no audio entry in `AssetStore` yet, the way there already is for textures. The mixer itself landed
+in v0.7.9.5; what it still cannot do is remember a mix, which wants the levels to live in the
+scene rather than in the session.
 
 Hardware: the Gamepad API as a third device kind — the same channel model, a different pipe —
 and a serial-to-WebSocket bridge for browsers without Web Serial.
@@ -1026,6 +1067,86 @@ governs). A scene file or a screenshot showing it would settle what the third is
 
 Thirty-eight new tests, covering the shadow frame's placement and texel snapping, the census with
 geometry that belongs to no entity, the drawer breakpoint, and the stick response curve.
+
+### v0.7.9.5 — the features that were built but not plugged in
+
+A release with no new subsystem in it. The brief was to go looking for things the engine can do
+that nothing in the editor can reach, and for bugs that had survived because they only appear
+under conditions nobody hits on purpose. Both turned out to be the same shape of problem: code
+that is correct in isolation and unreachable, or unreachable-*ly* wrong.
+
+**The frame counter was measuring the wrong clock.** `Clock` produces a delta the simulation can
+trust — clamped at 100 ms so a backgrounded tab cannot teleport a rigid body through a wall,
+multiplied by the time scale, and zero while paused. `Engine.tick` handed that same number to
+`FrameStats`, which exists to report what the *machine* did. So every frame slower than 100 ms
+was recorded as exactly 100 ms: `minFps` could not go below 10 whatever happened, `stutterCount`
+missed the hitches it was written to count, and the 1% low — the one statistic in the panel that
+justifies the other twelve — was pinned away from the truth in precisely the situation you would
+open the panel to investigate. It is a good example of a bug that is invisible until it matters:
+at 60 fps the two deltas are the same number, and every number in the panel is right.
+
+`Clock` now reports both — `tick()` for what the world advances by, `rawDelta` for how long the
+frame really took — and nothing but `FrameStats` reads the second. Which is also why the counter
+now keeps reading 60 while the game is paused, and does not claim to have doubled when you halve
+the speed.
+
+**The clock had no controls and no script access at all.** `pause`, `resume`, `setTimeScale`,
+`getTimeScale` and `smoothDelta` had been on the Engine since v0.7.9 with not one caller: no
+button, no key, no script API. Every one of them now has all three. Pause is `Ctrl+P` and a
+button beside Play; the speed menu runs 0.1× to 4×; scripts read and write `time.paused` and
+`time.scale` and read `time.smoothDt`. Both directions move the same value — a script that drops
+into slow motion moves the toolbar's menu, because the store follows a `timeChanged` event rather
+than keeping its own copy. And both reset when a play session ends, for the same reason health and
+held keys do: a session that finished in slow motion must not hand a slowed editor back.
+
+`setTimeScale` clamps to `0..8`, which it did not before. A negative scale runs the solver
+backwards through collision responses written on the assumption that it does not, and past 8 a
+single step at the frame cap is long enough for a fast body to pass clean through a thin one.
+
+**The mixer existed and had no faders.** Master volume, mute and the three bus levels shipped with
+the audio engine in v0.7.7, reachable only as `audio.setBusVolume('music', 0.4)` from a script —
+which turns balancing a mix, the most iterative job in a game, into an edit-and-press-Play loop.
+There is an **Audio panel** (`F1`) now: the faders, plus what the engine is actually doing —
+voices in flight, clips decoded, whether the browser is holding the context suspended waiting for
+a click, and every `AudioSource` in the scene with a row that selects its entity. The status
+readout earns its place: when nothing is audible the useful question is never "is the volume up".
+
+**Two audio bugs that could not survive a second attempt.** A voice does not exist as sound until
+its clip has decoded, and everything said to it in between has to be *held* — which `volume` was,
+and the other two were not.
+
+- `playMusic(url, { fadeSeconds })` reached straight for the voice's gain node to schedule the
+  ramp. On the first play of a track there is no gain node yet, so the fade was silently skipped;
+  on every play afterwards the clip was cached, the node existed, and the crossfade worked. A
+  crossfade that only works once the file is warm is worse than none, because reproducing the
+  failure means reloading the page.
+- `handle.setPosition(...)` before the decode finished was dropped on the floor, against a doc
+  comment one function above promising it would be held. A script that plays a footstep and places
+  it in the next statement got the sound at wherever the entity had been standing when `play` ran.
+
+Both are now recorded on the voice and applied in `start()`, which reads the voice rather than the
+`PlayOptions` it was created from — the options describe one instant, and the voice describes now.
+
+**The status bar was keeping its own list of panels.** ARCHITECTURE §14.2 says adding a panel is
+one entry in `layout.ts` plus a render case, and three consumers fall out of it. Two of them did;
+the status bar had a hand-written copy beside it, which made the claim quietly false and would
+have left the new Audio panel reachable by tab and by key but missing from the one row whose whole
+job is to be the index of what exists. It is derived now, and a test walks every dock to keep it
+that way.
+
+Also: the README's hardware section never got v0.7.9's Bluetooth, board profiles, serial monitor
+or plotter, all of which shipped and were documented only in `docs/HARDWARE.md`; the Statistics
+panel's `F10` was missing from the key table; `releaseMaterial` was a wrapper nothing called; and
+the page had no favicon, so every single load logged a 404 into the console — which is a good way
+to teach people that the console is full of noise worth ignoring.
+
+**No schema change.** Nothing here touches the scene format: the two new controls are session
+state, the mixer is session state, and the frame counter never had any.
+
+Twenty new tests, covering the two deltas through `Clock` and `Engine`, the script-facing clock
+including the clamp and the reset on Stop, the four things a voice has to remember across the gap
+between `play` returning and a clip decoding, and two invariants over the panel description — that
+every dock is walked, and that no panel is bound to a key the browser needs.
 
 ## Layout
 

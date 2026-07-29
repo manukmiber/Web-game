@@ -16,6 +16,15 @@ import '../components';
 
 export type EngineMode = 'edit' | 'play';
 
+/**
+ * Ceiling on `setTimeScale`.
+ *
+ * Eight times real speed at the 100 ms frame cap is a 0.8 s simulation step, which is already
+ * well past the point where a fast body passes through a thin one between two frames. Anything
+ * higher is not fast-forward, it is a different simulation.
+ */
+export const MAX_TIME_SCALE = 8;
+
 // Re-exported so a system can declare its stage without reaching into the ECS layer for a type.
 export type { SystemStage };
 
@@ -80,6 +89,14 @@ export interface System {
 
 interface EngineEvents {
   modeChanged: { mode: EngineMode };
+  /**
+   * The clock was paused, resumed or rescaled — by the toolbar, by a script, by anything.
+   *
+   * An event rather than a flag the UI polls, because both ends can move it: a script that sets
+   * `time.scale = 0.2` for a slow-motion kill has to leave the toolbar's readout telling the
+   * truth, and a toolbar that only ever wrote would show 1x over a game running at a fifth speed.
+   */
+  timeChanged: { paused: boolean; timeScale: number };
   /** Emitted every frame after systems tick — the viewport renders off this. */
   afterUpdate: { dt: number };
   /** Ordering constraints the scheduler could not satisfy. The console surfaces these. */
@@ -222,7 +239,11 @@ export class Engine {
     this.clock.reset(performance.now());
     const frame = (now: number) => {
       if (!this.running) return;
-      this.tick(this.clock.tick(now));
+      // Two deltas out of one timestamp: what the world advances by, and how long the frame
+      // really took. They are the same number until something pauses, scales or stalls — and
+      // those are exactly the moments a frame counter must not be reading simulated time.
+      const dt = this.clock.tick(now);
+      this.tick(dt, this.clock.rawDelta);
       this.frameHandle = requestAnimationFrame(frame);
     };
     this.frameHandle = requestAnimationFrame(frame);
@@ -238,22 +259,46 @@ export class Engine {
    * Freezes the frame clock without stopping the loop — `tick` keeps being called with dt 0,
    * so rendering and the hardware pump stay live while gameplay time stands still. Distinct
    * from `stop`, which also cancels the `requestAnimationFrame` chain.
+   *
+   * That distinction is the whole reason this is not just "stop the loop": a paused game still
+   * has to draw, still has to answer the gizmos, and still has to show a live frame rate — the
+   * frame counter reads real elapsed time (`Clock.rawDelta`) precisely so it keeps working here.
    */
   pause(): void {
+    if (this.clock.isPaused) return;
     this.clock.pause();
+    this.events.emit('timeChanged', { paused: true, timeScale: this.clock.timeScale });
   }
 
   resume(): void {
+    if (!this.clock.isPaused) return;
     this.clock.resume(performance.now());
+    this.events.emit('timeChanged', { paused: false, timeScale: this.clock.timeScale });
+  }
+
+  setPaused(paused: boolean): void {
+    if (paused) this.pause();
+    else this.resume();
   }
 
   get paused(): boolean {
     return this.clock.isPaused;
   }
 
-  /** Scales every non-paused dt — 0.5 for slow motion, 2 for fast-forward. 1 is real time. */
+  /**
+   * Scales every non-paused dt — 0.5 for slow motion, 2 for fast-forward. 1 is real time.
+   *
+   * Clamped rather than trusted, because the two values outside the range are both traps: a
+   * negative scale runs the solver backwards through collision responses that assume time moves
+   * forward, and a very large one multiplies the frame cap into a single step big enough to
+   * tunnel a body through a wall. Zero is allowed and means exactly what pausing means, so a
+   * script can hold time still without reaching for a second concept.
+   */
   setTimeScale(scale: number): void {
-    this.clock.timeScale = scale;
+    const clamped = Number.isFinite(scale) ? Math.min(Math.max(scale, 0), MAX_TIME_SCALE) : 1;
+    if (clamped === this.clock.timeScale) return;
+    this.clock.timeScale = clamped;
+    this.events.emit('timeChanged', { paused: this.clock.isPaused, timeScale: clamped });
   }
 
   getTimeScale(): number {
@@ -265,7 +310,15 @@ export class Engine {
     return this.clock.smoothDelta;
   }
 
-  tick(dt: number): void {
+  /**
+   * One frame: pump the devices, run the systems, flush transforms, render, measure.
+   *
+   * `realDt` is the wall-clock length of the frame and defaults to `dt`, which is right for
+   * every caller that drives the loop by hand (tests, a headless host) where the two cannot
+   * differ. The `requestAnimationFrame` loop passes both, because there they routinely do —
+   * see `Clock.rawDelta`.
+   */
+  tick(dt: number, realDt: number = dt): void {
     this.stats.beginFrame();
     // Serial arrives whenever the USB stack feels like it. Applying it here, once, is what
     // gives a frame one consistent view of the rig instead of a stick that moves mid-tick —
@@ -288,7 +341,9 @@ export class Engine {
     // Rendering happens inside this emit, so it is inside the measured window.
     this.events.emit('afterUpdate', { dt });
     this.stats.endFrame();
-    this.stats.record(dt);
+    // The real elapsed time, not `dt`: the counter reports what the machine did, and the whole
+    // value of a 1% low is that it sees the frames the simulation's own clamp hides.
+    this.stats.record(realDt);
     // Edges (`wasPressed`) last exactly one tick, so this has to be after the systems ran.
     this.input.endFrame();
     this.hardware.endFrame();
@@ -314,6 +369,12 @@ export class Engine {
     this.mode = mode;
     this.game.reset();
     this.input.clear();
+    // Pause and time scale are session state in exactly the way health and held keys are: a
+    // script that dropped into slow motion for a death animation, or a play session left paused
+    // on the last frame someone looked at, must not follow the editor back into edit mode. That
+    // is how you end up dragging a gizmo through treacle and filing it as a rendering bug.
+    this.resume();
+    this.setTimeScale(1);
     // Bodies describe entities that are about to be restored from the snapshot, so every one of
     // them is stale — including their velocities, which are the clearest example of state a
     // play session accumulates outside the scene.

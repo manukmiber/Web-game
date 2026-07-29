@@ -342,6 +342,26 @@ function of dt in, which is what keeps `Engine.test.ts` able to drive frames by 
 `requestAnimationFrame` in sight — `Clock` is the thing that turns real timestamps into that dt,
 and it is tested the same way, by feeding it timestamps and reading back what it decided.
 
+**One timestamp, two deltas.** `Clock` reports `rawDelta` beside the dt it returns, and the
+distinction is not a nicety — v0.7.9.5 fixed a real bug by drawing it. `tick()`'s return value
+answers *how much world time passed*, and it is deliberately not the wall clock: it is capped at
+`MAX_FRAME_DELTA`, scaled by `timeScale`, and zero while paused, all so a stalled tab or a slow
+motion effect cannot make the solver take a step it was not designed for. Frame *measurement* asks
+the opposite question — *how long did this frame take* — and feeding it the simulated number makes
+the counter agree with itself and disagree with the machine. A 250 ms hitch arrived at `FrameStats`
+as exactly 100 ms, so the reported minimum could not fall below 10 fps whatever happened and the
+1% low was bounded away from the truth in exactly the case worth measuring. So `Engine.tick` takes
+both (`tick(dt, realDt = dt)`, defaulted so hand-driven callers are unaffected), simulation reads
+the first, and `FrameStats` reads the second and nothing else does.
+
+`pause` and `timeScale` are also **session state**, cleared by `setMode` alongside `game.reset()`
+and `input.clear()`. A script that slowed time for a death animation, or a session left paused on
+the frame someone was staring at, must not follow the editor back into edit mode — the symptom
+would be gizmo drags that feel like treacle and look like a rendering bug. Both are surfaced
+through a `timeChanged` event rather than polled, because both ends write them: the toolbar's
+controls and a script's `time.scale = 0.2` are the same value, and a UI keeping its own copy is a
+UI that will eventually lie about what the engine is doing.
+
 Entering Play mode is: snapshot the scene → flip `mode` → the gameplay systems start ticking →
 render through the scene's own camera entity instead of the editor camera. Exiting restores the
 snapshot. **No engine rewrite, no second renderer, no second scene graph.**
@@ -1023,6 +1043,13 @@ consumers are built from that one description — the tab strips (`layout/Dock.t
 toggles, and the keyboard handler. Adding a panel is one entry there plus a case in the dock's
 render switch; it is then reachable by mouse, by tab and by key without touching any of the three.
 
+That was two-thirds true until v0.7.9.5: the status bar kept a hand-written array of panel ids
+beside the description rather than deriving one, so a new panel arrived in its tab strip and under
+its function key and was absent from the row that exists to say what there is. It flattens
+`DOCK_ORDER` over `DOCK_PANELS` now, and `layout.test.ts` checks that walking the docks reaches
+every panel — a duplicated list is not caught by types, only by noticing, and this one was not
+noticed for four versions.
+
 The alternative is what the code did before: a `visible` flag per panel on the store, a setter per
 flag, a close button per panel, and a branch per panel in `useShortcuts` — duplicated across its
 edit-mode and play-mode paths, which is exactly why the panel keys had come to behave differently
@@ -1406,6 +1433,15 @@ fourth bus, because "turn the music down" and "mute everything" are different ge
 reaches for independently, and a mute implemented as one more bus would have to remember to
 re-apply itself to a bus fader touched while muted.
 
+The editor's Audio panel drives these directly and keeps no copy of them: every fader writes to
+the engine and then re-reads `AudioEngine.snapshot()`. A control holding its own value is a
+control that disagrees with what you are hearing the moment a script moves the same level, and
+this is a level scripts are expected to move. `snapshot()` is one call rather than five getters
+for the same reason: a panel that read `voices` and `state` a frame apart could report "0 voices,
+running" about a scene that is audibly playing something. The levels are session state, not
+persisted — how loud the score sits under the effects belongs to the game, and the place for it is
+the scene, once there is a component to put it in.
+
 ### 18.3 Spatial audio reads the same world transform the renderer does
 
 A sound started with a `position` gets a `PannerNode`; the Web Audio listener is moved every
@@ -1417,7 +1453,30 @@ for things that only read: by the time it runs, the character has moved and the 
 reacted, so a sound started this tick and a listener that just turned a corner both read
 correctly.
 
-### 18.4 A component for ambience, a script API for events
+### 18.4 A voice is an intention before it is a sound
+
+`play()` returns a handle synchronously, and the clip behind it may still be fetching. That is the
+right contract — the same one `AssetStore` gives textures — but it puts a gap in the middle of
+every voice's life, and everything a caller says during that gap has to be *held* on the voice and
+applied when the nodes finally exist. `volume` always was. Two things were not, and both produced
+the same class of bug: correct on the second play of a clip and wrong on the first, which is the
+hardest kind to reproduce because reproducing it means reloading the page.
+
+`playMusic(url, { fadeSeconds })` reached for the voice's `GainNode` to schedule the ramp, and on
+a first play there is no `GainNode` yet — so the crossfade was skipped exactly when a track was
+new and honoured once it was cached. `handle.setPosition(...)` was dropped when the `PannerNode`
+did not exist yet, against a doc comment promising it would be kept, so a script that played a
+footstep and placed it in the next statement got the sound at wherever the entity had been when
+`play` ran.
+
+The fix is one idea applied twice: the voice carries `fadeIn` and `position` the way it already
+carried `volume`, and `start()` builds its node graph from *the voice* rather than from the
+`PlayOptions` it was created with. Options describe one instant; the voice describes now. The
+distinction between "this voice is 2D" and "this voice has not been placed yet" is kept as
+`position === null` versus a value, so `setPosition` on a UI blip stays the documented no-op
+instead of quietly turning it into a spatial sound halfway through.
+
+### 18.5 A component for ambience, a script API for events
 
 `AudioSource` is for the sound that belongs to an object for as long as the object exists — a
 torch crackling, a machine's idle hum — driven by `autoplay` and stopped automatically when the
@@ -1432,7 +1491,7 @@ component earns yet. It plays from wherever a texture URL already can (a pasted 
 the host serves); an audio asset browser is future work, the same gap the README's Materials
 section already admits for textures.
 
-### 18.5 A save game is not the Play-mode snapshot, even though both call `scene.load`
+### 18.6 A save game is not the Play-mode snapshot, even though both call `scene.load`
 
 §6 already snapshots the scene on entering Play and restores it on Stop, so it is tempting to
 reach for the same machinery for "save the game". They are not the same operation. The Play

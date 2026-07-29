@@ -615,6 +615,30 @@ export interface TimeSource {
   frame: number;
   /** The physics step, for anything that needs to match `fixedUpdate`. */
   fixedDt: number;
+  /**
+   * `dt` with frame-to-frame jitter filtered out.
+   *
+   * For anything that would rather be smooth than exact — a follow camera, a lerped HUD bar.
+   * Never for physics or for a timer, which have to be faithful to real elapsed time.
+   */
+  smoothDt: number;
+  /** The engine's time scale. 1 is real time, 0.5 is half speed. */
+  scale: number;
+  /** Whether the clock is frozen. `dt` is 0 for every frame this is true. */
+  paused: boolean;
+}
+
+/**
+ * The write side of the clock, so a script can slow time down as well as read it.
+ *
+ * Separate from `TimeSource` because the two have different owners: the ScriptSystem fills the
+ * source each tick from whatever the engine currently is, while these reach back into the engine
+ * and change it. Optional, so a `ScriptClock` can be built over a bare source in a test without
+ * standing up an Engine to satisfy it.
+ */
+export interface TimeControl {
+  setScale(scale: number): void;
+  setPaused(paused: boolean): void;
 }
 
 interface Timer {
@@ -639,7 +663,10 @@ export class ScriptClock {
   private timers: Timer[] = [];
   private nextId = 1;
 
-  constructor(private readonly source: TimeSource) {}
+  constructor(
+    private readonly source: TimeSource,
+    private readonly control: TimeControl | null = null,
+  ) {}
 
   get dt(): number {
     return this.source.dt;
@@ -655,6 +682,40 @@ export class ScriptClock {
 
   get fixedDt(): number {
     return this.source.fixedDt;
+  }
+
+  /** `dt` with jitter smoothed out. For a follow camera, never for a timer. */
+  get smoothDt(): number {
+    return this.source.smoothDt;
+  }
+
+  /**
+   * Time scale, readable and writable: `time.scale = 0.2` is the bullet-time line.
+   *
+   * Read from the source rather than from the engine so it reports what *this frame* ran at,
+   * which is the number a script reasoning about its own `dt` needs. Written straight through
+   * to the engine, which clamps it — see `Engine.setTimeScale` for why the range is not open.
+   */
+  get scale(): number {
+    return this.source.scale;
+  }
+
+  set scale(value: number) {
+    this.control?.setScale(value);
+  }
+
+  /**
+   * Freezes the world without stopping the frame.
+   *
+   * Rendering, input and the hardware pump all keep going, so this is the pause a menu wants:
+   * scripts still tick with a `dt` of zero and can watch for the key that unpauses them.
+   */
+  get paused(): boolean {
+    return this.source.paused;
+  }
+
+  set paused(value: boolean) {
+    this.control?.setPaused(value);
   }
 
   /** Runs `run` once, `seconds` from now. Returns a handle for `cancel`. */

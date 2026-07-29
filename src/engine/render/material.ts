@@ -237,10 +237,6 @@ export const materialCache = new ResourceCache<THREE.Material>(
   disposeMaterial,
 );
 
-export function releaseMaterial(key: string): void {
-  materialCache.release(key);
-}
-
 /**
  * Re-resolves texture slots on every live material referencing `assetId`.
  *

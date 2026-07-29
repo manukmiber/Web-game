@@ -37,6 +37,8 @@
 
   --good: #6cc76c;
   --warn: #e2b455;
+  /* The `--accent-dim` of `--warn`: a background dark enough to carry the foreground colour. */
+  --warn-dim: #4a3a1c;
   --danger: #f0736e;
 
   --axis-x: #f0736e;
@@ -740,6 +742,28 @@ code {
   color: #ffe4e2;
 }
 
+/*
+  Pause and speed sit next to Play and must not compete with it. Play is the decision; these two
+  adjust a session already running, so they stay the toolbar's default weight and only light up
+  when they are holding the clock away from its normal state.
+*/
+.play-pause {
+  min-width: 30px;
+  font-size: 10px;
+  letter-spacing: 1px;
+}
+
+.play-pause.active:not(:disabled) {
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  color: var(--text-strong);
+}
+
+.time-scale {
+  min-width: 58px;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ------------------------------------------------------------ status bar */
 
 .status-bar {
@@ -827,6 +851,12 @@ code {
 .status-chip.playing {
   background: var(--accent-dim);
   color: var(--text-strong);
+}
+
+/* A held clock reads as a warning, not as an error: nothing is wrong, nothing is moving. */
+.status-chip.playing.paused {
+  background: var(--warn-dim);
+  color: var(--warn);
 }
 
 .status-chip.fps.good {
@@ -2166,6 +2196,64 @@ code {
 .stats-table tr.unselectable {
   cursor: default;
   color: var(--text-dim);
+}
+
+/*
+ * A row whose subject is switched off — a disabled Audio Source.
+ *
+ * Dimmed rather than hidden: "the sound is not playing because its component is off" is the
+ * answer you came to the panel for, and a row that vanishes cannot give it.
+ */
+.stats-table tr.disabled td {
+  color: var(--text-dim);
+  text-decoration: line-through;
+  text-decoration-color: var(--border-strong);
+}
+
+/* ---------------------------------------------------------------- audio */
+
+/*
+ * A URL is the one cell here that has no bounded width, so it is the one cell allowed to
+ * truncate. Everything else in the row is a word or a number and stays legible at any dock size.
+ */
+.stats-table td.clip-cell {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Each bus caption on its own line inside one shared note block. */
+.bus-note {
+  display: block;
+}
+
+.bus-note strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/*
+ * The context state, coloured by whether it is something to act on.
+ *
+ * `suspended` is amber because it is the one state with a button next to it, `unavailable` is
+ * red because nothing will help, and the rest are unremarkable by design.
+ */
+.audio-state {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.audio-state.running {
+  color: var(--good);
+}
+
+.audio-state.suspended {
+  color: var(--warn);
+}
+
+.audio-state.unavailable,
+.audio-state.closed {
+  color: var(--danger);
 }
 
 /*

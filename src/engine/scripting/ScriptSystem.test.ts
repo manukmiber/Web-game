@@ -226,6 +226,85 @@ describe('ScriptSystem', () => {
     engine.setMode('edit');
     expect(engine.scene.expect(entity.id).transform.position[0]).toBe(0);
   });
+
+  describe('time', () => {
+    it('reads the engine clock through `time`', () => {
+      const entity = scripted(
+        `function update() {
+           props.scale = time.scale;
+           props.paused = time.paused;
+           props.smooth = time.smoothDt;
+         }`,
+        { scale: 0, paused: false, smooth: 0 },
+      );
+      engine.scene.add(entity);
+      engine.setMode('play');
+      engine.setTimeScale(0.5);
+      engine.tick(STEP);
+
+      expect(scriptOf(entity).props.scale).toBe(0.5);
+      expect(scriptOf(entity).props.paused).toBe(false);
+    });
+
+    it('lets a script drop into slow motion and come back', () => {
+      const entity = scripted(
+        `function update() {
+           if (time.frame === 1) time.scale = 0.25;
+           if (time.frame === 3) time.scale = 1;
+         }`,
+      );
+      engine.scene.add(entity);
+      engine.setMode('play');
+
+      engine.tick(STEP);
+      expect(engine.getTimeScale()).toBe(0.25);
+      engine.tick(STEP);
+      engine.tick(STEP);
+      expect(engine.getTimeScale()).toBe(1);
+    });
+
+    it('lets a script pause the world, and still runs while it is paused', () => {
+      const entity = scripted(
+        `function update() {
+           props.ticks += 1;
+           if (props.ticks === 1) time.paused = true;
+           if (props.ticks === 3) time.paused = false;
+         }`,
+        { ticks: 0 },
+      );
+      engine.scene.add(entity);
+      engine.setMode('play');
+
+      engine.tick(STEP);
+      expect(engine.paused).toBe(true);
+      // A paused world still ticks its scripts — that is what makes a pause menu possible.
+      engine.tick(0);
+      engine.tick(0);
+      expect(engine.paused).toBe(false);
+      expect(scriptOf(entity).props.ticks).toBe(3);
+    });
+
+    it('clamps a scale a script should not have asked for', () => {
+      const entity = scripted('function update() { if (time.frame === 1) time.scale = -4; }');
+      engine.scene.add(entity);
+      engine.setMode('play');
+      engine.tick(STEP);
+
+      // Backwards time would run the solver through collision responses that assume otherwise.
+      expect(engine.getTimeScale()).toBe(0);
+    });
+
+    it('leaves the editor at real speed when a play session ends slowed or paused', () => {
+      engine.scene.add(scripted('function start() { time.scale = 0.1; time.paused = true; }'));
+      engine.setMode('play');
+      engine.tick(STEP);
+      expect(engine.paused).toBe(true);
+
+      engine.setMode('edit');
+      expect(engine.paused).toBe(false);
+      expect(engine.getTimeScale()).toBe(1);
+    });
+  });
 });
 
 /**

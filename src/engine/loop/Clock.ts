@@ -28,6 +28,7 @@ export class Clock {
   private started = false;
   private paused = false;
   private smoothed = 0;
+  private raw = 0;
   private readonly maxDelta: number;
   private readonly smoothing: number;
   /** Multiplies every non-paused dt. 1 = real time, 0.5 = half speed. Does not affect `isPaused`. */
@@ -43,6 +44,7 @@ export class Clock {
     this.lastTime = nowMs;
     this.started = true;
     this.smoothed = 0;
+    this.raw = 0;
   }
 
   pause(): void {
@@ -69,6 +71,9 @@ export class Clock {
     // than running the frame backwards.
     const raw = Math.max((nowMs - this.lastTime) / 1000, 0);
     this.lastTime = nowMs;
+    // Recorded before the clamp, the scale and the pause check, because every one of those is a
+    // statement about *simulated* time and `rawDelta`'s only job is to report the wall clock.
+    this.raw = raw;
     if (this.paused) return 0;
     const dt = Math.min(raw, this.maxDelta) * this.timeScale;
     this.smoothed =
@@ -81,5 +86,24 @@ export class Clock {
   /** The smoothed reading from the last `tick`, for consumers that want jitter filtered out. */
   get smoothDelta(): number {
     return this.smoothed;
+  }
+
+  /**
+   * Seconds of *real* time the last `tick` covered — unclamped, unscaled, and still counted
+   * while paused.
+   *
+   * The distinction matters more than it sounds. `tick()`'s return value answers "how much
+   * world time passed", which is the question a simulation asks and is deliberately a lie about
+   * the wall clock: it is capped at `maxDelta`, multiplied by `timeScale`, and zero while
+   * paused. Frame measurement asks the opposite question — "how long did this frame actually
+   * take" — and using the simulated number for it makes the counter agree with itself and
+   * disagree with reality. A 250 ms hitch reads as exactly 100 ms (the cap), so the 1% low
+   * bottoms out at `1/maxDelta` fps and the hitch count under-reports; at half speed every
+   * frame reads half as long and the frame rate appears to double.
+   *
+   * So `FrameStats` reads this and nothing else reads it. See `Engine.tick`.
+   */
+  get rawDelta(): number {
+    return this.raw;
   }
 }

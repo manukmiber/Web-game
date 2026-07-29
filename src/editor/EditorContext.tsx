@@ -49,7 +49,7 @@ export interface EditorContextValue {
 const EditorContext = createContext<EditorContextValue | null>(null);
 
 /** Reported to MCP clients in `initialize`, so a client can tell which build it is driving. */
-const EDITOR_VERSION = '0.7.9';
+const EDITOR_VERSION = '0.7.9.5';
 
 export function EditorProvider({ children }: { children: ReactNode }) {
   // Refs rather than state: these are created once and must survive every re-render, and
@@ -202,6 +202,11 @@ export function EditorProvider({ children }: { children: ReactNode }) {
         store.clearSelection();
       }),
       engine.events.on('modeChanged', ({ mode }) => store.setPlaying(mode === 'play')),
+      // Pause and time scale can be moved from either end — the toolbar's buttons or a script's
+      // `time.scale = 0.2` — so the store follows the engine rather than the other way round.
+      engine.events.on('timeChanged', ({ paused, timeScale }) =>
+        useEditorStore.getState().setClock(paused, timeScale),
+      ),
       // A system ordering constraint the scheduler could not satisfy. It runs the frame anyway
       // in a defensible order, so without this the only symptom is a system that reads
       // last frame's world — which looks like input lag, not like a scheduling bug.

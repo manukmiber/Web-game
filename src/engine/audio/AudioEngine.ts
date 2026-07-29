@@ -40,17 +40,57 @@ export interface MusicOptions {
   fadeSeconds?: number;
 }
 
+/**
+ * A reading of the whole engine, for the mixer panel.
+ *
+ * `state` distinguishes three things that all sound like "no audio" from the outside and want
+ * completely different responses: `idle` means nothing has asked for a context yet and the first
+ * `play` will make one, `suspended` means the browser is waiting for a user gesture and the
+ * panel should offer one, and `unavailable` means there is no Web Audio here at all and no
+ * amount of clicking will change that.
+ */
+export interface AudioSnapshot {
+  voices: number;
+  musicPlaying: boolean;
+  clipsLoaded: number;
+  clipsLoading: number;
+  masterVolume: number;
+  muted: boolean;
+  busVolumes: Record<AudioBus, number>;
+  state: 'idle' | 'running' | 'suspended' | 'closed' | 'unavailable';
+}
+
 export interface AudioEngineEvents {
   /** A clip failed to fetch or decode. Scripts and the console both want to know, nothing throws. */
   loadError: { url: string; message: string };
 }
 
+/**
+ * A voice, which spends its first moments as an intention rather than a sound.
+ *
+ * `play()` returns before the clip has decoded, so everything the caller says in the meantime —
+ * a volume, a fade, a new position — has to be *held* rather than applied, and applied when the
+ * nodes finally exist. `volume` was always held that way; `fadeIn` and `position` are here
+ * because they were not, and the resulting bug was invisible on the second play of any clip and
+ * present on the first.
+ */
 interface Voice {
   id: number;
   clipId: string;
   bus: AudioBus;
   loop: boolean;
   volume: number;
+  /** Seconds to ramp up from silence when the voice starts. 0 for a hard start. */
+  fadeIn: number;
+  /**
+   * Where the sound is, or null for a 2D one.
+   *
+   * Null is a *kind*, not a missing value: a voice started without a position has no panner and
+   * never gains one, so `setPosition` on it stays the documented no-op rather than quietly
+   * turning a UI blip into a spatial sound halfway through.
+   */
+  position: Vec3 | null;
+  spatial: Omit<PlayOptions, 'position' | 'bus' | 'volume' | 'loop'>;
   /** Set once `stop()` is called before the clip finished decoding, so it never starts at all. */
   cancelled: boolean;
   source: AudioBufferSourceNode | null;
@@ -206,6 +246,13 @@ export class AudioEngine {
       bus: options.bus ?? 'sfx',
       loop: options.loop ?? false,
       volume: options.volume ?? 1,
+      fadeIn: 0,
+      position: options.position ? [...options.position] : null,
+      spatial: {
+        refDistance: options.refDistance,
+        maxDistance: options.maxDistance,
+        rolloffFactor: options.rolloffFactor,
+      },
       cancelled: false,
       source: null,
       gain: null,
@@ -215,12 +262,12 @@ export class AudioEngine {
 
     const cached = this.buffers.get(url);
     if (cached) {
-      this.start(voice, cached, options.position, options);
+      this.start(voice, cached);
     } else {
       void this.loadClip(url).then(() => {
         if (voice.cancelled) return;
         const buffer = this.buffers.get(url);
-        if (buffer) this.start(voice, buffer, options.position, options);
+        if (buffer) this.start(voice, buffer);
         else this.voices.delete(id);
       });
     }
@@ -245,7 +292,12 @@ export class AudioEngine {
     this.musicVoiceId = handle.id;
 
     const voice = this.voices.get(handle.id);
-    if (voice && fade > 0) this.fadeVoiceIn(voice, fade);
+    // Requested rather than performed. A track being played for the first time has not decoded
+    // yet, so there is no gain node to ramp — and the old code, which reached straight for one,
+    // silently skipped the fade on exactly that play and honoured it on every play afterwards.
+    // A crossfade that works only once the file is warm is worse than none: it is a bug you
+    // cannot reproduce, because reproducing it means reloading the page.
+    if (voice && fade > 0) this.requestFadeIn(voice, fade);
     return handle;
   }
 
@@ -311,8 +363,13 @@ export class AudioEngine {
 
   setVoicePosition(id: number, position: Vec3): void {
     const voice = this.voices.get(id);
-    if (!voice?.panner) return;
-    this.applyPannerPosition(voice.panner, position);
+    // `position === null` means the caller asked for a 2D sound, and moving one is meaningless.
+    // A voice that is merely still decoding is a different case, and the one that used to be
+    // dropped here: a script that plays a footstep and places it in the next statement had its
+    // placement thrown away, and heard the sound at wherever the entity stood when `play` ran.
+    if (!voice || voice.position === null) return;
+    voice.position = [...position];
+    if (voice.panner) this.applyPannerPosition(voice.panner, position);
   }
 
   // --------------------------------------------------------------------- buses
@@ -343,6 +400,33 @@ export class AudioEngine {
 
   isMuted(): boolean {
     return this.muted;
+  }
+
+  // ------------------------------------------------------------------ readouts
+
+  /**
+   * What the mixer shows: voices in flight, clips decoded, and what the context is doing.
+   *
+   * One call rather than four getters because a panel polling on a timer wants a consistent
+   * picture — reading `activeVoices` and `contextState` a frame apart is how a readout comes to
+   * say "0 voices, running" about a scene that is audibly playing something.
+   */
+  snapshot(): AudioSnapshot {
+    return {
+      /** Pending voices included: one that is still decoding is a sound the session is making. */
+      voices: this.voices.size,
+      musicPlaying: this.musicVoiceId !== null,
+      clipsLoaded: this.buffers.size,
+      clipsLoading: this.pendingLoads.size,
+      masterVolume: this.masterVolume,
+      muted: this.muted,
+      busVolumes: { ...this.busVolumes },
+      state: this.unavailable
+        ? 'unavailable'
+        : this.context === null
+          ? 'idle'
+          : (this.context.state as AudioSnapshot['state']),
+    };
   }
 
   // ------------------------------------------------------------------- listener
@@ -408,7 +492,15 @@ export class AudioEngine {
     }
   }
 
-  private start(voice: Voice, buffer: AudioBuffer, position: Vec3 | undefined, options: PlayOptions): void {
+  /**
+   * Builds the node graph for a voice and starts it.
+   *
+   * Reads everything from the voice rather than from the original `PlayOptions`, which is what
+   * makes the held values above take effect: by the time a clip has decoded, the volume, the
+   * position and the fade may all have been changed by a caller holding the handle, and the
+   * options object records only what was true the instant `play` was called.
+   */
+  private start(voice: Voice, buffer: AudioBuffer): void {
     const ctx = this.ensureContext();
     const busGain = ctx ? this.busGains[voice.bus] : undefined;
     if (!ctx || !busGain) {
@@ -424,14 +516,14 @@ export class AudioEngine {
     gain.gain.value = voice.volume;
 
     let panner: PannerNode | null = null;
-    if (position) {
+    if (voice.position) {
       panner = ctx.createPanner();
       panner.panningModel = 'equalpower';
       panner.distanceModel = 'inverse';
-      panner.refDistance = options.refDistance ?? 1;
-      panner.maxDistance = Math.max(panner.refDistance, options.maxDistance ?? 40);
-      panner.rolloffFactor = options.rolloffFactor ?? 1;
-      this.applyPannerPosition(panner, position);
+      panner.refDistance = voice.spatial.refDistance ?? 1;
+      panner.maxDistance = Math.max(panner.refDistance, voice.spatial.maxDistance ?? 40);
+      panner.rolloffFactor = voice.spatial.rolloffFactor ?? 1;
+      this.applyPannerPosition(panner, voice.position);
       source.connect(gain);
       gain.connect(panner);
       panner.connect(busGain);
@@ -450,7 +542,22 @@ export class AudioEngine {
       if (this.voices.get(voice.id) === voice) this.voices.delete(voice.id);
     };
 
+    // Scheduled before the source runs, so the ramp starts from silence rather than from
+    // whatever fraction of the fade had already played by the time it was applied.
+    if (voice.fadeIn > 0) this.fadeVoiceIn(voice, voice.fadeIn);
     source.start();
+  }
+
+  /**
+   * Asks a voice to come up from silence over `seconds`, whether or not it has started yet.
+   *
+   * The pending half is the point: a voice that is still decoding records the request and
+   * honours it in `start`, which is the difference between a crossfade that works and one that
+   * works on the second try.
+   */
+  private requestFadeIn(voice: Voice, seconds: number): void {
+    voice.fadeIn = seconds;
+    if (voice.gain) this.fadeVoiceIn(voice, seconds);
   }
 
   private applyPannerPosition(panner: PannerNode, position: Vec3): void {

@@ -84,6 +84,15 @@ interface EditorState {
   rotateSnap: number;
   scaleSnap: number;
   playing: boolean;
+  /**
+   * The engine clock, mirrored for rendering.
+   *
+   * The Engine owns these — a script can set either of them mid-frame, and the toolbar has to
+   * follow — so nothing here writes them directly. `EditorContext` subscribes to `timeChanged`
+   * and calls `setClock`, and the toolbar's controls call the Engine and wait to be told.
+   */
+  paused: boolean;
+  timeScale: number;
   shading: ShadingMode;
   /**
    * The frame-rate overlay drawn over the viewport.
@@ -115,6 +124,8 @@ interface EditorState {
   setSnapEnabled(enabled: boolean): void;
   setSnapValues(values: Partial<Pick<EditorState, 'moveSnap' | 'rotateSnap' | 'scaleSnap'>>): void;
   setPlaying(playing: boolean): void;
+  /** Mirrors the engine clock into the store. Only `EditorContext`'s subscription calls this. */
+  setClock(paused: boolean, timeScale: number): void;
   setShading(shading: ShadingMode): void;
   toggleHud(): void;
   bumpSceneRevision(): void;
@@ -169,6 +180,8 @@ export const useEditorStore = create<EditorState>((set) => ({
   rotateSnap: 15,
   scaleSnap: 0.1,
   playing: false,
+  paused: false,
+  timeScale: 1,
   shading: 'shaded',
   hudVisible: false,
   sceneRevision: 0,
@@ -195,6 +208,7 @@ export const useEditorStore = create<EditorState>((set) => ({
   setSnapEnabled: (snapEnabled) => set({ snapEnabled }),
   setSnapValues: (values) => set(values),
   setPlaying: (playing) => set({ playing }),
+  setClock: (paused, timeScale) => set({ paused, timeScale }),
   setShading: (shading) => set({ shading }),
   toggleHud: () => set((state) => ({ hudVisible: !state.hudVisible })),
   bumpSceneRevision: () => set((state) => ({ sceneRevision: state.sceneRevision + 1 })),

@@ -46,6 +46,14 @@ export function useShortcuts(viewport: ViewportController | null): void {
         if (event.key === 'Escape') {
           event.preventDefault();
           engine.setMode('edit');
+          return;
+        }
+        // Ctrl+P for pause, on the same argument the panel keys are made an exception: freezing
+        // the clock to look at the frame you are on is a thing you want to do *while* playing,
+        // and reaching for the toolbar means several more frames go by before you get there.
+        if (ctrl && event.key.toLowerCase() === 'p') {
+          event.preventDefault();
+          engine.setPaused(!engine.paused);
         }
         return;
       }
