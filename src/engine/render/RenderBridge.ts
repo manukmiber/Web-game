@@ -13,6 +13,7 @@ import {
 } from '../scatter/layer';
 import type { Scene } from '../scene/Scene';
 import type { Entity, EntityId, Vec3 } from '../scene/types';
+import { StreamingSystem } from '../streaming/StreamingSystem';
 import { acquireGeometry, geometryCache } from './geometry';
 import {
   canCastShadow,
@@ -53,6 +54,16 @@ interface EntityNode {
   shadowAllowed: boolean;
   /** Instanced geometry from a ScatterLayer, if the entity carries one. */
   scatter: ScatterNode | null;
+  /**
+   * Streaming/LOD state for a *root* entity — non-roots stay at the defaults below and inherit
+   * both from their parent group via the ordinary Three.js visibility cascade, the same way they
+   * already inherit the origin offset (`syncTransform`'s `isRoot` check). See `updateStreaming`.
+   */
+  streamed: boolean;
+  /** Current LOD band, 0 nearest. Only meaningful while `streamed` is true. */
+  lodBand: number;
+  /** `MeshRenderer.castShadow` as authored, independent of the LOD override in `applyLod`. */
+  baseCastShadow: boolean;
 }
 
 /**
@@ -75,15 +86,28 @@ export class RenderBridge {
 
   /**
    * Rendering origin. Subtracted from root-level positions so the GPU never sees coordinates
-   * large enough to lose float32 precision — ARCHITECTURE.md §9.1. Stays at zero through
-   * Phase 1; the streaming system will drive it later.
+   * large enough to lose float32 precision — ARCHITECTURE.md §9.1. Driven by `updateStreaming`,
+   * called once per frame by the RenderHost, the same way `applyShadowBudget` is.
    */
   private originOffset: Vec3 = [0, 0, 0];
 
+  /**
+   * The coordinate engine behind streaming and LOD (ARCHITECTURE.md §9.2) — Origo's ladder,
+   * origin rebaser and chunk active-set, sized from the scene's own `world.chunkSize`. Rebuilt
+   * whenever a new scene is loaded, since a different scene can choose a different chunk size.
+   */
+  private streaming: StreamingSystem;
+
   constructor(private readonly scene: Scene) {
     this.root.name = 'SceneRoot';
+    this.streaming = new StreamingSystem(scene.world.chunkSize);
     this.subscribe();
     this.rebuildAll();
+  }
+
+  /** The coordinate engine driving streaming and LOD — read-only, for diagnostics and tests. */
+  get streamingSystem(): StreamingSystem {
+    return this.streaming;
   }
 
   // ------------------------------------------------------------- public API
@@ -108,10 +132,15 @@ export class RenderBridge {
    *
    * Scatter batches are in here too: Three raycasts an `InstancedMesh` per instance, so a click
    * on one tree in a forest hits, and the entity id on the batch resolves it to the layer.
+   *
+   * Streamed-out entities are excluded. Three's raycaster does not check `.visible` on its own,
+   * so without this an unloaded chunk would still be clickable — a ghost hit on something
+   * nothing is drawing.
    */
   pickables(): THREE.Object3D[] {
     const out: THREE.Object3D[] = [];
     for (const node of this.nodes.values()) {
+      if (!node.streamed) continue;
       if (node.mesh) out.push(node.mesh);
       for (const batch of node.scatter?.batches ?? []) out.push(batch.mesh);
     }
@@ -125,6 +154,59 @@ export class RenderBridge {
   setOriginOffset(offset: Vec3): void {
     this.originOffset = [...offset];
     for (const id of this.scene.rootIds()) this.syncTransform(id);
+  }
+
+  /**
+   * One frame of streaming and LOD, driven by Origo (ARCHITECTURE.md §9.2). Called once per
+   * frame by the RenderHost, before the draw — the same calling convention `applyShadowBudget`
+   * uses, and for the same reason: everything downstream (which lights get a shadow map, what
+   * gets rendered at all) should see this frame's state, not last frame's.
+   *
+   * Root entities only. A non-root inherits both the origin offset and streamed visibility from
+   * its parent group through the ordinary Three.js cascade — `syncTransform`'s `isRoot` check
+   * already relies on the same inheritance for the origin offset, so extending it to streaming
+   * costs nothing extra and keeps a moving hierarchy (a vehicle and its parts) as one unit.
+   */
+  updateStreaming(camX: number, camY: number, camZ: number): void {
+    const frame = this.streaming.update(camX, camY, camZ);
+    if (frame.originShift) {
+      this.setOriginOffset([this.streaming.origin.x, this.streaming.origin.y, this.streaming.origin.z]);
+    }
+
+    for (const id of this.scene.rootIds()) {
+      const node = this.nodes.get(id);
+      const entity = this.scene.get(id);
+      if (!node || !entity) continue;
+
+      const key = this.streaming.chunkKeyAt(entity.transform.position[0], entity.transform.position[2]);
+      const band = frame.lod.get(key);
+      const loaded = band !== undefined;
+
+      if (node.streamed !== loaded) {
+        node.streamed = loaded;
+        node.group.visible = loaded;
+      }
+      if (loaded && node.lodBand !== band) {
+        node.lodBand = band;
+        this.applyLod(node);
+      }
+    }
+  }
+
+  /** Diagnostics for the perf HUD: how many root entities streaming currently keeps visible. */
+  streamingStats(): { loadedRoots: number; totalRoots: number; chunkSize: number } {
+    const roots = this.scene.rootIds();
+    let loadedRoots = 0;
+    for (const id of roots) {
+      if (this.nodes.get(id)?.streamed) loadedRoots += 1;
+    }
+    return { loadedRoots, totalRoots: roots.length, chunkSize: this.streaming.chunkSize };
+  }
+
+  /** Suppresses shadow-casting outside the nearest LOD band. See `EntityNode.baseCastShadow`. */
+  private applyLod(node: EntityNode): void {
+    if (!node.mesh) return;
+    node.mesh.castShadow = node.baseCastShadow && node.lodBand === 0;
   }
 
   dispose(): void {
@@ -158,6 +240,9 @@ export class RenderBridge {
   }
 
   private rebuildAll(): void {
+    // A freshly loaded scene can choose its own chunk size, so the streaming grid is rebuilt
+    // alongside the object tree rather than carried over from whatever scene came before.
+    this.streaming = new StreamingSystem(this.scene.world.chunkSize);
     for (const id of [...this.nodes.keys()]) this.destroyNode(id);
     this.root.clear();
     // Parents first, so attachToParent always finds its target already built.
@@ -186,6 +271,12 @@ export class RenderBridge {
       lightKind: null,
       shadowAllowed: true,
       scatter: null,
+      // Visible by default: a bridge nobody drives through `updateStreaming` — a headless test,
+      // a tool that only ever calls `rebuildAll` — must render exactly as it did before
+      // streaming existed. Only calling `updateStreaming` opts an entity into being hidden.
+      streamed: true,
+      lodBand: 0,
+      baseCastShadow: false,
     };
     this.nodes.set(entity.id, node);
 
@@ -317,7 +408,10 @@ export class RenderBridge {
     // whole tree and has no other way to know an entity was hidden on purpose. Without it,
     // hiding an object and then touching anything that re-runs the pass brings it back.
     node.mesh.userData.entityVisible = renderer.visible;
-    node.mesh.castShadow = renderer.castShadow;
+    // Recorded the same way `entityVisible` is, so `applyLod` can suppress shadow-casting for a
+    // distant LOD band and restore exactly what was authored once the band improves again.
+    node.baseCastShadow = renderer.castShadow;
+    node.mesh.castShadow = renderer.castShadow && node.lodBand === 0;
     node.mesh.receiveShadow = renderer.receiveShadow;
     // Meshes are lit by lights, but they are also *hit* by picking; keeping the entity id on
     // the mesh as well as the group is what lets a raycast resolve without walking up.

@@ -1,6 +1,6 @@
 {
   "name": "web-3d-scene-editor",
-  "version": "0.7.9.6",
+  "version": "0.7.9.7",
   "description": "Browser-based 3D scene editor and the core of a web game engine",
   "scripts": {
     "dev": "vite",
@@ -31,6 +31,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
+    "origo": "git+https://github.com/manukmiber/origo.git#df1fc46e0147700024e35c8dc484e06890b6dd1a",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "three": "^0.185.1",

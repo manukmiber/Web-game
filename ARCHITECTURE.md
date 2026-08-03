@@ -2,8 +2,10 @@
 
 Status: **confirmed** (see §8). Phases 1 and 2 shipped; Phase 3 in progress — the play seam,
 scripting, agents and scene-owned rendering are in (§10), the assistant tool layer and MCP
-server are in (§11), physics (§15), the ECS layer (§16), audio and save games (§18), and physics
-and scripting in a Worker (§19) are in; streaming is not.
+server are in (§11), physics (§15), the ECS layer (§16), audio and save games (§18), physics
+and scripting in a Worker (§19) are in, and a first cut of chunk streaming and LOD, on Origo as
+the coordinate engine (§20), is in; background chunk load/unload from disk and a terrain or
+scatter LOD chain are not.
 
 Two constraints drive every decision below.
 
@@ -449,8 +451,9 @@ visibly jittering and z-fighting well before the world edge.
 - The editor viewport gets the same treatment, so what you author at x=24000 looks the way it
   will look at runtime.
 
-The rebase is implemented in the render bridge, i.e. one place. Phase 1 keeps origin at zero;
-the seam is a single `originOffset` in the bridge.
+The rebase is implemented in the render bridge, i.e. one place. Phase 1 kept origin at zero
+behind a single `originOffset` seam in the bridge; v0.7.9.7 (§20) is what drives it, with Origo's
+`Origin` deciding when and where to rebase instead of the offset sitting fixed.
 
 ### 9.2 Spatial partitioning and streaming — schema **now**, systems later
 
@@ -466,8 +469,10 @@ Consequences baked into the v1 format:
 - Entities carry stable ids that are unique scene-wide, so cross-chunk references (a door
   referencing its building) survive independent chunk loading.
 
-Streaming, chunk LOD and background (worker) load/unload land with Phase 3, behind a
-`StreamingSystem` that the loop already has a slot for.
+Chunk streaming and a first LOD band landed in v0.7.9.7, on **Origo**, a standalone coordinate
+library — see §20. Background (worker) load/unload from disk is still later work; what exists
+today keeps this grid's entities in memory and toggles what's drawn, not what's loaded from a
+file.
 
 ### 9.3 Mass instancing — schema **now**, brush shipped in v0.7.2
 
@@ -525,9 +530,13 @@ untangling them from the browser main thread first.
 
 Physics and scripting moved in v0.7.9.6 (§19) — opt-in, and exactly because of this constraint:
 `PhysicsSystem` and `ScriptSystem` had never touched a DOM global, so the Worker migration was
-new plumbing around them, not a rewrite of either. Chunk generation, streaming and pathfinding
-remain later work, for the same reason instancing was Phase 2 and streaming still is not: there
-is no 25 km world yet to generate chunks *of*.
+new plumbing around them, not a rewrite of either. `engine/streaming/StreamingSystem` (§20,
+v0.7.9.7) was written to the same constraint from day one — it is pure coordinate math over
+Origo, with nothing in it that could touch a DOM global — but it still runs on the main thread,
+driven once a frame by `RenderHost.render()`. Chunk generation and pathfinding remain later work,
+for the same reason instancing was Phase 2 and full streaming still is not: there is content to
+stream today, but nothing yet that generates a chunk's content procedurally as the camera
+approaches it.
 
 ### 9.6 The viewport grid is procedural, not geometry
 
@@ -1696,3 +1705,115 @@ the same way the rest of this codebase tests things it cannot run headlessly in 
 `AudioEngine`'s `contextFactory` already use (§12.1, §18.1), and `SimulationEngine`'s own
 frame-building logic driven by hand with `engine.tick(dt)`, the same way `Engine.test.ts` always
 has — neither needs a real Worker to be a real test of what crosses the boundary.
+
+## 20. Chunk streaming and LOD, on Origo as the coordinate engine
+
+Added in v0.7.9.7. §9.2 fixed the schema in Phase 1 — a uniform chunk grid, `WorldSettings.
+chunkSize`, a chunk-addressable save format — and deferred the systems that would actually use it
+to "Phase 3." This is those systems' first cut: what stays resident as the camera moves through a
+world too large to keep entirely loaded, and what the render bridge rebases around while it does.
+
+### 20.1 Why an external library, and why this one
+
+The two questions this section answers — *which chunk does this position fall in* and *where
+should the render origin be* — are exactly the two questions Origo (`github:manukmiber/origo`, a
+standalone sibling repository) exists to answer and refuses to answer any others. Its own
+boundary rule, "Origo never learns what is stored at a coordinate" — no mesh type, no entity, no
+component crosses its API — is the same rule §9.5 already enforces on `engine/**` from the other
+direction: nothing in the engine may assume a DOM, and nothing Origo touches may assume this
+engine. Building the same ladder-and-active-set machinery a second time inside `engine/streaming`
+would have meant maintaining a second copy of exactly the kind of allocation-free, sign-safe index
+arithmetic Origo's own test suite exists to pin down (negative coordinates, Float32-vs-Float64
+precision at the exponent boundaries) — the sort of code that is easy to get subtly wrong once and
+tedious to get right twice.
+
+It is not on npm yet, so the dependency in `package.json` is a pinned commit on Origo's own
+`github:` URL rather than a version range. Origo's `package.json` gained a `prepare` script for
+exactly this: npm skips a git dependency's `build` script but always runs `prepare`, and without
+one a consumer installing straight from the repo got a `dist/` that was never compiled.
+
+### 20.2 `engine/streaming/StreamingSystem` — pure coordinate math
+
+Three pieces of Origo, wrapped around `world.chunkSize`:
+
+- A `Ladder` whose finest tier is sized to the chunk size (`finestExpFor` rounds a non-power-of-
+  two `chunkSize` to the nearest one — Origo's ladder is power-of-two by construction, §3 of its
+  own architecture doc — so `StreamingSystem.chunkSize` is the grid's *effective* size, which for
+  the shipped default of 256 is exact).
+- An `ActiveSet` at that tier for chunk load/unload. Cells enter within a configurable radius and
+  exit only past `radius + hysteresis`, so a camera parked on a chunk boundary does not thrash the
+  consumer's mount/unmount path every frame — hysteresis Origo already built in, not reimplemented
+  here.
+- An `Origin` for the render rebase, replacing the `originOffset` seam that sat fixed at zero
+  since Phase 1 (§9.1).
+
+One method, `update(camX, camY, camZ)`, is the whole per-frame contract: it returns the frame's
+origin shift (`null` on all but a handful of frames — Origo's own note, still true here, is that
+at a 1 km threshold and 10 m/s this fires roughly once every hundred seconds) and a `Map` of every
+*currently loaded* chunk to its LOD band, recomputed in full each frame. That recomputation is
+deliberately not incremental: the loaded set is bounded by the load radius, not by how large the
+scene is, so walking all of it every frame is cheap regardless of whether the world has a hundred
+chunks or a hundred thousand, and it avoids a second, separately-maintained notion of "which
+chunks changed" alongside the enter/exit diff Origo's `ActiveSet` already reports.
+
+`StreamingSystem` imports nothing from Three.js or `Scene` — a camera position in, a diff out —
+and is unit-tested exactly the way Origo tests itself: no DOM, no renderer, `vitest run` in Node.
+`chunkKeyAt` deliberately produces the same `"cx,cz"` string `scene/types.ts#chunkKeyFor` does
+(both floor-divide by the same cell size), so the save format's existing chunk bucket and the
+streaming grid's chunk bucket are the same bucket, not two that happen to agree today.
+
+### 20.3 `RenderBridge.updateStreaming` — root entities only
+
+Called once per frame by `RenderHost.render()`, before the shadow budget and the draw — the same
+calling convention `applyShadowBudget` already used, for the same reason: everything downstream
+that frame should see this frame's streaming state, not last frame's.
+
+It applies the origin shift through the existing `setOriginOffset`, and toggles `Object3D.visible`
+on a **root** entity's group when its chunk crosses the load/unload boundary. Only roots: a
+non-root entity already inherits the origin offset from its parent through Three's ordinary
+render-tree cascade (`syncTransform`'s `isRoot` check has relied on that since Phase 1), and
+extending the same inheritance to streamed visibility means a compound object — a vehicle and its
+wheels, a building and its windows — streams and rebases as the one unit it already renders as,
+with no per-child chunk bookkeeping. The cost is a documented, deliberate gap: a static child does
+not get its *own* chunk membership recomputed independently of its root, so a hierarchy that moves
+a long way without its root's own transform changing could show a child slightly out of step with
+where its true world position would place it. That is the same "approximate bucket, exact
+transforms are the render bridge's job" trade-off §9.2 already made for `chunkKeyOf`, extended to
+one more consumer.
+
+`pickables()` now excludes streamed-out nodes. Three's `Raycaster` does not check `.visible` on
+its own — nothing between the raycaster and an object's `raycast()` method does — so without this
+change an unloaded chunk stayed clickable: a hit on geometry nothing that frame was drawing.
+
+### 20.4 LOD today means shadow-casting, and says so
+
+A loaded chunk beyond the configured near band keeps rendering at full geometry — there is no
+coarser mesh to fall back to yet, since neither the scatter LOD chain §9.3 shaped the prototype
+list for nor the terrain clipmap §9.4 named exist — but it stops casting a shadow. The authored
+`MeshRenderer.castShadow` is recorded on the node (`EntityNode.baseCastShadow`) independently of
+the LOD override in `applyLod`, so a chunk's shadow comes back exactly as authored the instant its
+band improves, rather than the override and the authored value fighting over the same field the
+way an easy first implementation would have let them.
+
+This is a real if modest saving today — fewer shadow-map draws for geometry already far enough to
+not need one — and it is deliberately the whole of "LOD" for this version. The band Origo hands
+back per loaded chunk is what a scatter instance-density falloff or a terrain clipmap would key off
+without redoing the distance math, which is the point of computing it centrally rather than letting
+each future consumer derive its own notion of "how far is this."
+
+### 20.5 What this does not do yet
+
+Named here rather than left implicit, the same way §9.3 and §19 name their own open edges:
+
+- **Physics and scripting do not hear about unloaded entities.** Origo's own stance (its
+  ARCHITECTURE.md §6.4) is that a Float64 solver never needs origin rebasing — true here, every
+  solver in this codebase is plain JavaScript — but *streaming* is a different question from
+  *rebasing*, and this cut answers only the second for anything other than rendering. A
+  streamed-out entity's `RigidBody` keeps simulating.
+- **Scatter layers have no LOD chain of their own.** A `ScatterLayer` streams and rebases with its
+  owning entity (§20.3's inheritance covers it) but every instance in it renders at one density
+  regardless of distance.
+- **Nothing streams from disk.** "Chunk" still means "a bucket of entities already loaded into
+  the `Scene`," not "a file fetched as the camera approaches." §9.2's background (worker)
+  load/unload is still later work, and needs the persistence adapter named in §8 before it has
+  anything to load from.
