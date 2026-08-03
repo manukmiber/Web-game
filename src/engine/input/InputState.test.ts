@@ -105,4 +105,47 @@ describe('InputState', () => {
     input.clear();
     expect(input.isDown('w')).toBe(false);
   });
+
+  describe('snapshot / applySnapshot', () => {
+    it('reproduces held keys, axes and pointer state on the far side', () => {
+      const source = new InputState();
+      source.setKey('KeyW', true);
+      source.setAxis('move', 0.5);
+      source.setPointer(0.2, -0.3, 5, 6);
+      source.setButtons(MOUSE_LEFT);
+      source.addWheel(10);
+
+      const mirror = new InputState();
+      mirror.applySnapshot(source.toSnapshot());
+
+      expect(mirror.isDown('w')).toBe(true);
+      expect(mirror.getAxis('move')).toBeCloseTo(0.5);
+      expect(mirror.pointerX).toBeCloseTo(0.2);
+      expect(mirror.pointerDeltaX).toBe(5);
+      expect(mirror.isMouseDown()).toBe(true);
+      expect(mirror.wheelDelta).toBe(10);
+    });
+
+    it('derives press/release edges from consecutive snapshots, not from level state', () => {
+      const mirror = new InputState();
+
+      mirror.applySnapshot({ down: [], axes: [], pointerX: 0, pointerY: 0, pointerDeltaX: 0, pointerDeltaY: 0, wheelDelta: 0, buttons: 0 });
+      expect(mirror.wasPressed('space')).toBe(false);
+
+      mirror.applySnapshot({ down: ['Space'], axes: [], pointerX: 0, pointerY: 0, pointerDeltaX: 0, pointerDeltaY: 0, wheelDelta: 0, buttons: 0 });
+      expect(mirror.wasPressed('space')).toBe(true);
+      expect(mirror.isDown('space')).toBe(true);
+
+      mirror.endFrame();
+      // Still held: a second snapshot with the same key must not re-fire the press edge, the
+      // same auto-repeat guard `setKey` already gives a real keyboard.
+      mirror.applySnapshot({ down: ['Space'], axes: [], pointerX: 0, pointerY: 0, pointerDeltaX: 0, pointerDeltaY: 0, wheelDelta: 0, buttons: 0 });
+      expect(mirror.wasPressed('space')).toBe(false);
+      expect(mirror.isDown('space')).toBe(true);
+
+      mirror.applySnapshot({ down: [], axes: [], pointerX: 0, pointerY: 0, pointerDeltaX: 0, pointerDeltaY: 0, wheelDelta: 0, buttons: 0 });
+      expect(mirror.wasReleased('space')).toBe(true);
+      expect(mirror.isDown('space')).toBe(false);
+    });
+  });
 });

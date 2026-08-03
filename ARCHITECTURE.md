@@ -2,8 +2,8 @@
 
 Status: **confirmed** (see §8). Phases 1 and 2 shipped; Phase 3 in progress — the play seam,
 scripting, agents and scene-owned rendering are in (§10), the assistant tool layer and MCP
-server are in (§11), physics (§15), the ECS layer (§16) and audio and save games (§18) are in;
-streaming is not.
+server are in (§11), physics (§15), the ECS layer (§16), audio and save games (§18), and physics
+and scripting in a Worker (§19) are in; streaming is not.
 
 Two constraints drive every decision below.
 
@@ -410,8 +410,9 @@ gizmo drag is one entity and wants its event immediately.
 - **Phase 3** — Play/runtime mode (§6), `Script` component, Cloudflare persistence adapter,
   and the world-scale systems from §9: streaming, LOD, camera-relative rendering, workers.
   *Shipped so far:* the play seam itself, scripting, NPC agents, a character controller,
-  scene-owned rendering (§10), physics and collision (§15), the ECS layer (§16), and audio and
-  save games (§18). Still open: the Cloudflare persistence adapter, streaming, LOD, workers.
+  scene-owned rendering (§10), physics and collision (§15), the ECS layer (§16), audio and
+  save games (§18), and physics/scripting moved into a Worker, opt-in (§19). Still open: the
+  Cloudflare persistence adapter, streaming, LOD, chunk generation and pathfinding off-thread.
 
 ---
 
@@ -515,12 +516,18 @@ The prototype list is also where an LOD chain hangs, and it is shaped for one.
   cost is a fraction of PNG.
 - Terrain as heightfield chunks with GPU-side clipmap LOD, not a mesh entity per tile.
 
-### 9.5 Threading — constraint **now**
+### 9.5 Threading — constraint **now**, cashed for physics and scripting in v0.7.9.6
 
 `engine/**` must stay free of `window`/`document` (§2 already forbids DOM-editor imports;
 this extends it to the DOM entirely, enforced by the same lint rule). That keeps chunk
 generation, streaming, pathfinding and physics movable into Web Workers later without
 untangling them from the browser main thread first.
+
+Physics and scripting moved in v0.7.9.6 (§19) — opt-in, and exactly because of this constraint:
+`PhysicsSystem` and `ScriptSystem` had never touched a DOM global, so the Worker migration was
+new plumbing around them, not a rewrite of either. Chunk generation, streaming and pathfinding
+remain later work, for the same reason instancing was Phase 2 and streaming still is not: there
+is no 25 km world yet to generate chunks *of*.
 
 ### 9.6 The viewport grid is procedural, not geometry
 
@@ -665,16 +672,23 @@ code. `eval` cannot be shadowed at all — it is illegal as a parameter name in 
 `({}).constructor.constructor` rebuilds `Function` from nothing. Scene JSON is therefore
 executable code and has to be treated as such.
 
-Real isolation is a Worker or a sandboxed iframe with its own CSP. That is the same change as
-fixing the other honest limitation — an infinite loop in a script hangs the tab, because nothing
-can interrupt synchronous JavaScript on the main thread — and it needs the script API to be
-message-based first. Freezing the API's *shape* now, while it is small, is what makes that
-migration tractable later.
-
-What is enforced today: every hook call is wrapped, a throw is reported to the editor console
+**What is enforced today:** every hook call is wrapped, a throw is reported to the editor console
 once and parks that instance, and every other script keeps running. An exception escaping into
 `Engine.tick` would kill the loop and with it the editor's viewport — for a typo in one of a
 hundred scripts.
+
+**v0.7.9.6 gave scripts somewhere else to run: `engine/worker`, opt-in from the Performance
+panel.** That is the "message-based API" migration this section used to describe as a
+prerequisite for later — freezing `ScriptContext`'s shape early is what made moving the whole
+`Engine` that hosts it into a Worker a plumbing change rather than a rewrite (§19). It fixes the
+*other* honest limitation this section names, the one shadowing globals never could: an infinite
+loop no longer hangs the tab, because a Worker can be `terminate()`d from outside itself, which
+the main thread cannot do to itself. It does **not** turn the guard rail into a security boundary.
+`({}).constructor.constructor` still rebuilds the real `Function` from inside the Worker, and a
+script that reaches it can call the Worker's own genuine `postMessage` — what changed is that the
+Worker's global has no `document`/`window`/`localStorage`/cookies to reach at all, categorically
+rather than shadowed, and every message crossing back is validated by shape before anything in it
+touches the scene (`worker/protocol.ts`). Scene JSON is still executable code, on either thread.
 
 ### 10.3 Agents keep no state in their components
 
@@ -809,8 +823,11 @@ architectural one.
 
 Scripts an assistant writes run in the same guard-rail sandbox as hand-written ones (§10.2).
 Scene JSON was already executable code and still is; a model authoring it neither worsens that
-nor fixes it. The real fix is the same one §10.2 names — a Worker or a sandboxed iframe — and it
-is still the same piece of work.
+nor fixes it. Moving scripting into a Worker (§19) is the change §10.2 used to name here as the
+real fix, and it is worth restating in this section's terms: it does not make an assistant's
+scene JSON any more or less trustworthy than a human's, because nothing about *authorship* moved.
+What moved is *blast radius* — a runaway tool call that writes an infinite loop into a script now
+hangs a Worker the host can recover from, not the tab the assistant panel lives in.
 
 ---
 
@@ -1333,7 +1350,8 @@ With no constraints the sort is stable and reproduces the insertion order exactl
 made adopting it a refactor rather than a behavioural change.
 
 This is also the prerequisite for §9.5. You cannot decide what may run concurrently in a Worker
-until the dependencies between systems are written down somewhere other than a comment.
+until the dependencies between systems are written down somewhere other than a comment — which is
+exactly the question §19 had to answer to move four of these stages there.
 
 ## 17. The PBR material system
 
@@ -1513,3 +1531,168 @@ the same way a game console's "load" does not restart every enemy's AI from scra
 that cannot tell the difference would make a loaded save open with every zombie standing still
 for a frame while it re-decides what to do.
 Without it a material built while its image was in flight stayed untextured for the session.
+
+---
+
+## 19. Physics and scripting in a Worker
+
+Added in v0.7.9.6, opt-in from the Performance panel ("Run in a Web Worker"). §9.5 named the
+constraint that made this possible in Phase 1, §16.2's system schedule was the prerequisite it
+named, and §10.2/§15.1 both promised this specific migration would be plumbing rather than a
+rewrite — this section is that promise cashed, and what it turned out to actually cost.
+
+### 19.1 What moved, and what stayed, and why the line is drawn there
+
+`PhysicsSystem`, `ScriptSystem`, `CharacterSystem` and `NpcSystem` — the `simulate`/`script`/
+`resolve` stages, exactly the systems §16.2's schedule already named as a unit — now optionally
+run inside `engine/worker`'s simulation Worker. `HardwareSystem` and `AudioSystem` do not, and
+not as a simplification: Web Serial and Web Audio are both main-thread-only APIs (a Worker has no
+`navigator.serial` and, at the time of writing, no `AudioContext` at all), so there is nowhere for
+them to run *except* the main thread. What makes leaving them there correct rather than merely
+convenient is that both only need this frame's scene and game state — `HardwareOutput` bindings
+read `game.health`/`game.getVar`, `AudioSystem` reads camera and `AudioSource` transforms — and
+the worker mirrors both back every tick regardless (§19.3). Neither system loses anything by
+being a frame later than the systems that moved; a `health01` lamp binding one host frame stale is
+not a thing a person can perceive.
+
+`engine/worker/SimulationEngine` is, deliberately, not a parallel implementation of physics or
+scripting. It constructs an ordinary `Engine`, installs the same four systems
+`installGameplaySystems` installs, and calls `setMode('play')` — the same object graph Play mode
+already builds on the main thread, just hosted somewhere else. §15.1's claim that the solver
+"runs in a Worker without a single import changing" turned out to be exactly true, and so did the
+same claim implicitly made for `ScriptSystem`: neither file changed at all to make this possible.
+
+### 19.2 The clock is the same `Clock`, driven the same way
+
+`Engine.start()` drives itself with `requestAnimationFrame`, which §6 already called out as the
+one genuinely main-thread-only part of the loop — not because the *work* can't move, but because
+the clock that ticks it has no Worker equivalent to sync to. Rather than teach `Engine` a second
+driving mechanism, `simulationWorkerEntry.ts` polyfills `requestAnimationFrame`/
+`cancelAnimationFrame` on the Worker's global scope with a ~60 Hz `setTimeout` before calling the
+ordinary `engine.start()` — a Worker has no display to sync a frame to, so a fixed timer is what
+"as fast as the main thread would ask for a frame" means without one. The payoff is that
+`pause`/`resume`/`setTimeScale` and every script's `time.scale` work completely unmodified: they
+already only ever talked to `Engine`'s own `Clock`, and that `Clock` does not know or care which
+thread is calling `tick`.
+
+### 19.3 The wire format: a dense channel for transforms, an ordered log for everything else
+
+Two things cross the boundary every tick, and they are shaped differently on purpose.
+**Transforms** change for a large fraction of entities every single frame, so they travel as a
+flat `TransformUpdate[]` built straight from `Scene`'s existing dirty-transform tracking
+(`markTransformDirty`/`flushTransforms`, §6) — no new bookkeeping, just a subscription to the
+event that already exists. **Everything structural** — an entity spawned, removed, renamed,
+reparented, or one of its components edited — is comparatively rare, so `worker/sceneMirror.ts`'s
+`SceneOpCollector` batches it into an ordered `SceneOp[]` log instead, replayed on the host's
+`Scene` in emission order (`applySceneOps`). That replay is the same "write straight through
+`Scene`, not through a command" path Play mode already uses for `scene.spawn`/`entity.destroy()`
+(§6) — a worker-run script's mutation is not a new *kind* of write, only a new thread for one
+that already existed and was never on the undo stack.
+
+`componentsChanged` is deduplicated to one op per entity per tick rather than one per field write,
+which is safe *because* `Scene` never reassigns an entity's `components` array — only splices and
+pushes into it (`addComponent`/`removeComponentAt`) — so an op captured once and read at
+`postMessage` time (when the browser's structured clone actually copies it) reflects every edit
+made before that point for free.
+
+### 19.4 Audio and hardware are relayed, not reimplemented
+
+A script's `audio.play(...)` inside the worker calls `ScriptAudio`, which calls whatever
+`Engine.audio` is — on the main thread a real `AudioEngine`, inside the worker
+`worker/RelayAudioEngine`. The interesting decision is what `RelayAudioEngine` is *not*: not a
+duck-typed reimplementation of `AudioEngine`'s public surface, but a subclass that overrides only
+the handful of public methods `ScriptAudio` reaches (`play`, `playMusic`, `stopVoice`,
+`setVoiceVolume`, `setVoicePosition`, the bus/master setters) to record a command instead of
+touching Web Audio. Subclassing rather than duck-typing is what keeps the real `AudioHandle` class
+usable unmodified — its methods call back into `isPlaying`/`stopVoice`/`setVoiceVolume`/
+`setVoicePosition`, which are public on `AudioEngine`, so overriding just those four (plus the two
+that mint a voice id) is enough for the whole handle to work without knowing it is talking to a
+relay. `worker/RelayAudioEngine.applyAudioCommands` is the host-side replay: it correlates the
+relay's local voice ids with the real `AudioHandle`s `engine.audio.play(...)` actually produces,
+so a later `stopVoice` for the same id reaches the same sound.
+
+Without this, every script-triggered sound would go silent the instant worker mode was turned on
+— not a documented limitation but a straightforward regression, since `AudioEngine`'s existing
+"no `AudioContext` available" no-op (§18.1) would otherwise swallow it with no error at all.
+
+Hardware needed no equivalent relay. `HardwareSystem` stays host-side (§19.1), so `HardwareInput`/
+`HardwareOutput` bindings are unaffected. A script's *direct* `hardware.*` calls, running inside
+the worker against the worker's own real (but deviceless) `HardwareBus`, see the same "nothing
+attached" defaults — 0, `false`, writes that return `false` — that the same script would see on a
+machine with no rig plugged in, which SCRIPTING.md already documents as a scene that "stays
+playable without one." That is a real, honest limitation (a script's own `hardware.write` does not
+reach a physical board while worker mode is on) rather than a silent one, and it is narrow: the
+common case, a binding, is unaffected.
+
+### 19.5 What the isolation is, stated as plainly as §10.2 states the sandbox
+
+Moving execution to a Worker does not turn §10.2's guard rail into a security boundary — nothing
+in JavaScript can. `({}).constructor.constructor` still rebuilds the real `Function` from inside
+the Worker, and a script that reaches it can call the Worker's own genuine `postMessage`,
+bypassing `worker/protocol.ts`'s wrapper entirely. What changed is what forging a message can
+*reach*: a Worker's global scope has no `document`, `window`, `localStorage`, `sessionStorage` or
+cookies at all — categorically absent, not merely shadowed the way the main-thread sandbox
+shadows them — so there is no DOM and no page state on the other side of that bypass to touch,
+whatever a script manages to call. `sandbox.ts`'s shadow list grew to match: `close`,
+`addEventListener`, `removeEventListener`, `dispatchEvent`, `BroadcastChannel`, `MessageChannel`
+and `MessagePort` join the globals already shadowed, closing the *accidental* path even though
+the deliberate one — genuinely hostile code doing this on purpose — was never something a
+parameter name could close.
+
+`SimulationHost` (the main-thread half) treats every inbound message as untrusted regardless:
+`worker/protocol.ts`'s validators check shape — right `type`, right field types — before a single
+value is applied to `engine.scene`, and a message that fails is dropped rather than guessed at. A
+malformed *element* inside one tick's `ops`/`console`/`audio` (a script's own bad data, not
+necessarily an attack) is dropped individually rather than discarding the whole frame's transform
+updates over it.
+
+### 19.6 The watchdog: what a Worker gives you that the main thread cannot give itself
+
+This is the fix for the *other* honest limitation §10.2 and SCRIPTING.md both name: a `while
+(true) {}` in a script hangs the tab, because nothing on the main thread can interrupt synchronous
+JavaScript running on it. A Worker changes that not by making the loop interruptible — it still
+is not — but because a Worker can be `terminate()`d **from outside itself**, a capability the main
+thread does not have over itself. `SimulationHost` tracks how long it has been since the worker
+last reported in; past a configurable timeout (default 4s — generous relative to a real frame, so
+this is about tolerating a slow device or a backgrounded tab's timer throttling, not about
+detecting a hang quickly) it terminates the worker, reports why to the console through the same
+`ScriptSystem.events` emitter script errors already use, and respawns a fresh worker initialised
+from the host's current scene. An uncaught error escaping the worker's own `self.onerror` triggers
+the same recovery immediately, without waiting out the timeout.
+
+Proven rather than asserted: a real `while (true) {}` script, in a real browser, with worker mode
+on. The editor kept answering clicks — the pause button toggled normally — while the worker sat
+hung, and the watchdog recovered it a few seconds later with no reload and nothing touching the
+main thread. If the underlying script is still broken, the fresh worker hits the same loop and
+the cycle repeats, visibly, in the console, rather than failing silently once and going quiet.
+
+### 19.7 Keeping a system alive without disposing it
+
+Turning worker mode on could not simply `removeSystem` the four main-thread originals: `Engine.
+removeSystem` calls `dispose()`, and `ScriptSystem.dispose()` clears its `events` emitter — the
+same emitter the editor's Console panel subscribed to once, on mount, and never resubscribes to.
+Disposing it would have made worker mode a one-way trip: turn it on, and the Console panel loses
+script output forever, including after turning worker mode back off. `Engine.setSystemExcluded`
+(new) is the fix — it skips a system's `update` without removing or disposing it, so the four
+originals keep existing, keep their listeners, and (because `FrameStats` already reports zero for
+a section that stopped running, §9.7) the Performance panel shows exactly what happened with no
+change needed there either. Turning worker mode back off un-excludes them; each resyncs itself
+from the current scene on its next `update` exactly as it would on a fresh Play press
+(`PhysicsSystem.syncBodies`/`ScriptSystem.syncInstances` already treat "everything here is new"
+as their steady-state behaviour, not a special case), so no separate hand-off code was needed for
+that direction either.
+
+### 19.8 No schema change, and no change to the four systems under test
+
+Nothing here touches the scene format or `GameState`'s save shape (`GameState.syncFrom` is new,
+but it is the same replacement `fromJSON` already does, without the `restored` event a
+per-tick mirror would otherwise fire sixty times a second). And a session that never turns worker
+mode on runs the exact code path it ran in v0.7.9.5 — `PhysicsSystem`, `ScriptSystem`,
+`CharacterSystem` and `NpcSystem` are untouched, so every existing test of any of them, including
+the integration-level `gameplay/physicsScripting.test.ts` (§15.8), still exercises the real
+main-thread path with no change and no new indirection. The worker path is additive and is tested
+the same way the rest of this codebase tests things it cannot run headlessly in Node:
+`SimulationHost` against an injectable fake `Worker`, the exact seam `HardwareTransport` and
+`AudioEngine`'s `contextFactory` already use (§12.1, §18.1), and `SimulationEngine`'s own
+frame-building logic driven by hand with `engine.tick(dt)`, the same way `Engine.test.ts` always
+has — neither needs a real Worker to be a real test of what crosses the boundary.

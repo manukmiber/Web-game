@@ -530,10 +530,18 @@ Gameplay: NPC agents still steer by distance rather than by the solver, so they 
 other and through walls unless you give them colliders; angular dynamics, joints and continuous
 collision are all deliberately absent, in 2D as much as in 3D (see
 [docs/PHYSICS.md](./docs/PHYSICS.md)). Then line-of-sight instead of plain distance for NPC senses,
-navigation around obstacles, and moving scripts and the solver into a Worker — which for scripts is
-the same change as making the sandbox a real one, for physics is the reason `engine/physics` imports
-neither Three.js nor the DOM, and for both is now unblocked by the schedule, since you cannot decide
-what may run concurrently until the dependencies between systems are written down.
+and navigation around obstacles.
+
+Physics and scripting moved into a Worker in v0.7.9.6 — opt-in, from the Performance panel. What
+that does and does not buy is worth stating precisely: a script's `while (true) {}` no longer hangs
+the tab, because a Worker can be `terminate()`d from the outside in a way the main thread cannot
+terminate itself, and `SimulationHost`'s watchdog does exactly that and restarts the session
+automatically. It is *not* a new security boundary against a hostile script author — nothing in
+JavaScript can be, and `docs/SCRIPTING.md` says why — the isolation that matters here is structural:
+the Worker's global scope has no `document`, `window`, `localStorage` or cookies to reach *at all*,
+categorically rather than merely shadowed. Hardware transports and Web Audio stay on the main thread
+(`navigator.serial` and `AudioContext` are both main-thread-only), relayed across the boundary rather
+than reimplemented there — see `engine/worker/`.
 
 Modelling: edit mode (vertex/edge/face selection, loop cut, and extrude/inset on a *selection*
 rather than on every face), editable Bézier paths so a profile can be drawn rather than picked
@@ -1147,6 +1155,64 @@ Twenty new tests, covering the two deltas through `Clock` and `Engine`, the scri
 including the clamp and the reset on Stop, the four things a voice has to remember across the gap
 between `play` returning and a clip decoding, and two invariants over the panel description — that
 every dock is walked, and that no panel is bound to a key the browser needs.
+
+### v0.7.9.6 — physics and scripting move into a Worker
+
+The item §9.5 flagged back in Phase 1 and every scripting section since has repeated the caveat
+for: a script's `while (true) {}` hangs the tab, because nothing on the main thread can interrupt
+synchronous JavaScript running on it. `engine/**` being DOM-free was always aimed at this — "chunk
+generation, streaming, pathfinding and physics need to move into a Web Worker later, which is only
+possible if nothing in here reaches for `window` or `document` first" — and §16.2's system schedule
+existed specifically so *what* may run concurrently was written down before anyone tried.
+
+**What actually moved.** `PhysicsSystem`, `ScriptSystem`, `CharacterSystem` and `NpcSystem` — the
+`simulate`/`script`/`resolve` stages — now optionally run inside a dedicated simulation Worker
+instead of on the main thread, toggled from the Performance panel ("Run in a Web Worker",
+experimental, off by default). `HardwareSystem` and `AudioSystem` stay on the main thread: Web
+Serial and Web Audio are both main-thread-only APIs, and both systems only need this frame's scene
+and game state, which the worker already mirrors back every tick regardless.
+
+**Nothing about physics or scripting was rewritten to make this possible.** `engine/worker/
+SimulationEngine` boots an ordinary `Engine` in Play mode, with the same four systems
+`installGameplaySystems` installs, inside the Worker — §15.1 said a hand-rolled solver "runs in a
+Worker without a single import changing," and that turned out to be exactly true. The only new
+code is the plumbing around it: a scene snapshot in on `init`, and every tick out a batch of
+transform updates, structural scene ops (spawns, destroys, component edits — mirrored the same way
+Play mode already lets scripts write straight through `Scene`, see §6), console messages, and
+recorded audio commands, all validated by shape (`worker/protocol.ts`) before the host trusts a
+single field of them.
+
+**The watchdog is the part that matters most.** A Worker can be `terminate()`d from the *outside*
+— a capability the main thread does not have over itself — so `SimulationHost` tracks how long it
+has been since the worker last reported in and, past a timeout, tears it down, reports why to the
+console, and respawns it from the host's current scene. An infinite loop is no longer a page
+reload; it is one console line and a session that keeps going. Proven with an actual `while (true)
+{}` script in a real browser: the editor kept answering clicks while the worker sat hung, and the
+watchdog recovered it a few seconds later without any of it touching the main thread.
+
+**This is not a new security boundary**, and the sandbox note in `docs/SCRIPTING.md` says so
+directly rather than letting the word "Worker" oversell it: `({}).constructor.constructor` still
+rebuilds the real `Function` from inside the Worker, and from there a script can reach the Worker's
+own genuine `postMessage`. What changed is what reaching it gets you — the Worker's global scope
+has no `document`, `window`, `localStorage` or cookies at all, not shadowed but categorically
+absent — and `worker/protocol.ts`'s validators mean a forged message can at worst confuse the
+bridge, never touch the scene, unvalidated. `sandbox.ts`'s shadow list grew to match: `close`,
+`addEventListener`, `BroadcastChannel` and a few other Worker-shaped escape hatches join the ones
+already shadowed for the main-thread case.
+
+**No schema change, and no change to the four systems' own behaviour or tests.** A world that never
+turns worker mode on runs exactly the code it ran in v0.7.9.5 — `Engine.setSystemExcluded` (new)
+skips a system's `update` without disposing it, which is what lets the four originals hand off to
+the worker bridge and later take a session back over mid-scene, keeping the same instances the
+Console panel already subscribed to. `RelayAudioEngine` and the scene-op mirror are the two other
+new pieces load-bearing enough to name: the first is a small subclass of `AudioEngine` that records
+what a script asked for instead of touching Web Audio, because there is none inside a Worker; the
+second is what makes `scene.spawn(...)` from a worker-run script show up in the Hierarchy at all.
+
+Sixty-some new tests across `engine/worker/`, none of them needing a real `Worker` — `SimulationHost`
+is tested against an injectable fake exactly the way `HardwareTransport` and `contextFactory`
+already are, and `SimulationEngine`'s own frame-building logic is driven by hand with
+`engine.tick(dt)`, the same way `Engine.test.ts` always has.
 
 ## Layout
 

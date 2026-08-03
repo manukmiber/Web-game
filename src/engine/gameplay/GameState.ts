@@ -138,10 +138,26 @@ export class GameState {
    * back with agents that forgot who they were chasing.
    */
   fromJSON(data: GameStateSnapshot): void {
+    this.replace(data);
+    this.events.emit('restored', {});
+  }
+
+  /**
+   * The same replacement `fromJSON` does, without announcing it.
+   *
+   * For the simulation worker's continuous per-frame mirror (`engine/worker/SimulationHost`):
+   * the host's copy of `GameState` is resynced from the worker's authoritative one many times a
+   * second, and firing `restored` on every one of them would announce "Game loaded" to the
+   * console sixty times a second instead of once, on an actual save load.
+   */
+  syncFrom(data: GameStateSnapshot): void {
+    this.replace(data);
+  }
+
+  private replace(data: GameStateSnapshot): void {
     this.actors.clear();
     this.vars.clear();
     for (const actor of data.actors) this.actors.set(actor.id, { ...actor });
     for (const [key, value] of data.vars) this.vars.set(key, value);
-    this.events.emit('restored', {});
   }
 }

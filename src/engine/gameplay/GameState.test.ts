@@ -129,6 +129,23 @@ describe('GameState', () => {
     expect(restores).toBe(1);
   });
 
+  it('syncFrom replaces the registry the same way fromJSON does, silently', () => {
+    const game = new GameState();
+    game.register('stale', 'survivor', 10);
+    let restores = 0;
+    game.events.on('restored', () => (restores += 1));
+
+    game.syncFrom({
+      actors: [{ id: 'e1', faction: 'survivor', health: 40, maxHealth: 100, alive: true }],
+      vars: [['wave', 2]],
+    });
+
+    expect(game.get('stale')).toBeUndefined();
+    expect(game.get('e1')).toEqual({ id: 'e1', faction: 'survivor', health: 40, maxHealth: 100, alive: true });
+    expect(game.getVar('wave')).toBe(2);
+    expect(restores).toBe(0);
+  });
+
   it('toJSON snapshots values rather than sharing references with live state', () => {
     const game = new GameState();
     const actor = game.register('e1', 'survivor', 100);
