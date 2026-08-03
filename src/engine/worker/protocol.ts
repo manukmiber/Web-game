@@ -242,6 +242,13 @@ function isAudioCommand(value: unknown): value is AudioCommand {
 
 function isGameStateSnapshot(value: unknown): value is GameStateSnapshot {
   if (!isRecord(value) || !Array.isArray(value.actors) || !Array.isArray(value.vars)) return false;
+  // Each entry has to actually be the `[key, value]` pair `GameState.replace` destructures —
+  // an unchecked element here (an object, a bare number) throws inside that destructure with
+  // nothing upstream to catch it, which is exactly the kind of gap this validator exists to
+  // close before `game` is trusted at all.
+  if (!value.vars.every((v) => Array.isArray(v) && v.length === 2 && typeof v[0] === 'string')) {
+    return false;
+  }
   return value.actors.every(
     (a) =>
       isRecord(a) &&

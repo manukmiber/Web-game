@@ -193,7 +193,16 @@ export class SimulationHost {
       engine.scene.markTransformDirty(update.id);
     }
 
-    engine.game.syncFrom(message.game);
+    // Defense-in-depth alongside `protocol.isGameStateSnapshot`: a validator gap here has no
+    // per-element isolation the way `applySceneOps`/`applyAudioCommands` give the ops and audio
+    // arrays, so a `game` this host's own validator failed to fully reject would otherwise throw
+    // out of `onmessage` uncaught and skip every step after it in this frame (clock sync, audio,
+    // console) rather than degrading to "this tick's game-state update did not apply."
+    try {
+      engine.game.syncFrom(message.game);
+    } catch (error) {
+      console.warn('[SimulationHost] dropped a malformed game-state snapshot:', error);
+    }
 
     if (message.clock.paused !== engine.paused) engine.setPaused(message.clock.paused);
     if (message.clock.timeScale !== engine.getTimeScale()) engine.setTimeScale(message.clock.timeScale);

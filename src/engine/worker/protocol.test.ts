@@ -57,6 +57,15 @@ describe('parseWorkerMessage', () => {
     expect(parseWorkerMessage(frame)).toBeNull();
   });
 
+  it('rejects a frame whose game.vars entries are not [key, value] pairs', () => {
+    // GameState.replace destructures each entry as `[key, value]`; an unvalidated non-pair
+    // (an object, a bare number) would throw there with nothing upstream to catch it.
+    const frame = validFrame();
+    for (const badVars of [[{}], [42], [null], [['onlyOneElement']], [[1, 'value']]]) {
+      expect(parseWorkerMessage({ ...frame, game: { actors: [], vars: badVars } })).toBeNull();
+    }
+  });
+
   it('accepts a fatal message and rejects a malformed one', () => {
     expect(parseWorkerMessage({ channel: CHANNEL, type: 'fatal', message: 'boom' })).toEqual({
       channel: CHANNEL,
