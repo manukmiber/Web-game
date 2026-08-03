@@ -102,9 +102,15 @@ const CONTEXT_KEYS = [
  * regardless. Scene JSON is therefore executable code and must be treated as such — do not run
  * a scene you would not run a script from.
  *
- * Real isolation means a Worker or a sandboxed iframe with its own CSP, where the script has no
- * shared heap to reach into. That is a Phase 3 item, and it needs the script API to be
- * message-based first; this list is what makes the API worth freezing before then.
+ * Real isolation is `engine/worker` (a script now genuinely runs on a different thread, with no
+ * `document`/`window`/`localStorage` to reach *at all* — not merely shadowed, categorically
+ * absent from that global scope). That does not make this list decorative: `constructor.
+ * constructor` still rebuilds the *real* `Function`, and from there a script running inside the
+ * simulation Worker could call the Worker's own genuine `postMessage`/`close`/
+ * `addEventListener` directly, bypassing this wrapper and reaching the raw channel
+ * `worker/protocol.ts` and `SimulationHost` are built to distrust. Shadowing the parameter names
+ * here is what a script reaches for *first*, in both places it might be running — the point is
+ * to keep the accidental path closed even though the deliberate one cannot be.
  */
 const SHADOWED_GLOBALS = [
   'globalThis',
@@ -126,10 +132,17 @@ const SHADOWED_GLOBALS = [
   'XMLHttpRequest',
   'WebSocket',
   'EventSource',
+  'BroadcastChannel',
+  'MessageChannel',
+  'MessagePort',
   'Worker',
   'SharedWorker',
   'importScripts',
   'postMessage',
+  'addEventListener',
+  'removeEventListener',
+  'dispatchEvent',
+  'close',
   'alert',
   'confirm',
   'prompt',

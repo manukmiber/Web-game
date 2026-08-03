@@ -171,6 +171,8 @@ export class Engine {
   /** Scene snapshot taken on entering play, restored on exit. §6 */
   private playSnapshot: SceneSnapshot | null = null;
   private unsubscribes: (() => void)[] = [];
+  /** Names ticking is skipped for — see `setSystemExcluded`. */
+  private excluded = new Set<string>();
 
   constructor(scene = new Scene(), assets = new AssetStore(), audio = new AudioEngine()) {
     this.scene = scene;
@@ -205,6 +207,24 @@ export class Engine {
     this.systems[index]!.dispose?.();
     this.systems.splice(index, 1);
     this.scheduleDirty = true;
+  }
+
+  /**
+   * Skips a system's `update` without removing it — unlike `removeSystem`, the instance is
+   * neither disposed nor dropped from `systemOrder()`.
+   *
+   * For a host that wants to temporarily hand a system's job to something else, the way
+   * `worker/WorkerSimBridge.ts` hands `PhysicsSystem`/`ScriptSystem`/`CharacterSystem`/
+   * `NpcSystem`'s work to a simulation Worker. `removeSystem` is the wrong tool for that: it
+   * calls `dispose()`, and `ScriptSystem.dispose()` clears its `events` emitter — which still
+   * has subscribers (the editor's Console panel) that must keep working if worker mode is later
+   * turned back off. An excluded system keeps existing, keeps its listeners, and — because
+   * `FrameStats` already reports zero for a section that stopped running (§9.7) — the
+   * Performance panel shows exactly what actually happened with no change needed there either.
+   */
+  setSystemExcluded(name: string, excluded: boolean): void {
+    if (excluded) this.excluded.add(name);
+    else this.excluded.delete(name);
   }
 
   /**
@@ -330,7 +350,7 @@ export class Engine {
     // the difference between the performance panel being a readout and being an instrument.
     this.reschedule();
     for (const system of this.ordered) {
-      if (!system.runsIn.includes(this.mode)) continue;
+      if (!system.runsIn.includes(this.mode) || this.excluded.has(system.name)) continue;
       this.stats.beginSection(system.name);
       system.update(dt, this);
       this.stats.endSection(system.name);

@@ -93,6 +93,28 @@ describe('compileScript', () => {
     expect(props.json).toBe('object');
   });
 
+  it('shadows the worker-specific escape hatches too, since a script may now run inside one', () => {
+    const compiled = compileScript(`
+      function start() {
+        props.postMessage = typeof postMessage;
+        props.close = typeof close;
+        props.addEventListener = typeof addEventListener;
+        props.broadcastChannel = typeof BroadcastChannel;
+        props.messageChannel = typeof MessageChannel;
+      }
+    `);
+    if (!compiled.ok) throw new Error(compiled.error);
+
+    const props: Record<string, ScriptPropValue> = {};
+    compiled.factory(context(props)).start?.();
+
+    expect(props.postMessage).toBe('undefined');
+    expect(props.close).toBe('undefined');
+    expect(props.addEventListener).toBe('undefined');
+    expect(props.broadcastChannel).toBe('undefined');
+    expect(props.messageChannel).toBe('undefined');
+  });
+
   it('runs in strict mode, so a typo is an error rather than a new global', () => {
     const compiled = compileScript('function update() { undeclared = 1; }');
     if (!compiled.ok) throw new Error(compiled.error);

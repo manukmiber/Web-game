@@ -5,6 +5,7 @@ import type { ToolContext } from '@engine/assistant/ToolRegistry';
 import { installGameplaySystems, type GameplaySystems } from '@engine/gameplay/systems';
 import { Engine } from '@engine/loop/Engine';
 import type { Vec3 } from '@engine/scene/types';
+import { disableWorkerSimulation, enableWorkerSimulation } from '@engine/worker/WorkerSimBridge';
 import { CommandSceneEditor } from './assistant/CommandSceneEditor';
 import { connectMcpBridge, type McpBridgeState } from './assistant/mcpBridge';
 import type { Command } from './commands/Command';
@@ -49,7 +50,7 @@ export interface EditorContextValue {
 const EditorContext = createContext<EditorContextValue | null>(null);
 
 /** Reported to MCP clients in `initialize`, so a client can tell which build it is driving. */
-const EDITOR_VERSION = '0.7.9.5';
+const EDITOR_VERSION = '0.7.9.6';
 
 export function EditorProvider({ children }: { children: ReactNode }) {
   // Refs rather than state: these are created once and must survive every re-render, and
@@ -230,6 +231,31 @@ export function EditorProvider({ children }: { children: ReactNode }) {
     return () => {
       for (const unsubscribe of unsubscribes) unsubscribe();
       engine.stop();
+    };
+  }, [value]);
+
+  // Kept as its own effect, separate from the one above: this is the one place the "run
+  // simulation in a Worker" setting (Performance panel) actually takes effect, and it has to
+  // survive the Performance panel itself being unmounted — a hidden dock panel is unmounted
+  // (§14.4), and a setting that reverted itself the moment you looked at another tab would not
+  // be a setting.
+  useEffect(() => {
+    const { engine, systems } = value;
+    let active = false;
+    const applyState = (enabled: boolean) => {
+      if (enabled === active) return;
+      active = enabled;
+      if (enabled) enableWorkerSimulation(engine, systems);
+      else disableWorkerSimulation(engine);
+    };
+
+    applyState(useEditorStore.getState().simWorkerEnabled);
+    const unsubscribe = useEditorStore.subscribe((state, previous) => {
+      if (state.simWorkerEnabled !== previous.simWorkerEnabled) applyState(state.simWorkerEnabled);
+    });
+    return () => {
+      unsubscribe();
+      if (active) disableWorkerSimulation(engine);
     };
   }, [value]);
 

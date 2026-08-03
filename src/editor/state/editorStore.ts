@@ -110,6 +110,14 @@ interface EditorState {
   perf: PerfSettings;
   /** Renderer quality. Persisted per browser, not per scene — see `graphicsSettings.ts`. */
   graphics: GraphicsSettings;
+  /**
+   * Whether physics, scripting, the character controller and NPC agents run inside
+   * `engine/worker`'s simulation Worker instead of on the main thread — see
+   * `worker/WorkerSimBridge.ts`. Session-only rather than persisted like `graphics`: this is a
+   * new, opt-in capability rather than an established quality knob, and a page reload reverting
+   * to the known-good main-thread path is the safer default for a first release.
+   */
+  simWorkerEnabled: boolean;
   /** Dock sizes and which panel is frontmost in each. Persisted — see `layout.ts`. */
   layout: LayoutState;
   consoleMessages: ConsoleMessage[];
@@ -134,6 +142,7 @@ interface EditorState {
   setPerf(patch: Partial<PerfSettings>): void;
   setGraphics(patch: Partial<GraphicsSettings>): void;
   resetGraphics(): void;
+  setSimWorkerEnabled(enabled: boolean): void;
   setLayout(patch: Partial<LayoutState>): void;
   /** Opens the panel's dock and brings the panel frontmost. */
   showPanel(panel: PanelId): void;
@@ -190,6 +199,7 @@ export const useEditorStore = create<EditorState>((set) => ({
   statusMessage: null,
   perf: { ...DEFAULT_PERF },
   graphics: loadGraphicsSettings(),
+  simWorkerEnabled: false,
   layout: loadLayout(),
   consoleMessages: [],
   assistantBusy: false,
@@ -232,6 +242,7 @@ export const useEditorStore = create<EditorState>((set) => ({
       saveGraphicsSettings(graphics);
       return { graphics };
     }),
+  setSimWorkerEnabled: (simWorkerEnabled) => set({ simWorkerEnabled }),
   /**
    * Sizes are clamped against the window on write, not on read, for the same reason graphics
    * settings are normalized on write: the splitter's readout and the dock's actual width are

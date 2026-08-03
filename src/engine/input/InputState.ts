@@ -68,6 +68,25 @@ const PAIRED: Record<string, string> = {
   AltRight: 'AltLeft',
 };
 
+/**
+ * A wire-safe reading of everything a script or system can read off `InputState`.
+ *
+ * `down` is level state (what's held right now); `applySnapshot` derives press/release edges
+ * from it by diffing against whatever was held last time, the same way a real keyboard's
+ * key-down/key-up events would. This is what lets a simulation running in a Worker (§9.5) see
+ * the same edges a main-thread `update` would, without the Worker ever touching the DOM itself.
+ */
+export interface InputSnapshot {
+  down: string[];
+  axes: [string, number][];
+  pointerX: number;
+  pointerY: number;
+  pointerDeltaX: number;
+  pointerDeltaY: number;
+  wheelDelta: number;
+  buttons: number;
+}
+
 export class InputState {
   /** Pointer position in normalised device coordinates, -1..1, y up. */
   pointerX = 0;
@@ -164,6 +183,44 @@ export class InputState {
   /** -1, 0 or 1 — the shape every movement system wants. */
   axis(negative: string, positive: string): number {
     return (this.isDown(positive) ? 1 : 0) - (this.isDown(negative) ? 1 : 0);
+  }
+
+  // ----------------------------------------------------------------- worker
+
+  /** A plain, structured-cloneable reading of everything below, for `postMessage`. */
+  toSnapshot(): InputSnapshot {
+    return {
+      down: [...this.down],
+      axes: [...this.axes],
+      pointerX: this.pointerX,
+      pointerY: this.pointerY,
+      pointerDeltaX: this.pointerDeltaX,
+      pointerDeltaY: this.pointerDeltaY,
+      wheelDelta: this.wheelDelta,
+      buttons: this.buttons,
+    };
+  }
+
+  /**
+   * Applies a snapshot taken elsewhere — the host's real `InputState` — as if the keys had been
+   * pressed and released here directly.
+   *
+   * Diffed against the *previous* snapshot's held set rather than replacing `down` outright, so
+   * `setKey` computes real press/release edges instead of every held key reporting itself newly
+   * pressed on every call. That is what makes `wasPressed`/`wasReleased` behave identically for
+   * a script running in a Worker and one running on the main thread.
+   */
+  applySnapshot(snapshot: InputSnapshot): void {
+    const next = new Set(snapshot.down);
+    for (const code of next) if (!this.down.has(code)) this.setKey(code, true);
+    for (const code of [...this.down]) if (!next.has(code)) this.setKey(code, false);
+    this.axes = new Map(snapshot.axes);
+    this.pointerX = snapshot.pointerX;
+    this.pointerY = snapshot.pointerY;
+    this.pointerDeltaX = snapshot.pointerDeltaX;
+    this.pointerDeltaY = snapshot.pointerDeltaY;
+    this.wheelDelta = snapshot.wheelDelta;
+    this.buttons = snapshot.buttons;
   }
 
   // --------------------------------------------------------------- lifecycle

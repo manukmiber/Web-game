@@ -45,6 +45,9 @@ export function PerformancePanel({ viewport }: Props) {
   const graphics = useEditorStore((s) => s.graphics);
   const setGraphics = useEditorStore((s) => s.setGraphics);
   const showPanel = useEditorStore((s) => s.showPanel);
+  const simWorkerEnabled = useEditorStore((s) => s.simWorkerEnabled);
+  const setSimWorkerEnabled = useEditorStore((s) => s.setSimWorkerEnabled);
+  const workerSupported = typeof Worker !== 'undefined';
   const [report, setReport] = useState<FrameReport | null>(null);
   const [stress, setStress] = useState<StressStats | null>(null);
   const [scatter, setScatter] = useState({ instances: 0, drawCalls: 0 });
@@ -255,6 +258,29 @@ export function PerformancePanel({ viewport }: Props) {
             </p>
           </Group>
         )}
+
+        <Group title="Simulation thread">
+          <Row label="Run in a Web Worker">
+            <input
+              type="checkbox"
+              checked={simWorkerEnabled}
+              disabled={!workerSupported}
+              onChange={(e) => setSimWorkerEnabled(e.currentTarget.checked)}
+            />
+          </Row>
+          <p className="note">
+            {workerSupported ? (
+              <>
+                Experimental. Moves Physics, Scripts, the character controller and NPC agents
+                onto a background thread, so a script&rsquo;s infinite loop can no longer hang the
+                editor — the worker is restarted automatically if it stops responding. Takes
+                effect on the next Play; hardware and audio stay on the main thread.
+              </>
+            ) : (
+              'Not available — this browser has no Web Worker support.'
+            )}
+          </p>
+        </Group>
 
         <Group title="Stress scene">
           <Row label="Preset">

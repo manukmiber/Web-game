@@ -317,12 +317,24 @@ the browser devtools. Clicking a message selects the entity that produced it.
 shadowed to `undefined`, which stops the accidents and makes the intended API discoverable. It
 does not contain hostile code: `eval` cannot be shadowed at all (it is illegal as a parameter
 name in strict mode), and `({}).constructor.constructor` rebuilds `Function` from nothing. A
-scene file therefore *is* executable code — do not open one you would not run a script from.
-Real isolation means a Worker or a sandboxed iframe, which needs the API to be message-based
-first.
+scene file therefore *is* executable code — do not open one you would not run a script from. That
+is still true whether or not scripting is running in the Worker described below: reaching real
+`Function` there reaches the Worker's own real `postMessage`, not a shadowed one. What the Worker
+changes is what is on the other side of that reach — see the next point.
 
-**An infinite loop hangs the tab.** There is no way to interrupt synchronous JavaScript on the
-main thread. Same fix as above, same reason it has not been done yet.
+**An infinite loop hangs the tab, unless scripting is running in a Worker.** There is no way to
+interrupt synchronous JavaScript on the main thread — but as of v0.7.9.6, main-thread execution is
+opt-out rather than mandatory: the Performance panel's "Run in a Web Worker" setting moves
+scripting (and physics, and the character controller and NPC agents) onto a background thread,
+where a `while (true) {}` hangs only that thread. A Worker can be `terminate()`d from *outside*
+itself, which the main thread cannot do to itself, and the engine's watchdog does exactly that —
+detects a worker that has stopped responding, reports it to the Console, and restarts the
+simulation automatically. This is not the same claim as "the sandbox is now secure": a script that
+deliberately reaches the Worker's real global scope can still call its real `postMessage`, `close`
+and so on — those are shadowed too, now, alongside `window`/`document` (see `sandbox.ts`) — but
+what it reaches from there has no DOM, no `localStorage`, no cookies at all to touch, categorically
+rather than merely undefined. See ARCHITECTURE.md §19 for the whole design, including what stays
+on the main thread (hardware and audio) and why.
 
 **No `setTimeout`, no async.** `setTimeout` and `setInterval` are shadowed deliberately: a real
 timer outlives Play mode and would keep firing into a scene that no longer exists. Use

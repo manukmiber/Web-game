@@ -7,6 +7,7 @@ import { Engine, type EngineMode, type System } from './Engine';
 class Recorder implements System {
   ticks = 0;
   resets = 0;
+  disposed = false;
 
   constructor(
     readonly name: string,
@@ -21,6 +22,10 @@ class Recorder implements System {
 
   reset(): void {
     this.resets += 1;
+  }
+
+  dispose(): void {
+    this.disposed = true;
   }
 }
 
@@ -56,6 +61,23 @@ describe('Engine', () => {
     engine.tick(0.016);
     expect(always.ticks).toBe(2);
     expect(gameplay.ticks).toBe(1);
+  });
+
+  it('excludes a system from ticking without removing or disposing it', () => {
+    const engine = new Engine();
+    const system = new Recorder('gameplay', ['play']);
+    engine.addSystem(system);
+    engine.setMode('play');
+
+    engine.setSystemExcluded('gameplay', true);
+    engine.tick(0.016);
+    expect(system.ticks).toBe(0);
+    expect(system.disposed).toBe(false);
+    expect(engine.systemOrder()).toContain(system);
+
+    engine.setSystemExcluded('gameplay', false);
+    engine.tick(0.016);
+    expect(system.ticks).toBe(1);
   });
 
   it('resets every system on each mode change, in both directions', () => {
