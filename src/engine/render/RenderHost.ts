@@ -488,6 +488,10 @@ export class RenderHost {
     if (this.environmentDirty) this.syncEnvironment();
     this.syncGameCamera();
     const camera = this.activeCamera;
+    // Streaming and LOD (ARCHITECTURE.md §9.2) run before anything below reads the scene, so
+    // this frame's origin rebase and chunk load/unload are what the shadow budget and the draw
+    // itself see — not last frame's.
+    this.bridge.updateStreaming(camera.position.x, camera.position.y, camera.position.z);
     this.sky?.update(camera);
 
     // Spent per frame rather than once, because which lights matter is a function of where the
