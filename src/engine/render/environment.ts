@@ -85,8 +85,13 @@ export class SkyDome {
     (this.material.uniforms.groundColor!.value as THREE.Color).set(ground);
   }
 
-  /** Keeps the dome centred on the camera and comfortably inside its far plane. */
-  update(camera: THREE.PerspectiveCamera): void {
+  /**
+   * Keeps the dome centred on the camera and comfortably inside its far plane.
+   *
+   * Either projection — the editor's 2D view looks at the same sky through an orthographic
+   * camera, and all this needs from one is where it is and how far it can see.
+   */
+  update(camera: THREE.PerspectiveCamera | THREE.OrthographicCamera): void {
     const radius = Math.max(camera.far * 0.5, 10);
     this.mesh.matrix.makeScale(radius, radius, radius);
     this.mesh.matrix.setPosition(camera.position);

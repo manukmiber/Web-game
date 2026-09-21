@@ -23,6 +23,26 @@ export interface CharacterControllerComponent extends Component {
   sprintMultiplier: number;
   /** Degrees per second for the turn keys. */
   turnSpeed: number;
+  /**
+   * Whether pointer travel turns the character.
+   *
+   * On by default, because "I moved the mouse and nothing happened" is the first thing anyone
+   * reports about a first-person scene. It is still a field rather than a constant: a top-down
+   * or side-on game wants the pointer aiming at something on screen, not steering the body, and
+   * that is one tick box rather than a fork of this system.
+   */
+  mouseLook: boolean;
+  /** Degrees of turn per pixel of pointer travel. 0.1–0.3 is the range shooters ship with. */
+  lookSensitivity: number;
+  /** Flips vertical look, the way a flight-sim player expects it. */
+  invertLook: boolean;
+  /**
+   * How far the rig's camera may pitch away from level, in degrees.
+   *
+   * Short of 90 on purpose: at exactly 90 the view is looking straight down its own up axis,
+   * where yaw and roll become the same rotation and the horizon spins.
+   */
+  maxPitch: number;
   /** Faction the NPC system matches against. */
   faction: string;
   maxHealth: number;
@@ -71,6 +91,10 @@ export function createCharacterController(
     moveSpeed: 4,
     sprintMultiplier: 1.8,
     turnSpeed: 140,
+    mouseLook: true,
+    lookSensitivity: 0.15,
+    invertLook: false,
+    maxPitch: 80,
     faction: 'survivor',
     maxHealth: 100,
     groundHeight: 0,
@@ -95,12 +119,30 @@ registerComponent<CharacterControllerComponent>({
       { kind: 'number', key: 'moveSpeed', label: 'Move Speed', min: 0, step: 0.1 },
       { kind: 'number', key: 'sprintMultiplier', label: 'Sprint x', min: 1, step: 0.1 },
       { kind: 'number', key: 'turnSpeed', label: 'Turn Speed', min: 1, step: 10 },
+      { kind: 'boolean', key: 'mouseLook', label: 'Mouse Look' },
       { kind: 'string', key: 'faction', label: 'Faction' },
       { kind: 'number', key: 'maxHealth', label: 'Max Health', min: 1, step: 1 },
       { kind: 'number', key: 'radius', label: 'Radius', min: 0.05, step: 0.05 },
       { kind: 'number', key: 'height', label: 'Height', min: 0.2, step: 0.1 },
       { kind: 'boolean', key: 'useGravity', label: 'Use Gravity' },
     ];
+
+    // Shown only when the control they configure is on, for the same reason the gravity fields
+    // below are: a sensitivity slider that moves nothing is a bug report waiting to be filed.
+    if (component.mouseLook) {
+      fields.push(
+        {
+          kind: 'number',
+          key: 'lookSensitivity',
+          label: 'Look °/px',
+          min: 0.01,
+          max: 2,
+          step: 0.01,
+        },
+        { kind: 'boolean', key: 'invertLook', label: 'Invert Look' },
+        { kind: 'number', key: 'maxPitch', label: 'Max Pitch °', min: 0, max: 89, step: 1 },
+      );
+    }
 
     if (component.useGravity) {
       fields.push(

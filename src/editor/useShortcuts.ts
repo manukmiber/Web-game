@@ -45,6 +45,14 @@ export function useShortcuts(viewport: ViewportController | null): void {
       if (store.playing) {
         if (event.key === 'Escape') {
           event.preventDefault();
+          /**
+           * Escape does one thing at a time: the mouse first, the session second.
+           *
+           * Stopping Play is destructive — the running scene is discarded and the authored one
+           * restored — so it must not share a keystroke with "give me my cursor back", which is
+           * what Escape means to every browser while a pointer lock is held.
+           */
+          if (viewport?.consumeLookEscape()) return;
           engine.setMode('edit');
           return;
         }
@@ -124,6 +132,17 @@ export function useShortcuts(viewport: ViewportController | null): void {
         case 'f':
         case 'F':
           viewport?.focusSelection();
+          break;
+        /**
+         * Two keys rather than one toggle. Which view you are in is something you often know
+         * without looking — "put me in 2D" is a different intent from "swap whatever I am in"
+         * — and a toggle answers the second question when you asked the first.
+         */
+        case '2':
+          store.setViewMode('2D');
+          break;
+        case '3':
+          store.setViewMode('3D');
           break;
         case 'Delete':
         case 'Backspace':

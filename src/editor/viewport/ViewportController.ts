@@ -1,10 +1,19 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { findPrimaryCamera } from '@engine/components/Camera';
+import type { CharacterControllerComponent } from '@engine/components/CharacterController';
 import type { Engine } from '@engine/loop/Engine';
 import type { GraphicsSettings } from '@engine/render/GraphicsSettings';
 import type { RenderBridge } from '@engine/render/RenderBridge';
 import { RenderHost } from '@engine/render/RenderHost';
+import {
+  ORTHO_EYE_HEIGHT,
+  ORTHO_MAX_ZOOM,
+  ORTHO_MIN_ZOOM,
+  clampOrthoZoom,
+  orthoHalfHeight,
+  zoomToFit,
+} from '@engine/render/topDownView';
 import { collectSceneStats } from '@engine/perf/SceneStats';
 import {
   CITY_PRESET,
@@ -12,10 +21,11 @@ import {
   StressScene,
   type StressParams,
 } from '@engine/perf/StressScene';
+import type { Scene } from '@engine/scene/Scene';
 import type { EntityId } from '@engine/scene/types';
 import type { CommandHistory } from '../commands/Command';
 import { isCoarsePointer, isTextEntry } from '../dom';
-import { editorState, useEditorStore } from '../state/editorStore';
+import { editorState, useEditorStore, type ViewMode } from '../state/editorStore';
 import { GizmoController } from './GizmoController';
 import { GroundGrid } from './GroundGrid';
 import { SceneGizmos } from './SceneGizmos';
@@ -43,6 +53,18 @@ const TOUCH_CLICK_SLOP_PX = 14;
 const TOUCH_GIZMO_SCALE = 1.9;
 /** How far off a tap's centre the extra picking rays are fired. See `pick`. */
 const TOUCH_PICK_SPREAD_PX = 11;
+/**
+ * How long after the pointer lock ends an Escape is still read as having ended it.
+ *
+ * Browsers disagree about whether the Escape that releases a pointer lock is also delivered to
+ * the page: Chrome swallows it, others do not. Without this, Play mode would stop on the first
+ * Escape in one browser and the second in another — and stopping Play is destructive, because
+ * the running scene is thrown away and the authored one restored. The grace window makes the
+ * answer the same everywhere: the first Escape gives the mouse back, the second stops playing.
+ */
+const POINTER_UNLOCK_GRACE_MS = 350;
+/** How far past the frame's edge the 2D grid keeps drawing, as a multiple of the half-height. */
+const ORTHO_GRID_REACH = 1.6;
 
 /**
  * The editor's viewport: a RenderHost plus the tools that only the editor has.
@@ -56,7 +78,17 @@ export class ViewportController {
   readonly host: RenderHost;
 
   private overlay = new THREE.Scene();
+  /**
+   * One set of controls per camera, rather than one whose camera is swapped.
+   *
+   * OrbitControls derives its internal frame from `object.up` in its *constructor*, and the 2D
+   * camera's up is world -Z where the 3D camera's is +Y — so a swapped-in camera would be driven
+   * through the wrong frame. Two instances also mean each view keeps its own target, which is
+   * what makes leaving the 2D view and coming back land where you left it.
+   */
   private orbit: OrbitControls;
+  private orbit2D: OrbitControls;
+  private viewMode: ViewMode = '3D';
   private gizmo: GizmoController;
   private outline: SelectionOutline;
   private grid = new GroundGrid();
@@ -70,6 +102,10 @@ export class ViewportController {
 
   private raycaster = new THREE.Raycaster();
   private pointerDownAt: { x: number; y: number; touch: boolean } | null = null;
+  /** Whether this play session wants the pointer captured. See `setPlaying`. */
+  private wantsPointerCapture = false;
+  /** When the pointer lock last ended, for `consumeLookEscape`. */
+  private pointerUnlockedAt = 0;
   /** True when the primary pointer is a finger. Decides hit-target sizes, nothing else. */
   private coarsePointer = false;
   private canvas: HTMLCanvasElement;
@@ -107,6 +143,43 @@ export class ViewportController {
     // gesture changed between Three releases, and orbit-on-one-finger is what the viewport hint
     // promises.
     this.orbit.touches = { ONE: THREE.TOUCH.ROTATE, TWO: THREE.TOUCH.DOLLY_PAN };
+    /**
+     * Middle-drag pans, where Three's default dollies it.
+     *
+     * The viewport hint has promised "Pan: middle / right drag" since the day it was written and
+     * the middle button has never done it — it zoomed, duplicating the wheel and leaving the
+     * documented gesture missing. Written out in full rather than patching the one entry, because
+     * a partial override of a defaulted object is the kind of thing that reads as an accident.
+     */
+    this.orbit.mouseButtons = {
+      LEFT: THREE.MOUSE.ROTATE,
+      MIDDLE: THREE.MOUSE.PAN,
+      RIGHT: THREE.MOUSE.PAN,
+    };
+
+    /**
+     * The 2D view's navigation: pan and zoom, and no orbit at all.
+     *
+     * Dragging rotates in the 3D view and pans here, because that is what dragging means in every
+     * 2D editor there is — and because an orbit that tilted the camera would stop it being a top
+     * view. `screenSpacePanning` has to be on: with it off, OrbitControls pans in the plane
+     * perpendicular to the camera's up, which for a camera looking straight down is the *vertical*
+     * plane, and a pan would fly the view up out of the world instead of across it.
+     */
+    this.orbit2D = new OrbitControls(this.host.orthoCamera, this.canvas);
+    this.orbit2D.enabled = false;
+    this.orbit2D.enableDamping = true;
+    this.orbit2D.dampingFactor = 0.12;
+    this.orbit2D.enableRotate = false;
+    this.orbit2D.screenSpacePanning = true;
+    this.orbit2D.minZoom = ORTHO_MIN_ZOOM;
+    this.orbit2D.maxZoom = ORTHO_MAX_ZOOM;
+    this.orbit2D.mouseButtons = {
+      LEFT: THREE.MOUSE.PAN,
+      MIDDLE: THREE.MOUSE.PAN,
+      RIGHT: THREE.MOUSE.PAN,
+    };
+    this.orbit2D.touches = { ONE: THREE.TOUCH.PAN, TWO: THREE.TOUCH.DOLLY_PAN };
 
     this.gizmo = new GizmoController(
       this.host.camera,
@@ -126,7 +199,7 @@ export class ViewportController {
      * the drag off the axis entirely.
      */
     this.gizmo.controls.addEventListener('dragging-changed', (event) => {
-      this.orbit.enabled = !event.value;
+      this.activeOrbit.enabled = !event.value;
     });
     this.outline = new SelectionOutline(this.host.bridge);
     this.sceneGizmos = new SceneGizmos(engine.scene, this.host.bridge);
@@ -233,8 +306,14 @@ export class ViewportController {
     return this.host.bridge;
   }
 
-  private get camera(): THREE.PerspectiveCamera {
-    return this.host.camera;
+  /** The camera the editor's tools — picking, focus, the axis widget — are looking through. */
+  private get camera(): THREE.PerspectiveCamera | THREE.OrthographicCamera {
+    return this.host.editorCamera;
+  }
+
+  /** The controls driving that camera. */
+  private get activeOrbit(): OrbitControls {
+    return this.viewMode === '2D' ? this.orbit2D : this.orbit;
   }
 
   // ------------------------------------------------------------------ setup
@@ -257,6 +336,9 @@ export class ViewportController {
     window.addEventListener('keydown', this.onKeyDown);
     window.addEventListener('keyup', this.onKeyUp);
     window.addEventListener('blur', this.onBlur);
+    // On `document`, not the canvas: that is where the spec fires it, and it fires on the way
+    // out as well as in — including when the browser drops the lock without asking us.
+    document.addEventListener('pointerlockchange', this.onPointerLockChange);
 
     /**
      * Deferred to the next frame rather than done per event.
@@ -288,6 +370,7 @@ export class ViewportController {
           this.outline.update(state.selection);
         }
         if (state.shading !== previous.shading) this.host.setShadingMode(state.shading);
+        if (state.viewMode !== previous.viewMode) this.setViewMode(state.viewMode);
         if (state.graphics !== previous.graphics) this.applyGraphics(state.graphics);
         if (state.tool !== previous.tool) this.gizmo.setTool(state.tool);
         if (state.space !== previous.space) this.gizmo.setSpace(state.space);
@@ -309,6 +392,7 @@ export class ViewportController {
 
     const initial = editorState();
     this.host.setShadingMode(initial.shading);
+    this.setViewMode(initial.viewMode);
     this.gizmo.setTool(initial.tool);
     this.gizmo.setSpace(initial.space);
     this.gizmo.setSnapping(
@@ -327,6 +411,72 @@ export class ViewportController {
   private applyGraphics(settings: GraphicsSettings): void {
     this.host.setPixelRatio(pixelRatioFor(settings.pixelRatioCap));
     this.host.applyGraphics(settings);
+  }
+
+  // ---------------------------------------------------------------- view mode
+
+  /**
+   * Switches the viewport between free-look 3D and the 2D top-down view.
+   *
+   * Everything that changes is listed here, and it is all *editor* state: the projection, which
+   * controls are live, which gizmo handles are offered, and how the grid fades. The scene, the
+   * renderer and the bridge are untouched — the same seam Play mode uses (§6). A scene has no
+   * idea it is being looked at from above, which is the point: a 2D game built here is a 3D scene
+   * with its depth axis left alone, not a second kind of project.
+   *
+   * Each switch carries the view centre across, in both directions: drop into 2D and you are
+   * looking down at whatever was in front of you, come back up and the perspective camera is over
+   * the part of the map you were just editing. Two cameras that each remembered their own place
+   * would make the pair a way of losing yourself rather than a way of working.
+   */
+  private setViewMode(mode: ViewMode): void {
+    if (mode === this.viewMode) return;
+    const entering2D = mode === '2D';
+    if (entering2D) this.frameTopDown(this.orbit.target);
+    else this.recentre3D(this.orbit2D.target);
+    this.viewMode = mode;
+
+    this.host.setEditorProjection(entering2D ? 'orthographic' : 'perspective');
+    this.gizmo.setCamera(this.camera);
+    this.gizmo.setPlaneLock(entering2D);
+    if (!entering2D) this.grid.resetFade();
+
+    // Play mode owns the pointer; whichever controls are nominally active stay off until it
+    // hands it back. `setPlaying` re-enables the right one on the way out.
+    this.orbit.enabled = !this.playing && !entering2D;
+    this.orbit2D.enabled = !this.playing && entering2D;
+  }
+
+  /**
+   * Points the 2D camera straight down at `focus`, keeping its zoom.
+   *
+   * The camera has to sit exactly `ORTHO_EYE_HEIGHT` above the plane it frames: that is the
+   * distance `RenderHost.viewPoint` walks back down to work out where the viewer is looking, and
+   * everything that depends on it — chunk streaming, the shadow frustum — is wrong by however
+   * much this drifts. Panning cannot break the invariant (the 2D camera's pan axes are world X
+   * and Z, never Y), so it only has to be established here.
+   */
+  private frameTopDown(focus: THREE.Vector3): void {
+    const target = this.orbit2D.target;
+    target.set(focus.x, 0, focus.z);
+    this.host.orthoCamera.position.set(target.x, ORTHO_EYE_HEIGHT, target.z);
+    this.host.orthoCamera.zoom = clampOrthoZoom(this.host.orthoCamera.zoom);
+    this.host.orthoCamera.updateProjectionMatrix();
+    this.host.orthoCamera.updateMatrixWorld(true);
+    this.orbit2D.update();
+  }
+
+  /**
+   * Slides the perspective rig sideways so it orbits `focus`, keeping its angle and distance.
+   *
+   * The pose is preserved rather than recomputed: coming back from the 2D view should feel like
+   * the camera followed you across the map, not like it was re-aimed from somewhere new.
+   */
+  private recentre3D(focus: THREE.Vector3): void {
+    const offset = this.host.camera.position.clone().sub(this.orbit.target);
+    this.orbit.target.set(focus.x, this.orbit.target.y, focus.z);
+    this.host.camera.position.copy(this.orbit.target).add(offset);
+    this.orbit.update();
   }
 
   // -------------------------------------------------------------- interaction
@@ -348,25 +498,78 @@ export class ViewportController {
       const camera = findPrimaryCamera(this.engine.scene.all());
       const attached = camera ? this.host.setActiveCameraEntity(camera.id) : false;
       this.host.overlay = null;
-      this.orbit.enabled = false;
+      this.activeOrbit.enabled = false;
+      // Asked once, here, rather than on every click: the answer is a property of the scene, and
+      // the scene is frozen for the duration of a play session by the snapshot Play takes.
+      this.wantsPointerCapture = !this.coarsePointer && sceneWantsMouseLook(this.engine.scene);
       // Focus the canvas so keys reach the page rather than whatever panel was last clicked.
       this.canvas.tabIndex = -1;
       this.canvas.focus({ preventScroll: true });
+      const look = this.wantsPointerCapture
+        ? 'click to capture the mouse and look around'
+        : 'arrows to turn';
       editorState().pushConsole({
         level: attached ? 'info' : 'warn',
         source: 'Play',
         text: attached
-          ? `Playing through "${camera!.name}". WASD to move, arrows to turn, Esc to stop.`
+          ? `Playing through "${camera!.name}". WASD to move, ${look}, Esc to stop.`
           : 'No Camera component in the scene — playing through the editor camera.',
         entityId: camera?.id ?? null,
       });
     } else {
+      this.releasePointerLock();
+      this.wantsPointerCapture = false;
       this.host.setActiveCameraEntity(null);
       this.host.overlay = this.overlay;
-      this.orbit.enabled = true;
+      this.activeOrbit.enabled = true;
       // The scene was restored from the snapshot, so every handle is pointing at a stale node.
       this.gizmosDirty = true;
     }
+  }
+
+  // ----------------------------------------------------------- pointer lock
+
+  /**
+   * Hands the mouse to the game.
+   *
+   * Called from the first click inside the viewport while playing, because that is the only
+   * moment a browser will grant a lock — the request must come from a user gesture, which rules
+   * out doing it when Play starts.
+   */
+  private capturePointer(): void {
+    if (!this.playing || !this.wantsPointerCapture) return;
+    if (document.pointerLockElement === this.canvas) return;
+    // Chrome returns a promise that rejects when the request is refused — most often because the
+    // user pressed Escape a moment ago and the browser is enforcing its own cool-down. A refusal
+    // is not an error worth reporting: drag-to-look still works, which is why `lookActive` reads
+    // the buttons as well as the lock.
+    const request: unknown = this.canvas.requestPointerLock();
+    if (request instanceof Promise) request.catch(() => {});
+  }
+
+  private releasePointerLock(): void {
+    if (document.pointerLockElement === this.canvas) document.exitPointerLock();
+  }
+
+  private onPointerLockChange = (): void => {
+    const locked = document.pointerLockElement === this.canvas;
+    if (!locked) this.pointerUnlockedAt = performance.now();
+    this.engine.input.setPointerLocked(locked);
+  };
+
+  /**
+   * Whether an Escape just now belonged to the mouse look rather than to Play mode.
+   *
+   * The shortcut layer asks before stopping Play, so that getting your cursor back and throwing
+   * away a running scene are never the same keystroke. See `POINTER_UNLOCK_GRACE_MS` for why the
+   * answer cannot simply be "is the pointer locked right now".
+   */
+  consumeLookEscape(): boolean {
+    if (document.pointerLockElement === this.canvas) {
+      document.exitPointerLock();
+      return true;
+    }
+    return this.playing && performance.now() - this.pointerUnlockedAt < POINTER_UNLOCK_GRACE_MS;
   }
 
   // --------------------------------------------------------- play-mode input
@@ -409,6 +612,7 @@ export class ViewportController {
   private onPointerDown = (event: PointerEvent): void => {
     if (this.playing) {
       this.engine.input.setButtons(event.buttons);
+      this.capturePointer();
       return;
     }
     this.pointerDownAt = {
@@ -499,17 +703,33 @@ export class ViewportController {
 
     const centre = box.getCenter(new THREE.Vector3());
     const radius = Math.max(box.getBoundingSphere(new THREE.Sphere()).radius, 0.5);
-    const distance = radius / Math.sin((this.camera.fov * Math.PI) / 360);
-    const direction = this.camera.position.clone().sub(this.orbit.target).normalize();
+
+    if (this.viewMode === '2D') {
+      /**
+       * The 2D view frames by *zoom*, not by distance.
+       *
+       * Moving an orthographic camera closer changes nothing on screen — that is what makes it
+       * orthographic — so the only way to fill the frame with something is to scale the frustum.
+       * The camera itself stays at its fixed height above the plane, which keeps the invariant
+       * `frameTopDown` establishes intact.
+       */
+      this.frameTopDown(centre);
+      this.host.orthoCamera.zoom = zoomToFit(radius);
+      this.host.orthoCamera.updateProjectionMatrix();
+      return;
+    }
+
+    const distance = radius / Math.sin((this.host.camera.fov * Math.PI) / 360);
+    const direction = this.host.camera.position.clone().sub(this.orbit.target).normalize();
 
     this.orbit.target.copy(centre);
-    this.camera.position.copy(centre).addScaledVector(direction, distance * 1.4);
+    this.host.camera.position.copy(centre).addScaledVector(direction, distance * 1.4);
     this.orbit.update();
   }
 
   /** World point in front of the camera — where newly created primitives land. */
   spawnPoint(): [number, number, number] {
-    const target = this.orbit.target.clone();
+    const target = this.activeOrbit.target.clone();
     return [round(target.x), 0, round(target.z)];
   }
 
@@ -533,12 +753,22 @@ export class ViewportController {
 
   private render(): void {
     if (!this.playing) {
+      const orbit = this.activeOrbit;
       // A safety net, not the mechanism: `dragging-changed` disables orbit the moment a handle
       // is grabbed. This catches the one path that never fires it — the gizmo being detached
       // mid-drag, by a tool shortcut — which would otherwise leave the camera locked for good.
-      if (!this.gizmo.isDragging) this.orbit.enabled = true;
-      this.orbit.update();
-      this.grid.update(this.camera);
+      if (!this.gizmo.isDragging) orbit.enabled = true;
+      orbit.update();
+      if (this.viewMode === '2D') {
+        // Retuned every frame because the zoom it is derived from changes every frame a scroll
+        // is in flight, and a grid that reached only as far as the last zoom would leave the
+        // edges of the frame bare.
+        const reach = orthoHalfHeight(this.host.orthoCamera.zoom) * ORTHO_GRID_REACH;
+        this.grid.setFade(reach * 0.85, reach);
+        this.grid.update(this.camera, orbit.target);
+      } else {
+        this.grid.update(this.camera);
+      }
       if (this.gizmosDirty) {
         this.gizmosDirty = false;
         this.sceneGizmos.rebuild();
@@ -572,12 +802,15 @@ export class ViewportController {
     window.removeEventListener('keydown', this.onKeyDown);
     window.removeEventListener('keyup', this.onKeyUp);
     window.removeEventListener('blur', this.onBlur);
+    document.removeEventListener('pointerlockchange', this.onPointerLockChange);
+    this.releasePointerLock();
     this.gizmo.dispose();
     this.outline.dispose();
     this.sceneGizmos.dispose();
     this.grid.dispose();
     this.stress?.dispose();
     this.orbit.dispose();
+    this.orbit2D.dispose();
     this.host.dispose();
     this.canvas.remove();
   }
@@ -585,6 +818,26 @@ export class ViewportController {
 
 function round(value: number): number {
   return Number(value.toFixed(3));
+}
+
+/**
+ * Whether any character in the scene is set up to be steered by the mouse.
+ *
+ * Capturing the pointer is not free — the cursor disappears and Escape is spent getting it back
+ * — so a scene that does not want mouse look should not pay for it. A top-down game where the
+ * pointer aims rather than steers is the case this protects: untick Mouse Look on its character
+ * and the cursor stays where the player can see it.
+ */
+function sceneWantsMouseLook(scene: Scene): boolean {
+  return scene
+    .all()
+    .some((entity) =>
+      entity.components.some(
+        (component): component is CharacterControllerComponent =>
+          component.type === 'CharacterController' &&
+          (component as CharacterControllerComponent).mouseLook,
+      ),
+    );
 }
 
 /**

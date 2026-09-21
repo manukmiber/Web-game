@@ -21,11 +21,16 @@ import {
 import { PostProcess } from './PostProcess';
 import { RenderBridge } from './RenderBridge';
 import { SkyDome, applyFog } from './environment';
+import { ORTHO_EYE_HEIGHT, orthoFrustum } from './topDownView';
 import { EnvironmentProbe } from './ibl';
 import { directionalShadowFrame, type ShadowView } from './lighting';
 
 export const SHADING_MODES = ['shaded', 'wireframe', 'shadedWireframe'] as const;
 export type ShadingMode = (typeof SHADING_MODES)[number];
+
+/** How the editor's own camera projects. The 2D view is the orthographic one. */
+export const EDITOR_PROJECTIONS = ['perspective', 'orthographic'] as const;
+export type EditorProjection = (typeof EDITOR_PROJECTIONS)[number];
 
 export interface RenderHostOptions {
   /**
@@ -63,6 +68,15 @@ export class RenderHost {
   readonly renderer: THREE.WebGLRenderer;
   /** The free-look camera. The editor drives it; Play mode renders through a scene camera. */
   readonly camera: THREE.PerspectiveCamera;
+  /**
+   * The editor's other camera: orthographic, looking straight down, and what the 2D view uses.
+   *
+   * A second camera rather than a projection flag on the first, because the two are never used
+   * at once and each keeps its own pose — leaving the 2D view and coming back to find the 3D
+   * camera exactly where it was is most of what makes the pair usable. Which one `render()`
+   * draws with is `editorProjection`.
+   */
+  readonly orthoCamera: THREE.OrthographicCamera;
   /** Stand-in for whichever Camera entity is active. */
   readonly gameCamera: THREE.PerspectiveCamera;
   /** Scene contents projected from the entity data. */
@@ -74,6 +88,7 @@ export class RenderHost {
   /** Extra passes after the main draw — the editor's axis indicator uses this. */
   onAfterRender: ((host: RenderHost) => void) | null = null;
 
+  private editorProjection: EditorProjection = 'perspective';
   private width = 1;
   private height = 1;
   private basePixelRatio: number;
@@ -156,6 +171,18 @@ export class RenderHost {
     this.camera = new THREE.PerspectiveCamera(60, 1, 0.1, 5000);
     this.camera.position.set(8, 6, 10);
     this.gameCamera = new THREE.PerspectiveCamera(60, 1, 0.1, 2000);
+
+    // The frustum is sized by `applyOrthoFrustum` once a real canvas size is known; these are
+    // placeholders so the camera is never constructed with a degenerate projection.
+    // Fifteen hundred metres of depth below the camera; the frustum's width and height are
+    // sized from the canvas by `applyOrthoFrustum` as soon as one exists.
+    this.orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, ORTHO_EYE_HEIGHT + 1500);
+    // Looking straight down, with world -Z drawn up the screen — the orientation every map
+    // editor uses, and the one that makes +X right and +Z down. `up` has to leave +Y or the
+    // view direction and the up vector are the same line and the roll is undefined.
+    this.orthoCamera.up.set(0, 0, -1);
+    this.orthoCamera.position.set(0, ORTHO_EYE_HEIGHT, 0);
+    this.orthoCamera.lookAt(0, 0, 0);
 
     this.bridge = new RenderBridge(engineScene);
     this.scene.add(this.bridge.root);
@@ -311,8 +338,48 @@ export class RenderHost {
   }
 
   /** Whichever camera the next `render()` will use. */
-  get activeCamera(): THREE.PerspectiveCamera {
-    return this.activeCameraEntity ? this.gameCamera : this.camera;
+  get activeCamera(): THREE.PerspectiveCamera | THREE.OrthographicCamera {
+    return this.activeCameraEntity ? this.gameCamera : this.editorCamera;
+  }
+
+  // ----------------------------------------------------------- editor camera
+
+  /** The editor's own camera for the current projection. Play mode overrides it; this does not. */
+  get editorCamera(): THREE.PerspectiveCamera | THREE.OrthographicCamera {
+    return this.editorProjection === 'orthographic' ? this.orthoCamera : this.camera;
+  }
+
+  getEditorProjection(): EditorProjection {
+    return this.editorProjection;
+  }
+
+  /**
+   * Switches the editor between its perspective and orthographic cameras.
+   *
+   * Nothing else changes — same renderer, same scene, same bridge. A 2D view of this engine is a
+   * projection and a set of editor constraints, not a second renderer, for the same reason the
+   * solver has no separate 2D implementation (see `physics/dimension`).
+   */
+  setEditorProjection(projection: EditorProjection): void {
+    if (projection === this.editorProjection) return;
+    this.editorProjection = projection;
+    if (projection === 'orthographic') this.applyOrthoFrustum();
+  }
+
+  /**
+   * Sizes the orthographic frustum to the canvas.
+   *
+   * Only the aspect is applied; how far in or out the view is zoomed lives in `camera.zoom`,
+   * which is what the orbit controls drive. Keeping the two separate is what lets a window
+   * resize widen the view without also changing its scale.
+   */
+  private applyOrthoFrustum(): void {
+    const frustum = orthoFrustum(this.height > 0 ? this.width / this.height : 1);
+    this.orthoCamera.left = frustum.left;
+    this.orthoCamera.right = frustum.right;
+    this.orthoCamera.top = frustum.top;
+    this.orthoCamera.bottom = frustum.bottom;
+    this.orthoCamera.updateProjectionMatrix();
   }
 
   /**
@@ -437,6 +504,7 @@ export class RenderHost {
     this.camera.updateProjectionMatrix();
     this.gameCamera.aspect = width / height;
     this.gameCamera.updateProjectionMatrix();
+    this.applyOrthoFrustum();
   }
 
   getSize(): { width: number; height: number } {
@@ -488,16 +556,17 @@ export class RenderHost {
     if (this.environmentDirty) this.syncEnvironment();
     this.syncGameCamera();
     const camera = this.activeCamera;
+    const eye = this.viewPoint(camera);
     // Streaming and LOD (ARCHITECTURE.md §9.2) run before anything below reads the scene, so
     // this frame's origin rebase and chunk load/unload are what the shadow budget and the draw
     // itself see — not last frame's.
-    this.bridge.updateStreaming(camera.position.x, camera.position.y, camera.position.z);
+    this.bridge.updateStreaming(eye.x, eye.y, eye.z);
     this.sky?.update(camera);
 
     // Spent per frame rather than once, because which lights matter is a function of where the
     // camera is: walking towards a torch should let it take a shadow map from one behind you.
     // The same view also decides where every directional shadow frustum sits.
-    const view = this.shadowView(camera);
+    const view = this.shadowView(camera, eye);
     this.activeShadowCasters =
       this.graphics.shadowQuality === 'off'
         ? 0
@@ -560,11 +629,35 @@ export class RenderHost {
     this.defaultLights.add(fill);
   }
 
+  /**
+   * Where the viewer effectively is, for streaming, the shadow budget and the shadow frusta.
+   *
+   * The camera's own position, except for an orthographic one — where it is meaningless. Slide
+   * an orthographic camera along its view direction and not one pixel of the image changes, so
+   * its position says nothing about how close the viewer is to anything. Taken at face value it
+   * would put the 2D view's eye half a kilometre in the air: chunks would stream by their
+   * distance to a point nothing is near, and the sun's shadow frustum — centred a shadow
+   * distance ahead of the eye — would sit high above the scene it is supposed to cover, which
+   * reads as shadows having stopped working. Walking back down the view direction to the plane
+   * it frames gives the honest answer: the ground under the middle of the view.
+   */
+  private viewPoint(camera: THREE.PerspectiveCamera | THREE.OrthographicCamera): THREE.Vector3 {
+    VIEW_POINT.copy(camera.position);
+    if ((camera as THREE.OrthographicCamera).isOrthographicCamera) {
+      camera.getWorldDirection(SHADOW_FORWARD);
+      VIEW_POINT.addScaledVector(SHADOW_FORWARD, ORTHO_EYE_HEIGHT);
+    }
+    return VIEW_POINT;
+  }
+
   /** Where the camera is and what it looks along, for the shadow budget and the frusta. */
-  private shadowView(camera: THREE.PerspectiveCamera): ShadowView {
+  private shadowView(
+    camera: THREE.PerspectiveCamera | THREE.OrthographicCamera,
+    eye: THREE.Vector3,
+  ): ShadowView {
     camera.getWorldDirection(SHADOW_FORWARD);
     return {
-      position: [camera.position.x, camera.position.y, camera.position.z],
+      position: [eye.x, eye.y, eye.z],
       forward: [SHADOW_FORWARD.x, SHADOW_FORWARD.y, SHADOW_FORWARD.z],
     };
   }
@@ -725,6 +818,7 @@ const SCRATCH = new THREE.Vector3();
 
 /** Scratch for the shadow view and the rig sun's direction. */
 const SHADOW_FORWARD = new THREE.Vector3();
+const VIEW_POINT = new THREE.Vector3();
 const KEY_DIRECTION = new THREE.Vector3();
 
 function findEnvironment(scene: Scene): EnvironmentComponent | null {

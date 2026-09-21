@@ -222,6 +222,16 @@ The fields worth knowing: `useGravity` (off restores the old flat behaviour), `g
 `groundHeight` — now the floor of last resort rather than the mechanism, so a scene with no
 colliders is still playable instead of an infinite fall.
 
+**Mouse look** is on by default (`mouseLook`), with `lookSensitivity` in degrees per pixel,
+`invertLook`, and `maxPitch` to stop the view reaching straight up or down where the horizon would
+spin. Yaw goes on the character and pitch on the first `Camera` parented below it, because a
+capsule pitched back is a capsule on its side with its collider and its ground cast pointing
+nowhere useful. Untick `mouseLook` for a game where the pointer aims rather than steers — a
+top-down shooter, a strategy view — and the editor stops capturing the cursor at all.
+
+In an **XY 2D** scene mouse look is off regardless: there is no yaw to turn, for the same reason
+the turn keys do nothing there.
+
 `jumpSpeed` is a speed rather than a height because it composes: height is `v²/2g`, so halving
 gravity for a floaty jump keeps the same take-off feel while doubling the arc, which is what that
 dial is usually for.

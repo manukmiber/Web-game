@@ -85,6 +85,7 @@ export interface InputSnapshot {
   pointerDeltaY: number;
   wheelDelta: number;
   buttons: number;
+  pointerLocked: boolean;
 }
 
 export class InputState {
@@ -97,6 +98,16 @@ export class InputState {
   /** Wheel travel since the last `endFrame()`. */
   wheelDelta = 0;
   buttons = 0;
+  /**
+   * Whether the host has captured the pointer.
+   *
+   * Plain data fed in by whoever owns the canvas, exactly like the keys are — the engine has no
+   * business calling `requestPointerLock` itself (ARCHITECTURE.md §9.5). What reads it is mouse
+   * look: pointer travel only steers when the pointer is *captured*, because an uncaptured
+   * cursor crossing the viewport on its way to the Inspector would otherwise spin the player
+   * round. `lookActive` is the question systems should ask rather than this flag directly.
+   */
+  pointerLocked = false;
 
   private down = new Set<string>();
   private pressed = new Set<string>();
@@ -127,6 +138,10 @@ export class InputState {
 
   setButtons(buttons: number): void {
     this.buttons = buttons;
+  }
+
+  setPointerLocked(locked: boolean): void {
+    this.pointerLocked = locked;
   }
 
   addWheel(delta: number): void {
@@ -180,6 +195,19 @@ export class InputState {
     return (this.buttons & button) !== 0;
   }
 
+  /**
+   * Whether pointer travel should be read as looking around rather than as a cursor moving.
+   *
+   * Two gestures, because the viewport is a panel in a page and not a full-screen game window:
+   * with the pointer captured this is a conventional FPS mouse look, and without it, holding any
+   * button and dragging looks too. The second is what makes the control work at all where a lock
+   * cannot be had — a browser that refused the request, an embedded preview, a trackpad user who
+   * would rather keep their cursor.
+   */
+  get lookActive(): boolean {
+    return this.pointerLocked || this.buttons !== 0;
+  }
+
   /** -1, 0 or 1 — the shape every movement system wants. */
   axis(negative: string, positive: string): number {
     return (this.isDown(positive) ? 1 : 0) - (this.isDown(negative) ? 1 : 0);
@@ -198,6 +226,7 @@ export class InputState {
       pointerDeltaY: this.pointerDeltaY,
       wheelDelta: this.wheelDelta,
       buttons: this.buttons,
+      pointerLocked: this.pointerLocked,
     };
   }
 
@@ -221,6 +250,7 @@ export class InputState {
     this.pointerDeltaY = snapshot.pointerDeltaY;
     this.wheelDelta = snapshot.wheelDelta;
     this.buttons = snapshot.buttons;
+    this.pointerLocked = snapshot.pointerLocked;
   }
 
   // --------------------------------------------------------------- lifecycle
@@ -247,6 +277,9 @@ export class InputState {
     this.released.clear();
     this.axes.clear();
     this.buttons = 0;
+    // The lock goes with the rest of it: `clear` runs on leaving Play mode and on blur, and both
+    // are moments the host has already given the pointer back.
+    this.pointerLocked = false;
     this.pointerDeltaX = 0;
     this.pointerDeltaY = 0;
     this.wheelDelta = 0;

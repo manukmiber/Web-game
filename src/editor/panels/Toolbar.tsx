@@ -7,7 +7,7 @@ import {
   type PrimitiveKind,
 } from '@engine/scene/primitives';
 import { useEditor } from '../EditorContext';
-import { useEditorStore, type TransformTool } from '../state/editorStore';
+import { useEditorStore, type TransformTool, type ViewMode } from '../state/editorStore';
 import { AddEntitiesCommand, AddEntityCommand } from '../commands/sceneCommands';
 import {
   AUTOSAVE_KEY,
@@ -23,6 +23,28 @@ const TOOLS: { tool: TransformTool; label: string; hint: string; title: string }
   { tool: 'move', label: '✛', hint: 'W', title: 'Move (W)' },
   { tool: 'rotate', label: '⟳', hint: 'E', title: 'Rotate (E)' },
   { tool: 'scale', label: '⤢', hint: 'R', title: 'Scale (R)' },
+];
+
+/**
+ * The two ways of looking at a scene.
+ *
+ * A pair of buttons rather than a dropdown, because it is a mode you flip back and forth while
+ * working — the same argument that makes the transform tools a segmented control — and because
+ * which one you are in has to be readable without opening anything.
+ */
+const VIEWS: { mode: ViewMode; label: string; hint: string; title: string }[] = [
+  {
+    mode: '3D',
+    label: '◧',
+    hint: '3',
+    title: 'Perspective view — orbit, pan and zoom freely (3)',
+  },
+  {
+    mode: '2D',
+    label: '▦',
+    hint: '2',
+    title: 'Top-down 2D view — orthographic, looking straight down at the ground plane (2)',
+  },
 ];
 
 /**
@@ -56,6 +78,8 @@ export function Toolbar({ spawnPoint }: Props) {
   const timeScale = useEditorStore((s) => s.timeScale);
   const shading = useEditorStore((s) => s.shading);
   const setShading = useEditorStore((s) => s.setShading);
+  const viewMode = useEditorStore((s) => s.viewMode);
+  const setViewMode = useEditorStore((s) => s.setViewMode);
   const setTool = useEditorStore((s) => s.setTool);
   const setSpace = useEditorStore((s) => s.setSpace);
   const setSnapEnabled = useEditorStore((s) => s.setSnapEnabled);
@@ -272,6 +296,22 @@ export function Toolbar({ spawnPoint }: Props) {
       </div>
 
       <div className="toolbar-divider" />
+
+      <div className="toolbar-group segmented" role="group" aria-label="Viewport projection">
+        {VIEWS.map((entry) => (
+          <button
+            key={entry.mode}
+            className={viewMode === entry.mode ? 'active' : ''}
+            title={playing ? `${entry.title} — stop playing first` : entry.title}
+            disabled={playing}
+            aria-pressed={viewMode === entry.mode}
+            onClick={() => setViewMode(entry.mode)}
+          >
+            <span className="tool-glyph">{entry.label}</span>
+            <span className="tool-hint">{entry.hint}</span>
+          </button>
+        ))}
+      </div>
 
       <div className="toolbar-group">
         <select

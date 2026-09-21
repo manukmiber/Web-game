@@ -556,6 +556,10 @@ fragment from world position (`editor/viewport/GroundGrid.ts`), not a `GridHelpe
   the same segment spanning ±100 draws zero pixels, while plane meshes are correct out to
   2000 units. Real GPUs are very likely fine; the procedural grid is immune either way.
 
+The one thing the procedural grid needs told is where to fade *from*. Under perspective that is
+the camera and the shader can read it off the view matrix; under the 2D view's orthographic
+camera it is not — see §21.6.
+
 ### 9.7 Measuring the budget
 
 Numbers beat arguments, so the engine ships an instrument rather than a set of assumptions.
@@ -1817,3 +1821,133 @@ Named here rather than left implicit, the same way §9.3 and §19 name their own
   the `Scene`," not "a file fetched as the camera approaches." §9.2's background (worker)
   load/unload is still later work, and needs the persistence adapter named in §8 before it has
   anything to load from.
+
+## 21. Mouse look, and the 2D view
+
+### 21.1 The engine still does not listen to the DOM, and mouse look did not change that
+
+Play mode shipped without mouse look, and `CharacterSystem`'s doc comment said why: "the control
+scheme is the one that needs no mouse capture, since the editor viewport is a panel in a page
+rather than a locked-pointer game window." The reasoning was sound and the conclusion was wrong.
+A viewport that cannot be looked around with the mouse does not read as a deliberate constraint;
+it reads as the mouse being broken, which is exactly how it was reported.
+
+Adding it did not cost the §9.5 boundary anything, for the same reason touch did not (§13.5). The
+engine already took input as *data a host fills in* — keys, named analog axes, pointer position,
+pointer delta, buttons — so the only thing missing was whether the host had the pointer
+**captured**. That is one more boolean of host-fed state, `InputState.pointerLocked`, and one
+derived reading:
+
+```ts
+get lookActive(): boolean {
+  return this.pointerLocked || this.buttons !== 0;
+}
+```
+
+`requestPointerLock` is called in exactly one place, `editor/viewport/ViewportController`, which
+is the same class that already owns which gestures the browser may claim and how big a hit target
+has to be. The engine never learns that pointer locks exist. A simulation running in the Worker
+(§19) reads the same gate through the same snapshot, because `pointerLocked` rides `InputSnapshot`
+beside everything else and `parseHostMessage` validates it.
+
+Two gestures fall out of one rule. With a capture it is a conventional FPS mouse look. Without
+one — a browser that refused the request, an embedded preview, someone who would rather keep
+their cursor — holding any button and dragging is identical. The second is not a fallback bolted
+on afterwards; it is what `buttons !== 0` already meant.
+
+### 21.2 Yaw is the body's, pitch is the camera's
+
+They are not the same kind of rotation and must not go to the same entity.
+
+Yaw turns the rig: the body's facing is also the direction `W` walks, so it belongs on the
+character. Pitch does not. A capsule tipped back to look at the sky is a capsule lying on its
+side, with its collider and its downward ground cast pointing somewhere useless — and §15.7's
+whole argument for a kinematic controller is that its capsule stays a capsule. So pitch is applied
+to the first `Camera` found below the character, breadth-first, which is the rig the Player prefab
+has always built and §10 already described as "no follow code, no lerp, just the transform
+hierarchy doing its job."
+
+A rig with no camera pitches nothing and does not mind. A zombie carries a `CharacterController`
+too, and it has no business growing a camera because the player moved the mouse.
+
+### 21.3 Pointer travel is a displacement, not a rate
+
+Every other control in `CharacterSystem` is multiplied by `dt`, because a held key is a rate:
+"turn at 140°/s" has to become "turn 2.3° this frame." Pointer travel is already the answer to
+that question. The mouse moved forty pixels, whether that took one long frame or four short ones.
+
+Scaling it by `dt` anyway is the classic mouse-look bug, and it is invisible in casual testing
+because it only shows up as sensitivity that drifts with frame rate. It has a test that drives the
+same travel through a 240 Hz frame and a 15 Hz one and requires the same answer.
+
+### 21.4 `Esc` does one thing at a time
+
+Browsers spend `Esc` releasing a pointer lock. Play mode spends it stopping, which discards the
+running scene and restores the authored one (§6). Sharing the key means the first `Esc` frees the
+cursor in one browser and throws the session away in another, because browsers disagree about
+whether the page also hears that keystroke.
+
+`ViewportController.consumeLookEscape()` answers "did this `Esc` belong to the mouse?" — true
+while the lock is held, and true for a short grace window after it ends. The shortcut layer asks
+before stopping. The result is the same everywhere: first `Esc` gives the mouse back, second
+stops. A destructive action does not share a key with an undoable one.
+
+### 21.5 The 2D view is a projection, not a second editor
+
+`2` points the viewport straight down through an orthographic camera; `3` flies again. Everything
+that changes is editor state — which camera draws, which controls are live, which gizmo handles
+are offered, how the grid fades — and the scene, the components, the bridge and the renderer are
+untouched. That is the §6 seam again, and the same line §15.9 draws between 2D and 3D physics:
+**2D here is a constraint on one engine, not a second one.**
+
+Two structural choices are worth recording.
+
+**A second camera rather than a projection flag.** `RenderHost` holds both and `editorProjection`
+picks one. They are never used at once, and each keeping its own pose is most of what makes the
+pair usable — dropping into 2D and coming back should not scramble where you were standing. The
+views share a *centre* instead: each switch carries the focus across, in both directions.
+
+**A second `OrbitControls` rather than a swapped camera.** `OrbitControls` derives its internal
+frame from `object.up` in its constructor. The top-down camera's up is world -Z (a camera looking
+down its own up axis has no defined roll); the free-look camera's is +Y. A camera swapped into the
+existing controls would be driven through the wrong frame. Two instances, one enabled at a time,
+also means each view keeps its own target for free.
+
+In 2D, dragging pans — there is no orbit to have — and `screenSpacePanning` must be **on**: with
+it off, `OrbitControls` pans in the plane perpendicular to the camera's up, which for a camera
+looking straight down is the *vertical* plane, so a pan flies the view out of the world instead of
+across it. The gizmo keeps only the handles that mean something from above: X and Z for move and
+scale, and the Y ring for rotate, which is the one rotation that keeps things flat. That restricts
+the view, not the scene — an object's Y survives a 2D drag untouched and the Inspector still
+edits it.
+
+### 21.6 An orthographic camera's position is meaningless, and two things had to be told
+
+Slide an orthographic camera along its own view direction and not one pixel of the image changes.
+That is the defining property of the projection, and it means `camera.position` cannot answer "how
+close is the viewer to this?" — the question streaming and shadows both ask.
+
+Taken at face value it puts the eye half a kilometre in the air, and the symptoms are not *"the 2D
+view looks wrong"*:
+
+- **Streaming** (§20) buckets chunks by distance to a point nothing in the scene is near.
+- **Shadows** (§13.4) centre the sun's frustum a shadow distance ahead of the eye, which from up
+  there is still well above the scene it is meant to cover — indistinguishable from shadows having
+  stopped working.
+
+`RenderHost.viewPoint` walks back down the view direction to the plane being framed, and both read
+that instead. The camera height is a constant, so the walk is exact rather than an estimate, and
+the viewport maintains the matching invariant when it places the camera: panning cannot break it,
+because the 2D camera's pan axes are world X and Z and never Y.
+
+The grid (§9.6) had the same problem from the other end. Its fade is measured from the camera,
+which under perspective is exactly right — lines thin out as they recede — and under an
+orthographic camera means every fragment is equally distant, so the whole grid fades out at once
+or not at all. `GroundGrid.update` now takes the point being *looked at*, with fade radii retuned
+each frame from the zoom, which restores what the shader wanted: distance from the middle of the
+view, measured across the ground. The 1 m cells give way to the 10 m sections as you pull out, the
+same way they always did with distance.
+
+The arithmetic those consumers share — eye height, view height, the zoom range, framing by zoom
+rather than by distance — lives in `engine/render/topDownView.ts` with its own tests. Not because
+it is complicated, but because the failure mode of two callers disagreeing about it is silent.

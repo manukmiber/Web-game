@@ -111,6 +111,9 @@ export class GroundGrid {
   readonly mesh: THREE.Mesh;
   private material: THREE.ShaderMaterial;
 
+  /** Kept so `setFade` can restore the defaults when the 2D view hands the grid back. */
+  private readonly baseFade: { start: number; end: number };
+
   constructor(options: GroundGridOptions = {}) {
     const {
       cellSize = 1,
@@ -118,6 +121,7 @@ export class GroundGrid {
       fadeStart = 60,
       fadeEnd = 260,
     } = options;
+    this.baseFade = { start: fadeStart, end: fadeEnd };
 
     this.material = new THREE.ShaderMaterial({
       vertexShader: VERTEX,
@@ -140,7 +144,7 @@ export class GroundGrid {
       },
     });
 
-    // Sized to comfortably exceed the fade radius so its edges are never reachable.
+    // A unit quad, scaled to the fade radius by `setFade`.
     const geometry = new THREE.PlaneGeometry(1, 1);
     geometry.rotateX(-Math.PI / 2);
 
@@ -151,19 +155,51 @@ export class GroundGrid {
     // Slightly below zero so a ground Plane authored at y=0 wins the depth test cleanly.
     this.mesh.position.y = -0.002;
     this.mesh.renderOrder = -1;
-    this.mesh.scale.setScalar(fadeEnd * 2.5);
+    this.setFade(fadeStart, fadeEnd);
   }
 
-  /** Recentres the quad on the camera and refreshes the uniform used for distance fade. */
-  update(camera: THREE.Camera): void {
-    const cameraPosition = camera.getWorldPosition(
-      this.material.uniforms.uCameraPosition!.value as THREE.Vector3,
-    );
+  /**
+   * Recentres the quad and refreshes the uniform the distance fade is measured from.
+   *
+   * `focus` overrides that point, and the 2D view is why it exists. The shader fades by distance
+   * from the camera, which under perspective is exactly right — lines thin out as they recede.
+   * An orthographic camera has no such distance: it sits half a kilometre above a scene it draws
+   * at a constant scale, so every fragment is equally far away and the grid fades out completely
+   * or not at all. Handing it the point being *looked at* restores the meaning the shader wants:
+   * distance from the middle of the view, measured across the ground.
+   */
+  update(camera: THREE.Camera, focus?: THREE.Vector3): void {
+    const origin = this.material.uniforms.uCameraPosition!.value as THREE.Vector3;
+    if (focus) origin.copy(focus);
+    else camera.getWorldPosition(origin);
     // Snapping to the section size keeps the lattice from swimming as the quad follows the
     // camera — the shader derives lines from world position, so any drift would be visible.
     const section = this.material.uniforms.uSectionSize!.value as number;
-    this.mesh.position.x = Math.round(cameraPosition.x / section) * section;
-    this.mesh.position.z = Math.round(cameraPosition.z / section) * section;
+    this.mesh.position.x = Math.round(origin.x / section) * section;
+    this.mesh.position.z = Math.round(origin.z / section) * section;
+  }
+
+  /**
+   * Retunes the fade radii, and resizes the quad to match.
+   *
+   * The 2D view drives this from how much world the orthographic camera is showing: the grid has
+   * to reach the edges of the frame at any zoom, and the fine 1 m cells have to give way to the
+   * 10 m sections once they are close enough together to read as a wash. Under perspective the
+   * distance to the camera says both of those things by itself, which is why nothing else calls
+   * this.
+   */
+  setFade(start: number, end: number): void {
+    const safeStart = Math.max(1, start);
+    const safeEnd = Math.max(safeStart * 1.05, end);
+    this.material.uniforms.uFadeStart!.value = safeStart;
+    this.material.uniforms.uFadeEnd!.value = safeEnd;
+    // Sized to comfortably exceed the fade radius so its edges are never reachable.
+    this.mesh.scale.setScalar(safeEnd * 2.5);
+  }
+
+  /** Puts the fade back to the radii the grid was built with. */
+  resetFade(): void {
+    this.setFade(this.baseFade.start, this.baseFade.end);
   }
 
   dispose(): void {

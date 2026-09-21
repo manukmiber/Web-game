@@ -126,9 +126,20 @@ const turn = input.axis('ArrowRight', 'ArrowLeft'); // -1, 0 or 1
 ```
 
 `isDown`, `wasPressed`, `wasReleased`, `axis(negative, positive)`, `isMouseDown(button?)`,
-`pointerX/pointerY` (normalised -1..1), `pointerDeltaX/Y`, `wheelDelta`.
+`pointerX/pointerY` (normalised -1..1), `pointerDeltaX/Y`, `wheelDelta`, `pointerLocked` and
+`lookActive`.
 
 Press and release edges last exactly one frame.
+
+`lookActive` is the question to ask before reading `pointerDeltaX/Y` as *looking around* rather
+than as a cursor moving: it is true while the host has the pointer captured **or** a button is
+held, which is the same gate the built-in character controller uses. A script that turns a turret
+with the mouse should read it, or the turret will swing every time the cursor crosses the viewport
+on its way to a panel.
+
+Pointer deltas are a **displacement**, not a rate — do not multiply them by `dt`. The mouse moved
+forty pixels whether that took one long frame or four short ones, and scaling by frame time makes
+the same hand movement turn further on a faster machine.
 
 Named analog axes sit beside the keys — `getAxis(name)`, and `setAxis(name, value)` to drive one
 from a script. External hardware writes `move`, `strafe` and `turn` there, which is how a

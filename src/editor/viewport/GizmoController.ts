@@ -33,6 +33,8 @@ export class GizmoController {
   private records: DragRecord[] = [];
   private dragging = false;
   private selection: EntityId[] = [];
+  /** True while the 2D view is on. See `setPlaneLock`. */
+  private planeLocked = false;
 
   constructor(
     camera: THREE.Camera,
@@ -70,7 +72,47 @@ export class GizmoController {
       return;
     }
     this.controls.setMode(tool === 'move' ? 'translate' : tool);
+    // Which handles the plane lock hides depends on the mode, so it is reapplied with every
+    // tool change rather than only when the lock itself is toggled.
+    this.applyPlaneLock();
     this.setActive(this.selection.length > 0);
+  }
+
+  /**
+   * Hides the handles that point out of the ground plane — what the 2D top-down view wants.
+   *
+   * Looking straight down, world Y runs into the screen. A translate arrow along it is a dot
+   * you cannot aim at and whose drag has no visible result, and a rotation about X or Z tips the
+   * object out of the plane you are editing. Hiding them is not a restriction on what the scene
+   * can contain, only on what this view lets you do by accident: Y is still there, the Inspector
+   * still edits it, and switching back to 3D brings the handles back.
+   *
+   * Rotation keeps the opposite axis to translation and scale: Y is the *only* rotation a
+   * top-down view can show, because it is the one that keeps everything flat.
+   */
+  setPlaneLock(locked: boolean): void {
+    if (locked === this.planeLocked) return;
+    this.planeLocked = locked;
+    this.applyPlaneLock();
+  }
+
+  private applyPlaneLock(): void {
+    const rotating = this.controls.mode === 'rotate';
+    const inPlane = !this.planeLocked || !rotating;
+    this.controls.showX = inPlane;
+    this.controls.showZ = inPlane;
+    this.controls.showY = !this.planeLocked || rotating;
+  }
+
+  /**
+   * Points the gizmo at a different camera — the 2D view swapping the editor's projection.
+   *
+   * The gizmo raycasts against its own handles and sizes them by distance, so it has to be told:
+   * left pointing at the perspective camera it would pick handles through a frustum that is no
+   * longer on screen, which reads as the gizmo having stopped responding to the mouse.
+   */
+  setCamera(camera: THREE.Camera): void {
+    this.controls.camera = camera;
   }
 
   setSpace(space: TransformSpace): void {

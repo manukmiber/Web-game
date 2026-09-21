@@ -335,7 +335,8 @@ export function parseHostMessage(data: unknown): HostMessage | null {
       typeof input.pointerDeltaX !== 'number' ||
       typeof input.pointerDeltaY !== 'number' ||
       typeof input.wheelDelta !== 'number' ||
-      typeof input.buttons !== 'number'
+      typeof input.buttons !== 'number' ||
+      typeof input.pointerLocked !== 'boolean'
     ) {
       return null;
     }

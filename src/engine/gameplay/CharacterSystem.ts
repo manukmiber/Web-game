@@ -1,3 +1,4 @@
+import type { CameraComponent } from '../components/Camera';
 import type { CharacterControllerComponent } from '../components/CharacterController';
 import type { QueryDescriptor } from '../ecs/Query';
 import type { Engine, EngineMode, System, SystemStage } from '../loop/Engine';
@@ -7,6 +8,7 @@ import { add, inverseTransformPoint, length, scale, sub } from '../physics/math'
 import { worldTransformOf } from '../physics/PhysicsSystem';
 import type { PhysicsWorld } from '../physics/PhysicsWorld';
 import type { WorldShape } from '../physics/shapes';
+import type { Scene } from '../scene/Scene';
 import type { Entity, EntityId, Vec3 } from '../scene/types';
 
 /** Depenetration passes per frame. Three resolves a corner; more is chasing rounding error. */
@@ -31,14 +33,22 @@ interface CharacterState {
 /**
  * Turns key state into character movement.
  *
- * The control scheme is the one that needs no mouse capture, since the editor viewport is a
- * panel in a page rather than a locked-pointer game window:
+ * The control scheme:
  *
  * - `W`/`S` or `↑`/`↓` — forward and back along the character's facing
  * - `A`/`D` — strafe
  * - `←`/`→` or `Q`/`E` — turn
+ * - the mouse — look, yawing the body and pitching the rig's camera
  * - `Shift` — sprint
  * - `Space` — jump
+ *
+ * The keys came first and the mouse was left out, on the grounds that the viewport is a panel in
+ * a page rather than a locked-pointer game window. That was the wrong trade: it made every scene
+ * built here feel like something from before mouse look, and arrow-key turning is the single
+ * thing people notice first. The pointer is read through `input.lookActive`, which is true while
+ * the host holds a pointer lock *or* a button is held — so the control works both as a real
+ * captured mouse look and as drag-to-look where a lock cannot be had, and the engine still never
+ * touches the DOM to get either.
  *
  * External hardware reaches the same character through three named analog axes — `move`,
  * `strafe` and `turn`, all positive forward/right/right — which are summed with the keys rather
@@ -144,6 +154,23 @@ export class CharacterSystem implements System {
         // Analog turn is proportional; the keys still turn at full rate because they read ±1.
         const rate = Math.max(-1, Math.min(1, turn));
         rotation[1] = wrapAngle(rotation[1] + rate * controller.turnSpeed * dt);
+      }
+
+      /**
+       * Mouse look. Not scaled by `dt`, unlike every other control here.
+       *
+       * Pointer travel is already a distance — the mouse moved 40 pixels, whether that took one
+       * long frame or four short ones — so multiplying by frame time would make the same physical
+       * hand movement turn further on a fast machine. Keys are a *rate* and must be scaled; a
+       * mouse is a displacement and must not be. Getting this backwards is the classic mouse-look
+       * bug, and it shows up as sensitivity that drifts with the frame rate.
+       */
+      if (controller.mouseLook && input.lookActive && !sideScroller) {
+        const yaw = -input.pointerDeltaX * controller.lookSensitivity;
+        if (yaw !== 0) rotation[1] = wrapAngle(rotation[1] + yaw);
+        const pitch =
+          (controller.invertLook ? 1 : -1) * input.pointerDeltaY * controller.lookSensitivity;
+        if (pitch !== 0) pitchRig(engine.scene, entity.id, pitch, controller.maxPitch);
       }
 
       let dx: number;
@@ -330,6 +357,49 @@ function normalizedFlat(direction: Vec3, dimensionality: Dimensionality): Vec3 |
   const len = Math.hypot(flat[0], flat[1], flat[2]);
   if (len < 1e-6) return null;
   return [flat[0] / len, flat[1] / len, flat[2] / len];
+}
+
+/**
+ * Pitches the camera the character carries, and leaves the body alone.
+ *
+ * Yaw belongs on the body — the whole rig turns, and so does the direction `W` walks. Pitch does
+ * not: a capsule tipped back to look at the sky is a capsule lying on its side, with its collider
+ * and its ground cast pointing the wrong way. So the two halves of a look go to two different
+ * entities, which is the arrangement every first-person rig uses and the reason the camera is a
+ * child rather than a field on this component.
+ *
+ * Nothing happens when the rig has no camera: a zombie has a CharacterController too, and it has
+ * no business growing one because the player moved the mouse.
+ */
+function pitchRig(scene: Scene, bodyId: EntityId, degrees: number, maxPitch: number): void {
+  const cameraId = findRigCamera(scene, bodyId);
+  if (!cameraId) return;
+  const camera = scene.get(cameraId);
+  if (!camera) return;
+  const limit = Math.abs(maxPitch);
+  const pitch = Math.max(-limit, Math.min(limit, camera.transform.rotation[0] + degrees));
+  if (pitch === camera.transform.rotation[0]) return;
+  camera.transform.rotation[0] = pitch;
+  scene.markTransformDirty(cameraId);
+}
+
+/**
+ * The first Camera below `bodyId`, breadth-first.
+ *
+ * Breadth-first rather than depth-first so a camera parented straight to the character wins over
+ * one buried inside a weapon model — the shallower one is the rig's, by the same convention that
+ * makes "a camera parented to the character" the whole of the third-person setup.
+ */
+function findRigCamera(scene: Scene, bodyId: EntityId): EntityId | null {
+  const queue = [...scene.childrenOf(bodyId)];
+  for (let i = 0; i < queue.length; i += 1) {
+    const id = queue[i]!;
+    const entity = scene.get(id);
+    if (!entity) continue;
+    if (entity.components.some((c): c is CameraComponent => c.type === 'Camera')) return id;
+    queue.push(...scene.childrenOf(id));
+  }
+  return null;
 }
 
 /** Metres per second the controller is asking for, sprint included. */

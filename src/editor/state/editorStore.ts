@@ -18,6 +18,18 @@ export type TransformTool = 'select' | 'move' | 'rotate' | 'scale';
 export type TransformSpace = 'local' | 'world';
 
 /**
+ * How the viewport looks at the scene.
+ *
+ * `3D` is the free-look perspective camera the editor has always had. `2D` is a top-down
+ * orthographic view of the ground plane: pan and zoom, no orbit, and a gizmo that only moves
+ * things across the floor. It is a *view*, not a different kind of scene — the same entities,
+ * the same components, the same renderer — which is the same line the solver draws between 2D
+ * and 3D physics (see `engine/physics/dimension`).
+ */
+export const VIEW_MODES = ['3D', '2D'] as const;
+export type ViewMode = (typeof VIEW_MODES)[number];
+
+/**
  * Stress-test levers for the measurement harness.
  *
  * These are driven by hand from the Performance panel so a budget can be measured on real
@@ -94,6 +106,8 @@ interface EditorState {
   paused: boolean;
   timeScale: number;
   shading: ShadingMode;
+  /** Perspective free-look, or the 2D top-down view. Session-only, like the tool and selection. */
+  viewMode: ViewMode;
   /**
    * The frame-rate overlay drawn over the viewport.
    *
@@ -135,6 +149,7 @@ interface EditorState {
   /** Mirrors the engine clock into the store. Only `EditorContext`'s subscription calls this. */
   setClock(paused: boolean, timeScale: number): void;
   setShading(shading: ShadingMode): void;
+  setViewMode(viewMode: ViewMode): void;
   toggleHud(): void;
   bumpSceneRevision(): void;
   setHistoryState(canUndo: boolean, canRedo: boolean): void;
@@ -192,6 +207,7 @@ export const useEditorStore = create<EditorState>((set) => ({
   paused: false,
   timeScale: 1,
   shading: 'shaded',
+  viewMode: '3D',
   hudVisible: false,
   sceneRevision: 0,
   canUndo: false,
@@ -220,6 +236,7 @@ export const useEditorStore = create<EditorState>((set) => ({
   setPlaying: (playing) => set({ playing }),
   setClock: (paused, timeScale) => set({ paused, timeScale }),
   setShading: (shading) => set({ shading }),
+  setViewMode: (viewMode) => set({ viewMode }),
   toggleHud: () => set((state) => ({ hudVisible: !state.hudVisible })),
   bumpSceneRevision: () => set((state) => ({ sceneRevision: state.sceneRevision + 1 })),
   setHistoryState: (canUndo, canRedo) => set({ canUndo, canRedo }),

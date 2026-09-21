@@ -21,6 +21,10 @@ second one.
 Add a **Scatter Layer** and a hundred thousand trees are one row in the Hierarchy and one draw
 call — because a 25 km world cannot afford them as anything else.
 
+Press **2** and the viewport looks straight down: an orthographic top-down view for laying a
+map out, with the same scene, the same components and the same renderer behind it. Press **3**
+to fly again.
+
 See [ARCHITECTURE.md](./ARCHITECTURE.md) for the design and §9 for what the 25 km × 25 km
 open-world target forces us to decide up front, [docs/SCRIPTING.md](./docs/SCRIPTING.md) for
 the script API, [docs/AI.md](./docs/AI.md) for the tools and MCP,
@@ -128,10 +132,11 @@ in the editor is reachable only by knowing a function key exists.
 | --- | --- | --- | --- | --- |
 | `Q` | Select | | `F` | Frame selection |
 | `W` | Move | | `X` | Toggle Local / Global |
-| `E` | Rotate | | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / Redo |
-| `R` | Scale | | `Ctrl+D` | Duplicate |
-| `Del` | Delete | | `Ctrl+G` | Group selected |
-| `Esc` | Deselect | | `Ctrl+A` | Select all |
+| `E` | Rotate | | `2` / `3` | 2D top-down / 3D view |
+| `R` | Scale | | `Ctrl+Z` / `Ctrl+Shift+Z` | Undo / Redo |
+| `Del` | Delete | | `Ctrl+D` | Duplicate |
+| `Esc` | Deselect | | `Ctrl+G` | Group selected |
+| | | | `Ctrl+A` | Select all |
 | | | | `Ctrl+S` | Save to local storage |
 
 Panel keys work in both edit and play mode. Pressing one brings that panel frontmost; pressing
@@ -154,7 +159,25 @@ handle for uniform scale. Local/Global space toggle. Grid snapping for move and 
 for rotate, both toggleable with configurable increments. Multi-select transforms rigidly
 around the selection centre.
 
-Camera: orbit with left-drag, pan with middle/right-drag, zoom with scroll.
+Camera: orbit with left-drag, pan with middle- or right-drag, zoom with scroll.
+
+**2D and 3D views** — the toolbar's `◧` / `▦` pair, or `3` and `2`, switch the viewport
+between the free-look perspective camera and a **top-down orthographic view** of the ground
+plane. In 2D there is no orbit: drag to pan, scroll to zoom, `F` to frame the selection, and
+the transform gizmo offers only the handles that mean something looking straight down — X and
+Z for move and scale, and the Y ring for rotate, which is the one rotation that keeps things
+flat. Nothing is taken away from the scene, only from this view: an object's Y is untouched by
+a 2D drag and the Inspector still edits it.
+
+The two views share a centre. Drop into 2D and you are looking down at whatever was in front
+of you; come back up and the perspective camera is over the part of the map you were just
+editing.
+
+This is a *view*, not a different kind of project — the same entities, the same components,
+the same renderer, the same line the solver draws between 2D and 3D physics. It pairs with
+`Physics.mode = 2D` on the `XZ` plane, where the top-down view is the plane the simulation
+runs in, but it does not require it: laying out a town, a race track or a dungeon in a fully
+3D scene is what it is mostly for.
 
 **Hierarchy** — tree view with parent/child nesting. Drag a row onto another to reparent;
 drag onto a row's top or bottom edge to reorder among siblings. Double-click to rename.
@@ -324,10 +347,11 @@ of it.
 | --- | --- |
 | `W` `S` / `↑` `↓` | Walk forward and back |
 | `A` `D` | Strafe |
+| Mouse | Look — click the viewport to capture the pointer, or hold a button and drag |
 | `←` `→` or `Q` `E` | Turn |
 | `Space` | Jump |
 | `Shift` | Sprint |
-| `Esc` | Stop and restore |
+| `Esc` | Release the mouse; again to stop and restore |
 | `Ctrl+P` | Pause — freeze the clock without leaving Play |
 | `F9` | Hardware panel — live channel values, while playing |
 
@@ -340,6 +364,18 @@ animation all follow it, and the frame counter deliberately does not (see below)
 readable and writable from a script as `time.paused` and `time.scale`, both are shown in the
 status bar whenever they are not at rest, and both are reset when a play session ends — a script
 that dropped into slow motion for a death animation must not follow you back into edit mode.
+
+**Mouse look** yaws the character and pitches the camera parented to it — yaw on the body so
+the whole rig turns with it, pitch on the camera so a capsule is never tipped onto its side
+with its collider pointing the wrong way. Clicking the viewport captures the pointer the way a
+game does; where a capture cannot be had, holding any button and dragging looks just the same.
+`Esc` gives the pointer back, and a second `Esc` stops playing — one keystroke each, because
+stopping throws the running scene away and that must never share a key with "give me my cursor
+back".
+
+Sensitivity, inversion and the pitch limit are fields on the `CharacterController`, and so is
+**Mouse Look** itself: a top-down game where the pointer aims rather than steers unticks it,
+and the editor then leaves the cursor alone.
 
 In an **XY 2D** scene there is no forward and no yaw, so the controls collapse to one axis:
 `←`/`→` and `A`/`D` both walk, W and S do nothing, `Space` still jumps, and the character faces
@@ -1269,6 +1305,82 @@ question from *rebasing*, and this cut does not touch it. Scatter layers stream 
 their owning entity but carry no LOD chain of their own. And nothing here reads from or writes to
 disk — "chunk" still means "a bucket already in memory," not "a file loaded on approach"; that is
 what §9.2 meant by background load/unload, and it is still later work.
+
+### v0.7.9.8 — the mouse steers, and the viewport can look straight down
+
+Two things, reported together and related only in that both are about what the mouse is
+allowed to do.
+
+**Play mode had no mouse look.** The character turned with `←`/`→` and nothing else, and the
+reason was written down in `CharacterSystem`'s own doc comment: "the control scheme is the one
+that needs no mouse capture, since the editor viewport is a panel in a page rather than a
+locked-pointer game window." That was a reasonable thing to believe and the wrong trade. It
+made every scene built here feel like something from before mouse look, and turning with the
+arrow keys is the first thing anyone notices.
+
+The pointer now steers, without the engine learning what a pointer lock is. `InputState` grows
+one more piece of host-fed data — `pointerLocked` — beside the keys and buttons it already
+took, and one derived question, `lookActive`, which is true while the host holds a capture
+**or** a button is held. Two gestures for the price of one rule: click the viewport and it is
+a conventional captured FPS mouse look, and where a capture cannot be had — a browser that
+refused it, an embedded preview, someone who would rather keep their cursor — drag-to-look
+behaves identically. The editor's `ViewportController` is the only thing that touches
+`requestPointerLock`, which keeps §9.5 intact and means a worker-run simulation reads the same
+gate through the same snapshot.
+
+Yaw goes on the body and pitch on the camera parented to it, because they are not the same
+kind of rotation: yaw turns the whole rig including the direction `W` walks, while a *pitched*
+capsule is a capsule lying on its side with its collider and its ground cast pointing somewhere
+useless. That split is the reason the third-person rig has always been "a Camera parented to
+the character" and it costs one breadth-first walk of the character's children.
+
+The one genuinely fiddly part is `Esc`. Browsers spend it releasing a pointer lock and disagree
+about whether the page also hears the keystroke; Play mode spends it stopping, which discards
+the running scene. Sharing the key would mean the first `Esc` stops the session in one browser
+and frees the cursor in another. `consumeLookEscape` settles it with a short grace window after
+the lock ends, so it is the same everywhere: first `Esc` gives the mouse back, second stops.
+
+Mouse look is a field on the `CharacterController` rather than a constant, along with
+sensitivity, inversion and the pitch limit — a top-down game where the pointer aims instead of
+steering unticks it, and the editor then does not capture the cursor at all. And because
+pointer travel is a *displacement* rather than a rate, it is deliberately not scaled by `dt`:
+scaling it would make the same hand movement turn further on a faster machine, which is the
+classic mouse-look bug and now has a test that fails on it.
+
+While in there: **middle-drag pans.** The viewport hint has promised "Pan: middle / right drag"
+since it was written, and Three's default maps the middle button to dolly — so the documented
+gesture had never existed and the middle button quietly duplicated the wheel.
+
+**The 2D top-down view** is the other half. `2` (or the toolbar's `▦`) points the viewport
+straight down through an orthographic camera; `3` flies again. It is a *view* and not a second
+kind of project — same entities, same components, same renderer — which is the line
+`physics/dimension` already draws between 2D and 3D simulation, and the same seam Play mode
+uses to render a frame through a different camera.
+
+`RenderHost` gains a second editor camera rather than a projection flag on the first, so each
+view keeps its own pose; which one draws is `editorProjection`. The viewport gains a second
+`OrbitControls` for the same kind of reason — OrbitControls derives its frame from `object.up`
+in its constructor, and the top-down camera's up is world -Z where the free-look camera's is
++Y, so a swapped-in camera would be driven through the wrong frame. In 2D dragging pans (there
+is no orbit to have), `screenSpacePanning` has to be on or a pan flies the view up out of the
+world instead of across it, and the gizmo is restricted to the handles that mean something
+looking down: X and Z for move and scale, the Y ring for rotate. An object's Y is untouched by
+a 2D drag; the Inspector still edits it.
+
+Two things had to be taught that an orthographic camera's *position* is meaningless. Slide one
+along its own view direction and not a pixel changes, so "where the viewer is" cannot be read
+off it — taken at face value it puts the eye half a kilometre in the air, and the symptoms are
+not "the 2D view looks wrong" but chunks streaming around a point nothing is near and a sun
+whose shadow frustum sits above the scene it is meant to cover. `RenderHost.viewPoint` walks
+back down the view direction to the plane being framed. The ground grid had the same problem
+from the other end: its fade is measured from the camera, which under perspective is exactly
+right and under an orthographic one means every fragment is equally far away and the whole grid
+vanishes at once. It now takes the point being *looked at*, with fade radii retuned each frame
+from the zoom, so the lattice reaches the edges of the frame and the fine 1 m cells give way to
+the 10 m sections as you pull out.
+
+The arithmetic those two share lives in `engine/render/topDownView.ts` with its own tests,
+because the failure mode of the RenderHost and the viewport disagreeing about it is silent.
 
 ## Layout
 

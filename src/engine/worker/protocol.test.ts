@@ -100,10 +100,32 @@ describe('parseHostMessage', () => {
         pointerDeltaY: 0,
         wheelDelta: 0,
         buttons: 0,
+        pointerLocked: false,
       },
       clock: { paused: false, timeScale: 1 },
     };
     expect(parseHostMessage(message)).toEqual(message);
+  });
+
+  it('rejects an input message that is missing a field', () => {
+    // The worker trusts whatever gets past this, so a snapshot written by an older host has to
+    // be refused rather than arriving with `pointerLocked` undefined and the mouse look off.
+    const message = {
+      channel: CHANNEL,
+      type: 'input' as const,
+      input: {
+        down: [],
+        axes: [] as [string, number][],
+        pointerX: 0,
+        pointerY: 0,
+        pointerDeltaX: 0,
+        pointerDeltaY: 0,
+        wheelDelta: 0,
+        buttons: 0,
+      },
+      clock: { paused: false, timeScale: 1 },
+    };
+    expect(parseHostMessage(message)).toBeNull();
   });
 
   it('rejects an init message whose scene entities are malformed', () => {

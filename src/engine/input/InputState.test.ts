@@ -1,5 +1,26 @@
 import { describe, expect, it } from 'vitest';
-import { InputState, MOUSE_LEFT, MOUSE_RIGHT, normalizeKey } from './InputState';
+import {
+  InputState,
+  MOUSE_LEFT,
+  MOUSE_RIGHT,
+  normalizeKey,
+  type InputSnapshot,
+} from './InputState';
+
+/** A snapshot with nothing held but `down`, for the edge-derivation tests. */
+function snapshot(down: string[]): InputSnapshot {
+  return {
+    down,
+    axes: [],
+    pointerX: 0,
+    pointerY: 0,
+    pointerDeltaX: 0,
+    pointerDeltaY: 0,
+    wheelDelta: 0,
+    buttons: 0,
+    pointerLocked: false,
+  };
+}
 
 describe('normalizeKey', () => {
   it('accepts the shorthand a script author will type', () => {
@@ -106,6 +127,39 @@ describe('InputState', () => {
     expect(input.isDown('w')).toBe(false);
   });
 
+  /**
+   * The gate mouse look reads. Pointer travel means two different things depending on whether the
+   * host has captured the pointer: with a lock it is a player turning, and without one it is a
+   * cursor on its way to the Inspector, which must not spin the character round on the way past.
+   */
+  describe('lookActive', () => {
+    it('is off for a cursor merely crossing the viewport', () => {
+      const input = new InputState();
+      input.setPointer(0.5, 0.5, 120, 40);
+      expect(input.lookActive).toBe(false);
+    });
+
+    it('is on while the host holds a pointer lock', () => {
+      const input = new InputState();
+      input.setPointerLocked(true);
+      expect(input.lookActive).toBe(true);
+    });
+
+    it('is on while a button is held, so drag-to-look works without a lock', () => {
+      const input = new InputState();
+      input.setButtons(MOUSE_LEFT);
+      expect(input.lookActive).toBe(true);
+    });
+
+    it('goes off with the rest of the input, since clear means the pointer was given back', () => {
+      const input = new InputState();
+      input.setPointerLocked(true);
+      input.clear();
+      expect(input.pointerLocked).toBe(false);
+      expect(input.lookActive).toBe(false);
+    });
+  });
+
   describe('snapshot / applySnapshot', () => {
     it('reproduces held keys, axes and pointer state on the far side', () => {
       const source = new InputState();
@@ -126,24 +180,35 @@ describe('InputState', () => {
       expect(mirror.wheelDelta).toBe(10);
     });
 
+    it('carries the pointer lock across, so a worker-side look reads the same gate', () => {
+      const source = new InputState();
+      source.setPointerLocked(true);
+
+      const mirror = new InputState();
+      mirror.applySnapshot(source.toSnapshot());
+
+      expect(mirror.pointerLocked).toBe(true);
+      expect(mirror.lookActive).toBe(true);
+    });
+
     it('derives press/release edges from consecutive snapshots, not from level state', () => {
       const mirror = new InputState();
 
-      mirror.applySnapshot({ down: [], axes: [], pointerX: 0, pointerY: 0, pointerDeltaX: 0, pointerDeltaY: 0, wheelDelta: 0, buttons: 0 });
+      mirror.applySnapshot(snapshot([]));
       expect(mirror.wasPressed('space')).toBe(false);
 
-      mirror.applySnapshot({ down: ['Space'], axes: [], pointerX: 0, pointerY: 0, pointerDeltaX: 0, pointerDeltaY: 0, wheelDelta: 0, buttons: 0 });
+      mirror.applySnapshot(snapshot(['Space']));
       expect(mirror.wasPressed('space')).toBe(true);
       expect(mirror.isDown('space')).toBe(true);
 
       mirror.endFrame();
       // Still held: a second snapshot with the same key must not re-fire the press edge, the
       // same auto-repeat guard `setKey` already gives a real keyboard.
-      mirror.applySnapshot({ down: ['Space'], axes: [], pointerX: 0, pointerY: 0, pointerDeltaX: 0, pointerDeltaY: 0, wheelDelta: 0, buttons: 0 });
+      mirror.applySnapshot(snapshot(['Space']));
       expect(mirror.wasPressed('space')).toBe(false);
       expect(mirror.isDown('space')).toBe(true);
 
-      mirror.applySnapshot({ down: [], axes: [], pointerX: 0, pointerY: 0, pointerDeltaX: 0, pointerDeltaY: 0, wheelDelta: 0, buttons: 0 });
+      mirror.applySnapshot(snapshot([]));
       expect(mirror.wasReleased('space')).toBe(true);
       expect(mirror.isDown('space')).toBe(false);
     });
